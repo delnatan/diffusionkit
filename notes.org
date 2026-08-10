@@ -1,0 +1,30 @@
+#+TITLE: Diffusion analysis from single particle trajectories
+
+* Classical analysis
+
+The MSD vs lag is the classic way to analyze diffusive behavior or single-particle trajectories.
+
+$$
+MSD(\tau) = (2n) D \tau^\alpha + b
+$$
+
+Where 'n' is the number of dimensions, so for our GEMs data 2n = 4.
+
+'b' is the sum of localization variances. For two dimensions, this is:
+
+$b = 2(\sigma_x^2 + \sigma_y^2)$.
+
+We get this back from `spotfitlm` MLE 2D Gaussian fits, so we can use it. However, when tracks are short, the accuracy for these estimates are noisy. We use $\langle \sigma_x^2 \rangle$, so the average quality depends on the length of tracks, which sets number of available samples for computing the average.
+
+There's a heuristic for 'good practice' when fitting MSD. We can impose a minimum lag points (min_points = 3), but choosing the maximum points is a bit more nuanced. We set a cap for max_points = 10. However, if a single track has 20 lag points, only `frac=0.25` of it is used instead of 10. This is to guard against the biases introduced by long tracks. The current rule that I use per-track is:
+
+#+begin_example
+max(min_points, min(max_points, frac * n_lags, n_lags))
+#+end_example
+
+
+* Bayesian analysis
+
+MSD-free analysis of single-particle trajectory
+TODO: Need to translate this from claude's numpyro code...
+
