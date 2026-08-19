@@ -101,7 +101,7 @@ WEAK_ANISOTROPIC_PRIOR = AnisotropicModelPrior(
 
 
 def sigma_prior_from_localization(
-    x_std_um: np.ndarray, y_std_um: np.ndarray, min_sd: float = 0.15
+    sigma_x_um: np.ndarray, sigma_y_um: np.ndarray, min_sd: float = 0.15
 ) -> tuple[np.ndarray, np.ndarray]:
     """Informative (mean, sd) for log(sigma_loc), from a track's own
     independently-measured MLE localization precision.
@@ -126,8 +126,8 @@ def sigma_prior_from_localization(
     noisier variance estimate -> wider prior), floored at `min_sd` so short
     tracks don't get an overconfident prior on sigma.
     """
-    n = x_std_um.shape[-1]
-    combined_var_um2 = 0.5 * (np.mean(x_std_um**2, axis=-1) + np.mean(y_std_um**2, axis=-1))
+    n = sigma_x_um.shape[-1]
+    combined_var_um2 = 0.5 * (np.mean(sigma_x_um**2, axis=-1) + np.mean(sigma_y_um**2, axis=-1))
     mean_log_sigma = 0.5 * np.log(combined_var_um2)
     sd = max(min_sd, 1.0 / np.sqrt(2 * n))  # same n_frames for every track in a group -> one scalar sd
     return mean_log_sigma, sd

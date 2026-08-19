@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "diffusionkit"
+version = "0.1.0"
+description = "MSD and Bayesian diffusion-coefficient/anisotropy analysis for single-particle-tracking data"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy",
+    "pandas",
+    "polars",
+    "scipy",
+    "matplotlib",
+    "seaborn",
+    "jax",
+    "numpyro",
+    "tqdm",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["analysis", "bayes"]

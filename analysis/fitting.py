@@ -10,11 +10,11 @@ no nonlinear optimizer needed):
 offset: b = 4*sigma_loc^2 - 4*D*R*dt_frame (Michalet & Berglund 2012), where
 R=0 for negligible exposure duty cycle (our default assumption; camera
 exposure/duty-cycle isn't recorded here). `localization_offset_by_track`
-gives the R=0 expected value of b directly from the measured x_std/y_std, as
+gives the R=0 expected value of b directly from the measured sigma_x/sigma_y, as
 an independent check on the fitted intercept.
 
 All fit functions are pure: numpy arrays in, an immutable result out. Batch
-fitting over many tracks is just this kernel called once per particle via
+fitting over many tracks is just this kernel called once per track via
 polars `map_groups`.
 """
 
@@ -162,16 +162,16 @@ def fit_anomalous_diffusion(
 def localization_offset_by_track(tracks: pl.DataFrame) -> pl.DataFrame:
     """Per-track expected static-localization MSD offset (R=0, isotropic noise).
 
-    offset = 2*(mean(x_std_um^2) + mean(y_std_um^2))
+    offset = 2*(mean(sigma_x_um^2) + mean(sigma_y_um^2))
 
     This is the theoretical intercept b of MSD(tau) = 4*D*tau + b when the
     only source of offset is per-frame localization noise with no motion-blur
     correction. Compare it against the empirical fit intercept from
     `fit_normal_diffusion` as a self-consistency check.
     """
-    return tracks.group_by("particle").agg(
+    return tracks.group_by("track_id").agg(
         offset_um2=(
-            2 * (pl.col("x_std_um") ** 2 + pl.col("y_std_um") ** 2)
+            2 * (pl.col("sigma_x_um") ** 2 + pl.col("sigma_y_um") ** 2)
         ).mean()
     )
 
@@ -191,9 +191,9 @@ def weighted_expected_offset(
     """
     weights = (
         tamsd.filter(pl.col("lag") <= n_points)
-        .group_by("particle")
+        .group_by("track_id")
         .agg(w=pl.col("n_pairs").sum())
-        .join(localization_offset, on="particle")
+        .join(localization_offset, on="track_id")
     )
     w = weights["w"].to_numpy()
     o = weights["offset_um2"].to_numpy()
@@ -237,13 +237,13 @@ def fit_all_tracks(
     if localization_offset is not None:
         offset_lookup = dict(
             zip(
-                localization_offset["particle"].to_list(),
+                localization_offset["track_id"].to_list(),
                 localization_offset["offset_um2"].to_list(),
             )
         )
 
     def _fit_one(group: pl.DataFrame) -> pl.DataFrame:
-        particle = group["particle"][0]
+        track_id = group["track_id"][0]
         track_length = group["track_length"][0]
         tau = group["tau_s"].to_numpy()
         msd = group["msd_um2"].to_numpy()
@@ -259,7 +259,7 @@ def fit_all_tracks(
         anomalous = fit_anomalous_diffusion(tau, msd, npts)
 
         result = {
-            "particle": [particle],
+            "track_id": [track_id],
             "track_length": [track_length],
             "n_points_used": [npts],
             "at_min_points": [npts == min_points],
@@ -278,7 +278,7 @@ def fit_all_tracks(
         }
 
         if localization_offset is not None:
-            offset = offset_lookup.get(particle, float("nan"))
+            offset = offset_lookup.get(track_id, float("nan"))
             if np.isfinite(offset):
                 anom_corr = fit_anomalous_diffusion(tau, msd - offset, npts)
             else:
@@ -299,6 +299,6 @@ def fit_all_tracks(
 
         return pl.DataFrame(result)
 
-    return eligible.group_by("particle", maintain_order=True).map_groups(
+    return eligible.group_by("track_id", maintain_order=True).map_groups(
         _fit_one
     )

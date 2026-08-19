@@ -203,7 +203,7 @@ def sample_posterior_table(
     show_progress: bool = True,
 ) -> pl.DataFrame:
     """Full-NUTS-posterior per-track table: median + `hpdi_prob` HPDI for
-    each of `param_names`, one row per track (`particle`, `track_length`,
+    each of `param_names`, one row per track (`track_id`, `track_length`,
     `n_disp`, then `{name}_median`/`{name}_lo`/`{name}_hi`).
 
     `fit_all_tracks`/`fit_batch_map`'s counterpart for when the *posterior
@@ -224,7 +224,7 @@ def sample_posterior_table(
     lengths = eligible["track_length"].unique().sort().to_list()
 
     chunks = []
-    progress = tqdm(total=eligible["particle"].n_unique(), desc="sample_posterior_table",
+    progress = tqdm(total=eligible["track_id"].n_unique(), desc="sample_posterior_table",
                      unit="track", disable=not show_progress)
     for track_length in lengths:
         group = eligible.filter(pl.col("track_length") == track_length)
@@ -237,7 +237,7 @@ def sample_posterior_table(
             model_fn, (jnp.asarray(dx), jnp.asarray(dy), dt_s, n_disp, prior, n_tracks),
             num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains, seed=seed,
         )
-        row = {"particle": particles, "track_length": [track_length] * n_tracks,
+        row = {"track_id": particles, "track_length": [track_length] * n_tracks,
                "n_disp": [n_disp] * n_tracks}
         for name in param_names:
             arr = samples[name].reshape(-1, n_tracks)  # (draws, n_tracks)
@@ -249,7 +249,7 @@ def sample_posterior_table(
         progress.update(n_tracks)
     progress.close()
 
-    return pl.concat(chunks).sort("particle")
+    return pl.concat(chunks).sort("track_id")
 
 
 def fit_batch_svi(
@@ -288,17 +288,17 @@ def fit_batch_svi(
 def _stack_tracks(
     group: pl.DataFrame,
 ) -> tuple[list[int], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """group: rows for many particles all at one shared track_length.
-    Returns (particle_ids, dx, dy, x_std_um, y_std_um), each of the latter
+    """group: rows for many tracks all at one shared track_length.
+    Returns (track_ids, dx, dy, sigma_x_um, sigma_y_um), each of the latter
     four stacked to shape (n_tracks, track_length[-1]) or (n_tracks, track_length)."""
-    particles = group["particle"].unique().sort().to_list()
+    particles = group["track_id"].unique().sort().to_list()
     dx_list, dy_list, xstd_list, ystd_list = [], [], [], []
     for pid in particles:
-        g = group.filter(pl.col("particle") == pid).sort("frame")
+        g = group.filter(pl.col("track_id") == pid).sort("frame")
         dx_list.append(np.diff(g["x_um"].to_numpy()))
         dy_list.append(np.diff(g["y_um"].to_numpy()))
-        xstd_list.append(g["x_std_um"].to_numpy())
-        ystd_list.append(g["y_std_um"].to_numpy())
+        xstd_list.append(g["sigma_x_um"].to_numpy())
+        ystd_list.append(g["sigma_y_um"].to_numpy())
     return particles, np.stack(dx_list), np.stack(dy_list), np.stack(xstd_list), np.stack(ystd_list)
 
 
@@ -322,7 +322,7 @@ def fit_all_tracks(
     see model.py's and this module's docstrings for why that matters for
     performance.
 
-    `prior_fn(x_std_um, y_std_um) -> prior` receives the whole group's
+    `prior_fn(sigma_x_um, sigma_y_um) -> prior` receives the whole group's
     localization-precision arrays (shape (n_tracks_in_group, track_length))
     and returns a prior whose fields may be per-track (n_tracks,) arrays
     (e.g. from `sigma_prior_from_localization`, called on these same
@@ -339,7 +339,7 @@ def fit_all_tracks(
     lengths = eligible["track_length"].unique().sort().to_list()
 
     chunks = []
-    progress = tqdm(total=eligible["particle"].n_unique(), desc="fit_all_tracks", unit="track",
+    progress = tqdm(total=eligible["track_id"].n_unique(), desc="fit_all_tracks", unit="track",
                      disable=not show_progress)
     for track_length in lengths:
         group = eligible.filter(pl.col("track_length") == track_length)
@@ -355,7 +355,7 @@ def fit_all_tracks(
         )
 
         chunk = {
-            "particle": particles,
+            "track_id": particles,
             "track_length": [track_length] * n_tracks,
             "n_disp": [n_disp] * n_tracks,
         }
@@ -366,7 +366,7 @@ def fit_all_tracks(
         progress.update(n_tracks)
     progress.close()
 
-    return pl.concat(chunks).sort("particle")
+    return pl.concat(chunks).sort("track_id")
 
 
 def _map_fit_chunk(
@@ -392,7 +392,7 @@ def _map_fit_chunk(
     """
     sub_n = len(particles)
     row = {
-        "particle": particles,
+        "track_id": particles,
         "track_length": [track_length] * sub_n,
         "n_disp": [n_disp] * sub_n,
         "converged": [fit.converged] * sub_n,
@@ -460,7 +460,7 @@ def fit_batch_map(
     lengths = eligible["track_length"].unique().sort().to_list()
 
     chunks = []
-    total_tracks = eligible["particle"].n_unique()
+    total_tracks = eligible["track_id"].n_unique()
     progress = tqdm(total=total_tracks, desc="fit_batch_map", unit="track", disable=not show_progress)
     for track_length in lengths:
         group = eligible.filter(pl.col("track_length") == track_length)
@@ -484,4 +484,4 @@ def fit_batch_map(
             progress.update(sub_n)
     progress.close()
 
-    return pl.concat(chunks).sort("particle")
+    return pl.concat(chunks).sort("track_id")

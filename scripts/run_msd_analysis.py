@@ -1,8 +1,8 @@
 """Standard MSD-based diffusion analysis for the mobile-bead SPT dataset.
 
-Pipeline: load -> per-track TAMSD -> ensemble average -> fit (normal +
-anomalous diffusion) -> save tables/figures. Every stage is a pure function
-from `analysis`; this script only wires them together and does I/O.
+Pipeline: load -> `analysis.fit_population` (TAMSD -> ensemble fit ->
+per-track fits) -> save tables/figures. See WORKFLOW.md for this call in
+the wider low-data/bulk/anisotropy workflow picture.
 """
 from __future__ import annotations
 
@@ -13,20 +13,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
-import polars as pl
 
 from analysis import (
     AcquisitionParams,
     load_tracks,
     assert_contiguous_tracks,
-    compute_all_tamsd,
-    ensemble_average_msd,
-    n_fit_points,
-    fit_normal_diffusion,
-    fit_anomalous_diffusion,
-    fit_all_tracks,
-    localization_offset_by_track,
-    weighted_expected_offset,
+    fit_population,
     plot_tamsd_curves,
     plot_ensemble_fit,
     plot_parameter_distributions,
@@ -54,26 +46,26 @@ def main() -> None:
 
     tracks = load_tracks(DATA_CSV, PARAMS)
     assert_contiguous_tracks(tracks)
-    n_particles = tracks["particle"].n_unique()
+    n_particles = tracks["track_id"].n_unique()
     print(f"Loaded {tracks.height} localizations, {n_particles} tracks")
 
-    tamsd = compute_all_tamsd(tracks, dt_s=PARAMS.dt_s)
-    ensemble = ensemble_average_msd(tamsd, min_tracks=MIN_TRACKS_FOR_ENSEMBLE)
+    result = fit_population(
+        tracks,
+        PARAMS.dt_s,
+        min_track_length=MIN_TRACK_LENGTH,
+        frac_points=FRAC_POINTS,
+        min_points=MIN_FIT_POINTS,
+        max_points=MAX_FIT_POINTS,
+        min_tracks_for_ensemble=MIN_TRACKS_FOR_ENSEMBLE,
+    )
+    tamsd, ensemble = result.tamsd, result.ensemble
+    normal_fit, anomalous_fit = result.ensemble_normal_fit, result.ensemble_anomalous_fit
+    summary = result.per_track
     print(f"Ensemble MSD curve: {ensemble.height} lags "
           f"(down to n_tracks={MIN_TRACKS_FOR_ENSEMBLE})")
 
-    loc_offset = localization_offset_by_track(tracks)
-
-    # --- ensemble-level fits ---
     tau = ensemble["tau_s"].to_numpy()
-    msd = ensemble["msd_um2"].to_numpy()
-    n_pairs = ensemble["n_pairs_total"].to_numpy()
-    npts = n_fit_points(len(tau), frac=FRAC_POINTS, min_points=MIN_FIT_POINTS, max_points=MAX_FIT_POINTS)
-
-    normal_fit = fit_normal_diffusion(tau, msd, npts, weights=n_pairs)
-    anomalous_fit = fit_anomalous_diffusion(tau, msd, npts)
-
-    mean_offset = weighted_expected_offset(tamsd, loc_offset, n_points=npts)
+    npts = result.ensemble_n_points_used
 
     print("\n=== Ensemble-averaged fit ===")
     print(f"  fit range: first {npts} lags (tau up to {tau[npts-1]:.3f} s)")
@@ -86,21 +78,11 @@ def main() -> None:
           f"{anomalous_fit.alpha_stderr:.3g}   "
           f"D_alpha = {anomalous_fit.D_alpha_um2_s_alpha:.4g} um^2/s^alpha  "
           f"(R^2={anomalous_fit.r_squared:.4f})")
-    print(f"  Mean expected localization offset (from x_std/y_std): "
-          f"{mean_offset:.4g} um^2  (fitted intercept: "
+    print(f"  Mean expected localization offset (from sigma_x/sigma_y): "
+          f"{result.mean_localization_offset_um2:.4g} um^2  (fitted intercept: "
           f"{normal_fit.intercept_um2:.4g} um^2)")
 
     # --- per-track fits ---
-    summary = fit_all_tracks(
-        tamsd,
-        min_track_length=MIN_TRACK_LENGTH,
-        frac_points=FRAC_POINTS,
-        min_points=MIN_FIT_POINTS,
-        max_points=MAX_FIT_POINTS,
-        localization_offset=loc_offset,
-    )
-    summary = summary.join(loc_offset, on="particle", how="left").sort("particle")
-
     D = summary["D_um2_s"]
     alpha = summary["alpha"]
     print(f"\n=== Per-track fits (n={summary.height} tracks, "

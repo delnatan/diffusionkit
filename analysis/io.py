@@ -1,7 +1,7 @@
 """Load raw SPT localization tables and convert to physical units.
 
 Everything downstream operates on one tidy, long-format polars DataFrame:
-one row per (particle, frame) localization, columns in physical units.
+one row per (track_id, frame) localization, columns in physical units.
 """
 from __future__ import annotations
 
@@ -22,20 +22,24 @@ class AcquisitionParams:
 def load_tracks(csv_path: str | Path, params: AcquisitionParams) -> pl.DataFrame:
     """Load a localization table and convert to a tidy, physical-unit DataFrame.
 
-    Returns columns: particle, frame, t_s, x_um, y_um, x_std_um, y_std_um,
-    track_length. Sorted by (particle, frame).
+    Returns columns: track_id, frame, t_s, x_um, y_um, sigma_x_um, sigma_y_um,
+    track_length. Sorted by (track_id, frame). track_length is derived
+    internally (row count per track_id) rather than read from the CSV.
     """
     raw = pl.read_csv(csv_path)
     tracks = raw.select(
-        pl.col("particle").cast(pl.Int64),
+        pl.col("track_id").cast(pl.Int64),
         pl.col("frame").cast(pl.Int64),
         (pl.col("frame") * params.dt_s).alias("t_s"),
         (pl.col("x") * params.pixel_size_um).alias("x_um"),
         (pl.col("y") * params.pixel_size_um).alias("y_um"),
-        (pl.col("x_std") * params.pixel_size_um).alias("x_std_um"),
-        (pl.col("y_std") * params.pixel_size_um).alias("y_std_um"),
-        pl.col("track_length").cast(pl.Int64),
-    ).sort(["particle", "frame"])
+        (pl.col("sigma_x") * params.pixel_size_um).alias("sigma_x_um"),
+        (pl.col("sigma_y") * params.pixel_size_um).alias("sigma_y_um"),
+    ).sort(["track_id", "frame"])
+    track_lengths = tracks.group_by("track_id").agg(pl.len().alias("track_length"))
+    tracks = tracks.join(track_lengths, on="track_id", how="left").sort(
+        ["track_id", "frame"]
+    )
     return tracks
 
 
@@ -46,10 +50,10 @@ def assert_contiguous_tracks(tracks: pl.DataFrame) -> None:
     uniform frame grid with no missing frames (lag n <-> tau = n * dt_s).
     """
     bad = (
-        tracks.group_by("particle")
+        tracks.group_by("track_id")
         .agg(is_contiguous=(pl.col("frame").diff().drop_nulls() == 1).all())
         .filter(~pl.col("is_contiguous"))
     )
     if bad.height > 0:
-        ids = bad["particle"].to_list()
+        ids = bad["track_id"].to_list()
         raise ValueError(f"{len(ids)} tracks have frame gaps: {ids[:10]}")

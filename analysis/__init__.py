@@ -1,6 +1,7 @@
 from .io import AcquisitionParams, load_tracks, assert_contiguous_tracks
 from .simulate import simulate_brownian_tracks
 from .msd import compute_all_tamsd, ensemble_average_msd
+from .api import PopulationFit, fit_population
 from .fitting import (
     NormalDiffusionFit,
     AnomalousDiffusionFit,
@@ -29,6 +30,8 @@ __all__ = [
     "simulate_brownian_tracks",
     "compute_all_tamsd",
     "ensemble_average_msd",
+    "PopulationFit",
+    "fit_population",
     "NormalDiffusionFit",
     "AnomalousDiffusionFit",
     "n_fit_points",

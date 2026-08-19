@@ -246,6 +246,136 @@ def plot_D_alpha_joint(
     return g.figure
 
 
+def _joint_panel(
+    fig: plt.Figure,
+    gs: object,
+    x: np.ndarray,
+    y: np.ndarray,
+    xlim: tuple[float, float],
+    ylim: tuple[float, float],
+    x_label: str,
+    y_label: str,
+    title: str,
+) -> None:
+    """One (marginal-x / joint / marginal-y) panel of `plot_classic_vs_bayes_joint`,
+    drawn into a 2x2 sub-region of `fig` via a pre-positioned `GridSpec` `gs`
+    (`gs[0,0]`/`gs[1,0]`/`gs[1,1]` = top marginal / joint / right marginal) --
+    hand-built rather than `sns.JointGrid` (which always owns its own whole
+    Figure) so two panels can share one Figure and, critically, identical
+    `xlim`/`ylim` set explicitly on both rather than each panel auto-scaling
+    to its own data.
+    """
+    ax_joint = fig.add_subplot(gs[1, 0])
+    ax_marg_x = fig.add_subplot(gs[0, 0], sharex=ax_joint)
+    ax_marg_y = fig.add_subplot(gs[1, 1], sharey=ax_joint)
+
+    pdf = pd.DataFrame({"x": x, "y": y})
+    sns.kdeplot(data=pdf, x="x", y="y", ax=ax_joint, fill=True, cmap="Blues",
+                alpha=0.6, thresh=0.05, levels=12, zorder=0)
+    sns.scatterplot(data=pdf, x="x", y="y", ax=ax_joint, s=18, alpha=0.6,
+                     color="0.15", edgecolor="none", zorder=1)
+    ax_joint.axhline(1.0, color="crimson", lw=1, ls="--", zorder=2,
+                      label=r"$\alpha=1$ (Brownian)")
+    ax_joint.set_xlim(xlim)
+    ax_joint.set_ylim(ylim)
+    ax_joint.set_xlabel(x_label)
+    ax_joint.set_ylabel(y_label)
+    ax_joint.legend(frameon=False, loc="upper left", fontsize=8)
+
+    ax_marg_x.hist(pdf["x"], bins=30, range=xlim, color="steelblue", edgecolor="white")
+    ax_marg_y.hist(pdf["y"], bins=30, range=ylim, color="steelblue", edgecolor="white",
+                    orientation="horizontal")
+    ax_marg_x.tick_params(labelbottom=False)
+    ax_marg_y.tick_params(labelleft=False)
+    ax_marg_x.set_ylabel("")
+    ax_marg_y.set_xlabel("")
+
+    r = np.corrcoef(x, y)[0, 1]
+    n_out = int(((x < xlim[0]) | (x > xlim[1]) | (y < ylim[0]) | (y > ylim[1])).sum())
+    subtitle = f"{title}\nr={r:.2f}, n={len(x)}"
+    if n_out:
+        subtitle += f" ({n_out} outside shared display range)"
+    ax_marg_x.set_title(subtitle, fontsize=9.5, loc="left")
+
+
+def plot_classic_vs_bayes_joint(
+    df: pl.DataFrame,
+    D_classic_col: str = "D_classic_um2_s",
+    alpha_classic_col: str = "alpha_classic",
+    D_bayes_col: str = "D_median_um2_s",
+    alpha_bayes_col: str = "alpha",
+    display_quantiles: tuple[float, float] = (0.01, 0.99),
+    xlim: tuple[float, float] | None = None,
+    ylim: tuple[float, float] | None = None,
+) -> plt.Figure:
+    """Classic MSD-fit vs. exact-likelihood Bayes MAP, log10(D) vs. alpha,
+    side by side on identical axis limits -- the direct visual counterpart to
+    `run_bayes_analysis.py`'s printed r(D_classic, D_bayes)/r(alpha_classic,
+    alpha_bayes) agreement numbers, and to `plot_D_alpha_joint` /
+    `analysis.viz.plot_D_alpha_jointplot` run individually per-estimator
+    (each of which auto-scales its own axes, so those two are not
+    visually comparable side by side without this).
+
+    `df` is expected to already have both estimators on the same tracks,
+    e.g. `results/tables/bayes/bayes_vs_classic_comparison.csv`
+    (`run_bayes_analysis.py`'s inner join of its own summary against the
+    classic pipeline's saved `per_track_msd_fits.csv`). Only rows with both
+    D columns > 0 are used (needed for log10); the shared xlim/ylim are the
+    `display_quantiles` of the *pooled* log10(D) and alpha values across both
+    estimators together (not each estimator's own range), so a difference in
+    spread between the two is visible rather than hidden by independent
+    autoscaling -- points outside that shared window still count toward each
+    panel's own r/n, just clipped from the view (count reported in the
+    subtitle), same convention as `plot_D_alpha_joint`. Pass `xlim`/`ylim`
+    explicitly (e.g. `ylim=(0, 2)` to match alpha's actual (0,2) prior
+    support, `xlim=(-3, 1)` for a fixed log10(D) decade range) to override
+    the data-driven quantile default with fixed physical bounds instead.
+    """
+    sub = df.filter((pl.col(D_classic_col) > 0) & (pl.col(D_bayes_col) > 0)).select(
+        pl.col(D_classic_col).log10().alias("log10_D_classic"),
+        pl.col(alpha_classic_col).alias("alpha_classic"),
+        pl.col(D_bayes_col).log10().alias("log10_D_bayes"),
+        pl.col(alpha_bayes_col).alias("alpha_bayes"),
+    ).drop_nulls()
+
+    x_classic, y_classic = sub["log10_D_classic"].to_numpy(), sub["alpha_classic"].to_numpy()
+    x_bayes, y_bayes = sub["log10_D_bayes"].to_numpy(), sub["alpha_bayes"].to_numpy()
+
+    if xlim is None:
+        x_pool = np.concatenate([x_classic, x_bayes])
+        xlim = tuple(np.quantile(x_pool, display_quantiles))
+    if ylim is None:
+        y_pool = np.concatenate([y_classic, y_bayes])
+        ylim = tuple(np.quantile(y_pool, display_quantiles))
+
+    fig = plt.figure(figsize=(13, 6))
+    gs_left = fig.add_gridspec(
+        nrows=2, ncols=2, left=0.06, right=0.47, height_ratios=[1, 4],
+        width_ratios=[4, 1], hspace=0.06, wspace=0.06,
+    )
+    gs_right = fig.add_gridspec(
+        nrows=2, ncols=2, left=0.57, right=0.98, height_ratios=[1, 4],
+        width_ratios=[4, 1], hspace=0.06, wspace=0.06,
+    )
+
+    _joint_panel(
+        fig, gs_left, x_classic, y_classic, xlim, ylim,
+        r"$\log_{10} D_{\mathrm{linear}}$ ($\mu m^2/s$)", r"$\alpha$ (log-log fit)",
+        "Classic MSD fit",
+    )
+    _joint_panel(
+        fig, gs_right, x_bayes, y_bayes, xlim, ylim,
+        r"$\log_{10} D$ ($\mu m^2/s$, normal-model MAP)", r"$\alpha$ (anomalous-model MAP)",
+        "Exact-likelihood Bayes MAP",
+    )
+    fig.suptitle(
+        f"Per-track $\\log_{{10}} D$ vs. $\\alpha$: classic MSD vs. Bayes (n={sub.height} tracks in common, "
+        "shared axis limits)",
+        fontsize=11,
+    )
+    return fig
+
+
 def plot_D_recovery(
     df: pl.DataFrame, D_col: str, true_D_col: str, title: str = "D recovery"
 ) -> plt.Figure:
@@ -332,14 +462,14 @@ def plot_log_bf_distribution(
 
 def plot_trajectory_gallery(
     tracks: pl.DataFrame,
-    particle_ids: list[int],
+    track_ids: list[int],
     panel_labels: list[str],
     title: str,
     ncols: int = 3,
 ) -> plt.Figure:
     """Small multiples of actual (recentered) per-track (x,y) paths -- the
     direct "does this track's own inferred anisotropy score look plausible
-    by eye" check: `panel_labels` (one string per `particle_ids`, e.g.
+    by eye" check: `panel_labels` (one string per `track_ids`, e.g.
     "logBF10=+1.23") is meant to carry whatever per-track attribute
     (`bayes_factor.per_track_log_bayes_factor`'s `log_bf10`,
     `inference.sample_posterior_table`'s `eps_median`, ...) motivated
@@ -350,25 +480,25 @@ def plot_trajectory_gallery(
     autoscaled per panel) so visual "elongation" is comparable across
     panels, not an artifact of matplotlib rescaling each one differently.
     """
-    n = len(particle_ids)
+    n = len(track_ids)
     nrows = int(np.ceil(n / ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(3.0 * ncols, 3.0 * nrows), squeeze=False)
 
     paths = []
-    for pid in particle_ids:
-        g = tracks.filter(pl.col("particle") == pid).sort("frame")
+    for pid in track_ids:
+        g = tracks.filter(pl.col("track_id") == pid).sort("frame")
         x, y = g["x_um"].to_numpy(), g["y_um"].to_numpy()
         paths.append((x - x[0], y - y[0]))
     max_extent = max(max(np.abs(x).max(), np.abs(y).max()) for x, y in paths) * 1.15
 
-    for i, (ax, pid, label, (x, y)) in enumerate(zip(axes.flat, particle_ids, panel_labels, paths)):
+    for i, (ax, pid, label, (x, y)) in enumerate(zip(axes.flat, track_ids, panel_labels, paths)):
         ax.plot(x, y, color="0.4", lw=1, zorder=1)
         ax.scatter(x, y, c=np.arange(len(x)), cmap="viridis", s=25, zorder=2)
         ax.scatter([0], [0], marker="+", color="crimson", s=60, zorder=3)
         ax.set_xlim(-max_extent, max_extent)
         ax.set_ylim(-max_extent, max_extent)
         ax.set_aspect("equal")
-        ax.set_title(f"particle {pid}\n{label}", fontsize=9)
+        ax.set_title(f"track {pid}\n{label}", fontsize=9)
         ax.tick_params(labelsize=7)
     for ax in axes.flat[n:]:
         ax.axis("off")
@@ -389,7 +519,7 @@ def plot_spatial_map(
     """Each track's mean field-of-view position, colored by `value_col` --
     checks whether a per-track quantity (e.g. `log_bf10`) clusters spatially
     rather than scattering uniformly, which would point at an
-    instrument/acquisition-region effect rather than per-particle physics
+    instrument/acquisition-region effect rather than per-track physics
     (see FINDINGS.md, "Real-data anisotropy check").
 
     `diverging=True` (the right choice for a signed quantity like log_bf10,
@@ -454,7 +584,7 @@ def plot_eps_forest(
     was built from."""
     sub = master.sort(sort_by, descending=True).head(top_n)
     eps, lo, hi = sub["eps_median"].to_numpy(), sub["eps_lo"].to_numpy(), sub["eps_hi"].to_numpy()
-    particles = sub["particle"].to_numpy()
+    particles = sub["track_id"].to_numpy()
     y = np.arange(len(sub))[::-1]
 
     fig, ax = plt.subplots(figsize=(6, 0.28 * len(sub) + 1.5))
@@ -463,7 +593,7 @@ def plot_eps_forest(
                 elinewidth=1.2, capsize=2)
     ax.axvline(0.0, color="0.3", lw=1, ls="--", label="eps=0 (isotropic)")
     ax.set_yticks(y)
-    ax.set_yticklabels([f"particle {p}" for p in particles], fontsize=7)
+    ax.set_yticklabels([f"track {p}" for p in particles], fontsize=7)
     ax.set_xlabel("eps posterior median (90% HPDI)")
     ax.set_title(f"{title} (top {len(sub)} by {sort_by})")
     ax.legend(frameon=False, fontsize=8)

@@ -1,4 +1,4 @@
-"""Ground-truth recovery / calibration checks for `bayes.anisotropic_diffusion_model`
+"""Ground-truth recovery / calibration checks for `bayes.anisotropy.anisotropic_diffusion_model`
 -- the direct counterpart to `validate_bayes_recovery.py`, targeting the
 N=5-10 information-starved regime the anisotropy-detection plan is for.
 
@@ -8,7 +8,7 @@ posterior geometry that FINDINGS.md documents for alpha near its own
 boundary at short track lengths (as eps -> 0, psi becomes unidentifiable),
 where a Gaussian/delta-method approximation is known to be unreliable.
 
-Two checks, both simulating from `bayes.simulate_anisotropic_tracks` (the
+Two checks, both simulating from `bayes.anisotropy.simulate_anisotropic_tracks` (the
 exact model `anisotropic_diffusion_model` assumes, so any miscalibration
 found is about the estimator/prior, not a generative/inference mismatch):
 
@@ -79,13 +79,15 @@ import polars as pl
 from numpyro.diagnostics import hpdi
 
 from bayes import (
-    AnisotropicModelPrior,
-    WEAK_ANISOTROPIC_PRIOR,
     anisotropic_displacement_covariance,
-    batched_anisotropic_diffusion_model,
-    batched_log_bayes_factor_anisotropy,
     displacement_covariance,
     sample_posterior,
+)
+from bayes.anisotropy import (
+    AnisotropicModelPrior,
+    WEAK_ANISOTROPIC_PRIOR,
+    batched_anisotropic_diffusion_model,
+    batched_log_bayes_factor_anisotropy,
     simulate_anisotropic_tracks,
 )
 from bayes.viz import plot_estimator_scatter
@@ -120,13 +122,13 @@ def _reduction_sanity_check() -> None:
 
 
 def _stack_displacements(sim: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    """(dx, dy), each shape (n_tracks, n_disp), sorted by particle id --
+    """(dx, dy), each shape (n_tracks, n_disp), sorted by track id --
     shared by every check below that needs raw displacement arrays (NUTS
     fitting or the Monte Carlo Bayes factor alike)."""
-    particles = sim["particle"].unique().sort().to_list()
-    dx = np.stack([np.diff(sim.filter(pl.col("particle") == p).sort("frame")["x_um"].to_numpy())
+    particles = sim["track_id"].unique().sort().to_list()
+    dx = np.stack([np.diff(sim.filter(pl.col("track_id") == p).sort("frame")["x_um"].to_numpy())
                     for p in particles])
-    dy = np.stack([np.diff(sim.filter(pl.col("particle") == p).sort("frame")["y_um"].to_numpy())
+    dy = np.stack([np.diff(sim.filter(pl.col("track_id") == p).sort("frame")["y_um"].to_numpy())
                     for p in particles])
     return dx, dy
 

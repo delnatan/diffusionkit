@@ -10,7 +10,9 @@ same raw localizations for direct comparison:
 
 Empirical results, comparisons, and known pitfalls from running these
 pipelines are documented in `FINDINGS.md`, not here -- this file covers
-layout and how to reproduce a run.
+layout and how to reproduce a run. For "which function do I call for what I
+have" (a handful of tracks vs. a full-dataset bulk run vs. anisotropy on
+short tracks), see `WORKFLOW.md`.
 
 ## Layout
 
@@ -20,6 +22,8 @@ analysis/                   classic MSD pipeline, data-oriented design:
   msd.py                      per-track TAMSD + n_pairs-weighted ensemble MSD
   fitting.py                  normal-diffusion (linear) & anomalous (log-log) fits,
                                localization-offset diagnostics, quality flags
+  api.py                      fit_population: one-call bulk entry point (TAMSD ->
+                               ensemble fit -> per-track fits), see WORKFLOW.md
   simulate.py                  ground-truth Brownian track generator (same schema
                                as io.load_tracks, for bias validation)
   viz.py                      plotting functions (pure: data in, Figure out)
@@ -36,7 +40,7 @@ bayes/                      exact-likelihood Bayesian pipeline (numpyro), no MSD
   priors.py                    prior hyperparameters (dataclasses), incl.
                                WEAK_*_PRIOR (near-flat, MLE-equivalent) and a
                                per-track sigma prior from measured
-                               x_std_um/y_std_um
+                               sigma_x_um/sigma_y_um
   inference.py                 fit_map (single track, exact MAP + Laplace via
                                numpyro's own potential_fn + JAX autodiff),
                                sample_posterior (single track, full NUTS),
@@ -45,18 +49,30 @@ bayes/                      exact-likelihood Bayesian pipeline (numpyro), no MSD
                                path), fit_batch_svi + fit_all_tracks (grouped
                                by track_length, mean-field SVI -- comparison/
                                validation path)
+  api.py                       fit_track (low-data, one track -> one fit) and
+                               fit_population (bulk, model="normal"/"anomalous"/
+                               "both") -- one-call entry points wrapping the
+                               above, see WORKFLOW.md
   simulate.py                   ground-truth fBm(+noise) track generator, any
                                alpha (same schema as analysis.io.load_tracks);
                                simulate_anisotropic_tracks does the same for
-                               the anisotropic model below
+                               the anisotropic model below (re-exported from
+                               anisotropy.py, not bayes/__init__.py)
   bayes_factor.py              prior-predictive Monte Carlo log Bayes factor
                                for anisotropic_diffusion_model vs. its eps=0
                                (isotropic) restriction, plus per-track and
                                label-grouped aggregation across many tracks
                                -- see Method notes and FINDINGS.md
                                ("Anisotropy detection")
+  anisotropy.py                 insulated anisotropy-detection workflow --
+                               analyze() and null_calibration(), wrapping
+                               bayes_factor.py + the anisotropic model; import
+                               as `from bayes import anisotropy`, not via
+                               bayes/__init__.py's flat namespace (see
+                               WORKFLOW.md for why it's kept separate)
   viz.py                      posterior/fit diagnostic plots
 scripts/
+  quickstart_single_track.py  low-data workflow: one track -> bayes.fit_track
   run_msd_analysis.py         classic pipeline: real data -> tables/figures
   validate_localization_bias.py  classic pipeline: simulated ground truth ->
                                checks whether a fitting bias is an artifact
@@ -112,15 +128,16 @@ Every function in both `analysis/` and `bayes/` is pure: numpy/jax arrays or
 polars DataFrames in, new data out, no shared mutable state -- which is what
 makes the two pipelines directly composable for comparison
 (`run_bayes_analysis.py` joins its own per-track table against `analysis`'s
-saved per-track table on `particle`) despite estimating from entirely
+saved per-track table on `track_id`) despite estimating from entirely
 different statistics (a fitted MSD curve vs. the raw displacement
 likelihood).
 
 ## Input data
 
-Raw localization CSV, one row per (particle, frame): columns `particle`,
-`frame`, `x`, `y` (pixels), `x_std`, `y_std` (localization precision,
-pixels), `track_length`. `analysis.io.load_tracks` converts to physical
+Raw localization CSV, one row per (track_id, frame): columns `track_id`,
+`frame`, `x`, `y` (pixels), `sigma_x`, `sigma_y` (localization precision,
+pixels). `track_length` is derived internally (row count per `track_id`),
+not read from the CSV. `analysis.io.load_tracks` converts to physical
 units given an `AcquisitionParams(pixel_size_um, dt_s)`.
 `analysis.io.assert_contiguous_tracks` checks every track sits on a gapless,
 uniform frame grid -- both pipelines' time-averaged statistics assume this.
@@ -155,7 +172,7 @@ most recent run of each script, not a history of past runs.
   n_pairs at each lag).
 - **alpha fit**: `MSD(tau) = 4*D_alpha*tau^alpha`, OLS in log-log space.
 - **Localization-offset diagnostic**: `b` should approximate
-  `2*(mean(x_std^2) + mean(y_std^2))` for static, R=0 (no motion-blur
+  `2*(mean(sigma_x^2) + mean(sigma_y^2))` for static, R=0 (no motion-blur
   correction) localization noise. `weighted_expected_offset` computes this
   with the same n_pairs weighting as the ensemble fit. Camera exposure/duty
   cycle isn't recorded in the input schema here, so R=0 is a simplification.
@@ -188,7 +205,7 @@ most recent run of each script, not a history of past runs.
   in log-space, with an asymmetric interval") for why a linear-space
   symmetric interval is a poor description of D's uncertainty, especially on
   short tracks. alpha keeps a symmetric physical-space interval.
-- **D (normal model) and alpha (anomalous model) are the primary per-particle
+- **D (normal model) and alpha (anomalous model) are the primary per-track
   diffusive-behavior metrics; D_alpha is a secondary/diagnostic quantity** --
   D_alpha's posterior degrades much faster than D's on short tracks
   (FINDINGS.md).
@@ -236,7 +253,7 @@ the operating summary.
   label_col)` sums it grouped by **any** column already on (or joined onto)
   that table -- there is nothing anisotropy-specific about what defines a
   group. Group by track-length-derived buckets, an experimental condition,
-  or (once available) a per-particle spatial/structural classification, by
+  or (once available) a per-track spatial/structural classification, by
   joining that classification onto `per_track_log_bayes_factor`'s output and
   passing its column name as `label_col`; no code change needed to add a new
   kind of grouping.
@@ -313,9 +330,9 @@ evidence for a population that genuinely shares anisotropic behavior.
 
 ## Results tables -- column reference
 
-Both pipelines write `particle` and `track_length` with the same meaning
-(particle ID from the input CSV; number of localizations in the track), so
-their per-track tables always join cleanly on `particle`. Column names
+Both pipelines write `track_id` and `track_length` with the same meaning
+(track ID from the input CSV; number of localizations in the track), so
+their per-track tables always join cleanly on `track_id`. Column names
 otherwise follow one convention throughout: a `_um`/`_um2_s`/`_um2_s_alpha`
 suffix marks physical units; no suffix means dimensionless (`alpha`) or
 log10 units (`log10_*`). Quantities that only exist in one framework (e.g.
@@ -330,7 +347,7 @@ One row per track. `msd.py`'s TAMSD passed through `fitting.fit_all_tracks`.
 
 | Column | Meaning |
 | --- | --- |
-| `particle` | Track/particle ID. |
+| `track_id` | Track ID. |
 | `track_length` | Number of localizations in the track. |
 | `n_points_used` | Number of lags used in the normal-diffusion (and uncorrected anomalous) fit. |
 | `at_min_points` | True if `n_points_used` hit the `min_points` floor rather than the fractional rule. |
@@ -346,7 +363,7 @@ One row per track. `msd.py`'s TAMSD passed through `fitting.fit_all_tracks`.
 | `alpha_corrected`, `alpha_corrected_stderr` | Same anomalous fit after subtracting the track's estimated localization offset from MSD first (see `offset_um2`) -- isolates the tau^alpha signal from the localization-noise plateau. |
 | `n_points_used_alpha_corrected` | Lags surviving the offset subtraction (points driven non-positive are dropped). |
 | `D_alpha_corrected_um2_s_alpha`, `r2_anomalous_corrected` | Generalized D and R^2 of the offset-corrected fit. |
-| `offset_um2` | Per-track expected localization-noise MSD offset, `2*(mean(x_std_um^2)+mean(y_std_um^2))`, from the raw localization precision -- an independent check on `intercept_um2` and the value subtracted for `alpha_corrected`. |
+| `offset_um2` | Per-track expected localization-noise MSD offset, `2*(mean(sigma_x_um^2)+mean(sigma_y_um^2))`, from the raw localization precision -- an independent check on `intercept_um2` and the value subtracted for `alpha_corrected`. |
 
 ### `classic/ensemble_msd.csv` (classic, `run_msd_analysis.py`)
 
@@ -362,7 +379,7 @@ One row per lag of the n_pairs-weighted ensemble MSD curve.
 | `msd_sem` | Standard error of the ensemble MSD at this lag. |
 
 `classic/per_track_tamsd.parquet` holds the per-track, per-lag TAMSD this
-table is averaged from (`particle`, `track_length`, `lag`, `tau_s`,
+table is averaged from (`track_id`, `track_length`, `lag`, `tau_s`,
 `msd_um2`, `n_pairs`) -- intermediate data, not a fit result, kept for
 re-plotting without recomputing TAMSD from raw localizations.
 
@@ -378,14 +395,14 @@ Same columns as `classic/per_track_msd_fits.csv`, plus:
 
 One row per track: the Brownian-constrained normal model and the anomalous
 model, batched exact MAP (`inference.fit_batch_map`) joined on
-`particle`/`track_length`/`n_disp`. D, D_alpha and sigma are Laplace-fit in
+`track_id`/`track_length`/`n_disp`. D, D_alpha and sigma are Laplace-fit in
 log-space and back-transformed to an asymmetric `_median`/`_lo`/`_hi`
 interval (see method notes above); alpha keeps a symmetric physical-space
 interval.
 
 | Column | Meaning |
 | --- | --- |
-| `particle` | Track/particle ID. |
+| `track_id` | Track ID. |
 | `track_length` | Number of localizations in the track. |
 | `n_disp` | Number of per-frame displacements fit (`track_length - 1`). |
 | `normal_converged` | L-BFGS-B convergence flag for the normal-model sub-batch containing this track (per sub-batch, not per track -- see `fit_batch_map`'s docstring). |
@@ -402,13 +419,13 @@ interval.
 
 ### `bayes/bayes_vs_classic_comparison.csv` (`run_bayes_analysis.py`)
 
-`bayes/per_track_bayes_fits.csv`'s columns, inner-joined on `particle`
+`bayes/per_track_bayes_fits.csv`'s columns, inner-joined on `track_id`
 against the classic table, plus:
 
 | Column | Meaning |
 | --- | --- |
-| `D_classic_um2_s` | Classic pipeline's `D_um2_s` for the same particle, carried over for direct comparison. |
-| `alpha_classic` | Classic pipeline's `alpha` for the same particle. |
+| `D_classic_um2_s` | Classic pipeline's `D_um2_s` for the same track, carried over for direct comparison. |
+| `alpha_classic` | Classic pipeline's `alpha` for the same track. |
 
 ### `validate_bayes_recovery/bayes_validate_null_D_alpha_bias.csv` (Bayesian validation, `validate_bayes_recovery.py`, check 1)
 
@@ -417,7 +434,7 @@ informative-prior fits side by side.
 
 | Column | Meaning |
 | --- | --- |
-| `particle`, `track_length`, `n_disp` | As above. |
+| `track_id`, `track_length`, `n_disp` | As above. |
 | `D_weak`, `D_stderr_weak`, `sigma_normal_weak`, `sigma_stderr_normal_weak` | Normal-model D/sigma, flat (`WEAK_NORMAL_PRIOR`) fit. |
 | `D_bayes`, `D_stderr_bayes`, `sigma_normal_bayes`, `sigma_stderr_normal_bayes` | Normal-model D/sigma, informative-prior fit. |
 | `D_alpha_weak`, `D_alpha_stderr_weak`, `sigma_weak`, `sigma_stderr_weak`, `alpha_weak`, `alpha_stderr_weak` | Anomalous-model fit, flat prior. |
@@ -435,7 +452,7 @@ One row per simulated track (true alpha swept at fixed D, flat prior).
 
 | Column | Meaning |
 | --- | --- |
-| `particle`, `track_length`, `n_disp` | As above. |
+| `track_id`, `track_length`, `n_disp` | As above. |
 | `D_alpha`, `D_alpha_stderr`, `sigma`, `sigma_stderr`, `alpha`, `alpha_stderr` | Anomalous-model fit (flat prior, SVI path). |
 | `true_D_um2_s_alpha`, `true_alpha` | Ground truth used to simulate this track. |
 
@@ -462,12 +479,12 @@ this N (see Method notes above and FINDINGS.md) and should not be conflated.
 
 | Column | Meaning |
 | --- | --- |
-| `particle`, `track_length`, `n_disp` | As above. |
+| `track_id`, `track_length`, `n_disp` | As above. |
 | `log_bf10` | Log Bayes factor for anisotropy (`bayes_factor.log_bayes_factor_anisotropy`) -- the quantity meant to be trusted per-track at this N; near 0 for nearly every real track here (see FINDINGS.md). |
 | `eps_median`, `eps_lo`, `eps_hi` | Anisotropy-fraction posterior median and 90% HPDI (NUTS) -- a secondary, honestly-wide descriptive interval, not a per-track detector (FINDINGS.md's sampling-noise-floor result). |
 | `psi_median_rad`, `psi_lo_rad`, `psi_hi_rad` | Orientation posterior median/HPDI, radians in [0, pi) -- expect this to be poorly constrained whenever `eps_hi` is small (the psi-ridge FINDINGS.md documents). |
 | `D_mean_median_um2_s`, `D_par_median_um2_s`, `D_perp_median_um2_s` | Mean/parallel/perpendicular diffusivity posterior medians from the same anisotropic-model fit (with matching `_lo_um2_s`/`_hi_um2_s` columns, omitted here for brevity). |
-| `x_mean_um`, `y_mean_um` | Track's mean position in the field of view -- used for `plot_spatial_map`; join any future per-particle spatial/structural label onto this table by `particle` to group by it (`bayes.aggregate_log_bayes_factor`). |
+| `x_mean_um`, `y_mean_um` | Track's mean position in the field of view -- used for `plot_spatial_map`; join any future per-track spatial/structural label onto this table by `track_id` to group by it (`bayes.anisotropy.aggregate_log_bayes_factor`). |
 
 `anisotropy/per_track_log_bf.csv` and `anisotropy/per_track_eps_posterior.csv`
 hold the two halves of this table before the join (same columns, no

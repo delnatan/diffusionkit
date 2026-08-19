@@ -79,21 +79,21 @@ D_FLOOR, ALPHA_EPS = 1e-6, 1e-3
 PARAM_NAMES = ["D_alpha", "sigma", "alpha"]
 
 
-def informative_prior(x_std_um: np.ndarray, y_std_um: np.ndarray) -> AnomalousModelPrior:
-    mean, sd = sigma_prior_from_localization(x_std_um, y_std_um)
+def informative_prior(sigma_x_um: np.ndarray, sigma_y_um: np.ndarray) -> AnomalousModelPrior:
+    mean, sd = sigma_prior_from_localization(sigma_x_um, sigma_y_um)
     return AnomalousModelPrior(log_sigma_mean=mean, log_sigma_sd=sd)
 
 
-def weak_prior(x_std_um: np.ndarray, y_std_um: np.ndarray) -> AnomalousModelPrior:
+def weak_prior(sigma_x_um: np.ndarray, sigma_y_um: np.ndarray) -> AnomalousModelPrior:
     return WEAK_ANOMALOUS_PRIOR
 
 
-def informative_normal_prior(x_std_um: np.ndarray, y_std_um: np.ndarray) -> NormalModelPrior:
-    mean, sd = sigma_prior_from_localization(x_std_um, y_std_um)
+def informative_normal_prior(sigma_x_um: np.ndarray, sigma_y_um: np.ndarray) -> NormalModelPrior:
+    mean, sd = sigma_prior_from_localization(sigma_x_um, sigma_y_um)
     return NormalModelPrior(log_sigma_mean=mean, log_sigma_sd=sd)
 
 
-def weak_normal_prior(x_std_um: np.ndarray, y_std_um: np.ndarray) -> NormalModelPrior:
+def weak_normal_prior(sigma_x_um: np.ndarray, sigma_y_um: np.ndarray) -> NormalModelPrior:
     return WEAK_NORMAL_PRIOR
 
 
@@ -137,7 +137,7 @@ def check_1_null_D_alpha_bias() -> None:
         n_replicates=N_REP, track_length=TRACK_LENGTH, dt_s=DT_S,
         sigma_loc_um=SIGMA_LOC_UM, seed=100,
     )
-    truth = sim.select(["particle", "true_D_um2_s_alpha"]).unique()
+    truth = sim.select(["track_id", "true_D_um2_s_alpha"]).unique()
 
     # The classic-MSD-comparable metric pairs the *Brownian-constrained* D
     # (normal model, alpha pinned to 1) against alpha from the *separate*
@@ -152,10 +152,10 @@ def check_1_null_D_alpha_bias() -> None:
     weak_a = fit_anomalous(sim, weak_prior, min_track_length=10, suffix="weak")
     bay_a = fit_anomalous(sim, informative_prior, min_track_length=10, suffix="bayes")
     combined = (
-        weak_n.join(bay_n, on=["particle", "track_length", "n_disp"])
-        .join(weak_a, on=["particle", "track_length", "n_disp"])
-        .join(bay_a, on=["particle", "track_length", "n_disp"])
-        .join(truth, on="particle")
+        weak_n.join(bay_n, on=["track_id", "track_length", "n_disp"])
+        .join(weak_a, on=["track_id", "track_length", "n_disp"])
+        .join(bay_a, on=["track_id", "track_length", "n_disp"])
+        .join(truth, on="track_id")
     )
 
     report = (
@@ -167,7 +167,7 @@ def check_1_null_D_alpha_bias() -> None:
         )
         .sort("true_D_um2_s_alpha")
     )
-    print(f"Simulated {sim['particle'].n_unique()} Brownian tracks "
+    print(f"Simulated {sim['track_id'].n_unique()} Brownian tracks "
           f"(true alpha=1, sigma_loc={SIGMA_LOC_UM} um, track_length={TRACK_LENGTH})")
     print(report)
 
@@ -214,18 +214,18 @@ def check_2_alpha_recovery() -> None:
         n_replicates=N_REP, track_length=TRACK_LENGTH, dt_s=DT_S,
         sigma_loc_um=SIGMA_LOC_UM, seed=200,
     )
-    truth = sim.select(["particle", "true_D_um2_s_alpha", "true_alpha"]).unique()
+    truth = sim.select(["track_id", "true_D_um2_s_alpha", "true_alpha"]).unique()
     fit = fit_all_tracks(
         sim, batched_anomalous_diffusion_model, dt_s=DT_S, prior_fn=weak_prior,
         param_names=PARAM_NAMES, min_track_length=10,
-    ).join(truth, on="particle")
+    ).join(truth, on="track_id")
 
     report = (
         fit.group_by("true_alpha")
         .agg(n=pl.len(), median_alpha_fit=pl.col("alpha").median(), median_D_fit=pl.col("D_alpha").median())
         .sort("true_alpha")
     )
-    print(f"Simulated {sim['particle'].n_unique()} fBm tracks "
+    print(f"Simulated {sim['track_id'].n_unique()} fBm tracks "
           f"(true D={TRUE_D} um^2/s^alpha, sigma_loc={SIGMA_LOC_UM} um, track_length={TRACK_LENGTH})")
     print(report)
     bias = (report["median_alpha_fit"] - report["true_alpha"]).to_numpy()

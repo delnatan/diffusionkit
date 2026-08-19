@@ -32,11 +32,11 @@ def plot_tamsd_curves(
     ax = ax or fig.gca()
 
     rng = np.random.default_rng(seed)
-    particles = tamsd["particle"].unique().to_numpy()
+    particles = tamsd["track_id"].unique().to_numpy()
     chosen = rng.choice(particles, size=min(n_tracks_to_show, len(particles)), replace=False)
 
     for pid in chosen:
-        sub = tamsd.filter(pl.col("particle") == pid)
+        sub = tamsd.filter(pl.col("track_id") == pid)
         ax.plot(sub["tau_s"], sub["msd_um2"], color="0.75", lw=0.6, alpha=0.7, zorder=1)
 
     ax.plot(
@@ -207,7 +207,7 @@ def plot_D_alpha_jointplot(
 
 
 def plot_localization_diagnostic(summary_with_offset: pl.DataFrame) -> plt.Figure:
-    """Fitted MSD intercept vs. the expected offset from measured x_std/y_std.
+    """Fitted MSD intercept vs. the expected offset from measured sigma_x/sigma_y.
 
     Points on the unity line mean the fitted static-localization offset is
     consistent with the localization precision reported by the MLE
@@ -222,7 +222,7 @@ def plot_localization_diagnostic(summary_with_offset: pl.DataFrame) -> plt.Figur
     ax.plot([lo, hi], [lo, hi], color="0.3", lw=1, ls="--", label="unity")
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
-    ax.set_xlabel(r"expected offset from $x_{std}, y_{std}$  ($\mu m^2$)")
+    ax.set_xlabel(r"expected offset from $\sigma_x, \sigma_y$  ($\mu m^2$)")
     ax.set_ylabel(r"fitted MSD intercept  ($\mu m^2$)")
     ax.set_title("Localization-error self-consistency")
     ax.legend(frameon=False)

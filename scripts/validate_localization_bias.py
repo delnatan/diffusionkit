@@ -56,15 +56,15 @@ def main() -> None:
         sigma_loc_um=SIGMA_LOC_UM,
         seed=0,
     )
-    truth = sim.select(["particle", "true_D_um2_s"]).unique()
-    loc_offset = localization_offset_by_track(sim)  # exact here: x_std_um/y_std_um are the true sigma_loc
+    truth = sim.select(["track_id", "true_D_um2_s"]).unique()
+    loc_offset = localization_offset_by_track(sim)  # exact here: sigma_x_um/sigma_y_um are the true sigma_loc
 
     tamsd = compute_all_tamsd(
-        sim.select(["particle", "frame", "x_um", "y_um", "track_length"]), dt_s=DT_S
+        sim.select(["track_id", "frame", "x_um", "y_um", "track_length"]), dt_s=DT_S
     )
     summary = fit_all_tracks(
         tamsd, min_track_length=10, localization_offset=loc_offset
-    ).join(truth, on="particle")
+    ).join(truth, on="track_id")
 
     report = (
         summary.group_by("true_D_um2_s")
@@ -77,7 +77,7 @@ def main() -> None:
         )
         .sort("true_D_um2_s")
     )
-    print(f"Simulated {sim['particle'].n_unique()} Brownian tracks "
+    print(f"Simulated {sim['track_id'].n_unique()} Brownian tracks "
           f"(true alpha=1, sigma_loc={SIGMA_LOC_UM} um, track_length={TRACK_LENGTH})")
     print(report)
 

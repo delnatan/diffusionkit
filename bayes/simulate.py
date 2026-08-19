@@ -9,8 +9,8 @@ mathematically identical to `simulate_brownian_tracks` (see
 `likelihood.fgn_gamma`'s alpha=1 reduction), which is itself a useful
 cross-check between the two simulators.
 
-Output uses the same core schema as `analysis.io.load_tracks` (particle,
-frame, t_s, x_um, y_um, x_std_um, y_std_um, track_length), plus
+Output uses the same core schema as `analysis.io.load_tracks` (track_id,
+frame, t_s, x_um, y_um, sigma_x_um, sigma_y_um, track_length), plus
 true_D_um2_s_alpha and true_alpha ground-truth columns, so it flows through
 either `analysis`'s MSD pipeline or this package's likelihood-based one
 unmodified.
@@ -51,12 +51,12 @@ def simulate_fbm_tracks(
     n_disp = track_length - 1
 
     rows: dict[str, list] = {
-        "particle": [], "frame": [], "t_s": [], "x_um": [], "y_um": [],
-        "x_std_um": [], "y_std_um": [], "track_length": [],
+        "track_id": [], "frame": [], "t_s": [], "x_um": [], "y_um": [],
+        "sigma_x_um": [], "sigma_y_um": [], "track_length": [],
         "true_D_um2_s_alpha": [], "true_alpha": [],
     }
 
-    particle_id = 0
+    track_id = 0
     for D_alpha, alpha in params_um2_s_alpha:
         cov = np.asarray(fgn_covariance(n_disp, D_alpha, dt_s, alpha))
         L = np.linalg.cholesky(cov)
@@ -68,17 +68,17 @@ def simulate_fbm_tracks(
             x_obs = x_true + rng.normal(0.0, sigma_loc_um, size=track_length)
             y_obs = y_true + rng.normal(0.0, sigma_loc_um, size=track_length)
 
-            rows["particle"].extend([particle_id] * track_length)
+            rows["track_id"].extend([track_id] * track_length)
             rows["frame"].extend(frame.tolist())
             rows["t_s"].extend((frame * dt_s).tolist())
             rows["x_um"].extend(x_obs.tolist())
             rows["y_um"].extend(y_obs.tolist())
-            rows["x_std_um"].extend([sigma_loc_um] * track_length)
-            rows["y_std_um"].extend([sigma_loc_um] * track_length)
+            rows["sigma_x_um"].extend([sigma_loc_um] * track_length)
+            rows["sigma_y_um"].extend([sigma_loc_um] * track_length)
             rows["track_length"].extend([track_length] * track_length)
             rows["true_D_um2_s_alpha"].extend([D_alpha] * track_length)
             rows["true_alpha"].extend([alpha] * track_length)
-            particle_id += 1
+            track_id += 1
 
     return pl.DataFrame(rows)
 
@@ -113,12 +113,12 @@ def simulate_anisotropic_tracks(
     n_disp = track_length - 1
 
     rows: dict[str, list] = {
-        "particle": [], "frame": [], "t_s": [], "x_um": [], "y_um": [],
-        "x_std_um": [], "y_std_um": [], "track_length": [],
+        "track_id": [], "frame": [], "t_s": [], "x_um": [], "y_um": [],
+        "sigma_x_um": [], "sigma_y_um": [], "track_length": [],
         "true_D_mean_um2_s": [], "true_eps": [], "true_psi": [],
     }
 
-    particle_id = 0
+    track_id = 0
     for D_mean, eps, psi in params:
         step_cov = np.asarray(anisotropic_step_covariance(D_mean, eps, psi, dt_s))
         L = np.linalg.cholesky(step_cov)
@@ -127,17 +127,17 @@ def simulate_anisotropic_tracks(
             true_xy = np.concatenate([np.zeros((1, 2)), np.cumsum(steps, axis=0)], axis=0)
             obs_xy = true_xy + rng.normal(0.0, sigma_loc_um, size=(track_length, 2))
 
-            rows["particle"].extend([particle_id] * track_length)
+            rows["track_id"].extend([track_id] * track_length)
             rows["frame"].extend(frame.tolist())
             rows["t_s"].extend((frame * dt_s).tolist())
             rows["x_um"].extend(obs_xy[:, 0].tolist())
             rows["y_um"].extend(obs_xy[:, 1].tolist())
-            rows["x_std_um"].extend([sigma_loc_um] * track_length)
-            rows["y_std_um"].extend([sigma_loc_um] * track_length)
+            rows["sigma_x_um"].extend([sigma_loc_um] * track_length)
+            rows["sigma_y_um"].extend([sigma_loc_um] * track_length)
             rows["track_length"].extend([track_length] * track_length)
             rows["true_D_mean_um2_s"].extend([D_mean] * track_length)
             rows["true_eps"].extend([eps] * track_length)
             rows["true_psi"].extend([psi] * track_length)
-            particle_id += 1
+            track_id += 1
 
     return pl.DataFrame(rows)

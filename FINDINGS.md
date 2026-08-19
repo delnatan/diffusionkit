@@ -184,14 +184,12 @@ default.
   (0.31 flat / 0.16 informative vs. 0.73 real-data) -- consistent with the
   Fisher-information trade-off being real but its magnitude depending on the
   spread of true D actually present in a given batch of tracks.
+  
 - **Negative D / negative intercept (classic pitfalls #2-3) can't happen by
   construction.** D (or D_alpha) and sigma have LogNormal priors/support
   (always positive) and alpha has Beta-rescaled support in (0, 2).
-- **A short-track boundary-degeneracy pathology was found with the exact
-  single-track MAP engine (`inference.fit_map`) under a flat prior, and an
-  informative prior fixed it -- but the batched mean-field SVI engine now
-  used for the full per-track table (`inference.fit_all_tracks`) doesn't
-  reproduce the same pathology even under a flat prior**, on the same
+  
+  **A short-track boundary-degeneracy pathology was found with the exact single-track MAP engine (`inference.fit_map`) under a flat prior, and an informative prior fixed it -- but the batched mean-field SVI engine now used for the full per-track table (`inference.fit_all_tracks`) doesn't reproduce the same pathology even under a flat prior**, on the same
   controlled test (150 simulated tracks at track_length=10/12/15, true
   D=0.05, alpha=1): exact MAP showed 6.0-9.3% of the shortest tracks running
   to the edge of parameter support (D -> ~0 or alpha -> the 0/2 boundary)
@@ -203,6 +201,7 @@ default.
   worth re-checking if the SVI step budget or optimizer changes, since this
   means the current implementation's apparent robustness on short tracks may
   be partly an optimization-convergence effect, not purely a prior effect.
+  
 - **Alpha recovery across genuine sub-/super-diffusive ground truth** (not
   tested by the classic pipeline's validation, which only ever simulated
   pure Brownian motion): sweeping true alpha from 0.5 to 1.8 at fixed true
@@ -217,6 +216,7 @@ default.
   toward 1 (`results/figures/bayes_validate_alpha_recovery.png`). This is a
   real limitation to keep in mind for strongly sub-diffusive tracks, not
   just a validation of the method.
+  
 - **Full NUTS reveals real, non-Gaussian posterior structure a point
   estimate + stderr misses.** On a 200-frame track (particle 88 in this
   run) the batch fit matches the NUTS posterior median closely. On a
@@ -227,11 +227,13 @@ default.
   points), not a sampler artifact: the chain traces are stationary and
   well-mixed (`results/figures/bayes_trace_particle2948.png`), they just
   repeatedly visit that ridge.
+  
 - **Agreement with the classic per-track fit is only moderate**
   (r(D_classic, D_bayes)=0.45, r(alpha_classic, alpha_bayes)=0.68) --
   expected: the two estimators use different information (a short-lag MSD
   curve vs. the full displacement likelihood), and the classic alpha in
   particular carries the D-dependent bias documented above.
+  
 - Ensemble-level estimates land close to the classic pipeline's (per-track
   median D: classic 0.053, this pipeline's normal model 0.046 um^2/s; median
   alpha: classic 0.997, this pipeline's anomalous model 1.125) -- consistent
@@ -674,6 +676,6 @@ N.
 
 Adding a new per-particle label column (e.g. once a spatial/structural
 classification exists) is a join onto `per_track_master.csv` plus
-`bayes.aggregate_log_bayes_factor(..., label_col=...)` -- no new plotting or
+`bayes.anisotropy.aggregate_log_bayes_factor(..., label_col=...)` -- no new plotting or
 fitting code needed; `plot_spatial_map`/`plot_trajectory_gallery` already
 take any table with the right column names.

@@ -144,8 +144,8 @@ def per_track_log_bayes_factor(
     show_progress: bool = True,
 ) -> pl.DataFrame:
     """log BF10 for every eligible track in `tracks` (same input schema
-    `inference.fit_all_tracks` expects: particle, frame, x_um, y_um,
-    track_length), one row per track (`particle`, `track_length`, `n_disp`,
+    `inference.fit_all_tracks` expects: track_id, frame, x_um, y_um,
+    track_length), one row per track (`track_id`, `track_length`, `n_disp`,
     `log_bf10`).
 
     Tracks are grouped by shared track_length purely for efficient batched
@@ -170,7 +170,7 @@ def per_track_log_bayes_factor(
     lengths = eligible["track_length"].unique().sort().to_list()
 
     chunks = []
-    progress = tqdm(total=eligible["particle"].n_unique(), desc="per_track_log_bayes_factor",
+    progress = tqdm(total=eligible["track_id"].n_unique(), desc="per_track_log_bayes_factor",
                      unit="track", disable=not show_progress)
     for track_length in lengths:
         group = eligible.filter(pl.col("track_length") == track_length)
@@ -182,7 +182,7 @@ def per_track_log_bayes_factor(
             jnp.asarray(dx), jnp.asarray(dy), dt_s, n_disp, prior, n_mc=n_mc, seed=seed
         ))
         chunks.append(pl.DataFrame({
-            "particle": particles,
+            "track_id": particles,
             "track_length": [track_length] * len(particles),
             "n_disp": [n_disp] * len(particles),
             "log_bf10": logbf.tolist(),
@@ -190,7 +190,7 @@ def per_track_log_bayes_factor(
         progress.update(len(particles))
     progress.close()
 
-    return pl.concat(chunks).sort("particle")
+    return pl.concat(chunks).sort("track_id")
 
 
 def aggregate_log_bayes_factor(per_track: pl.DataFrame, label_col: str) -> pl.DataFrame:

@@ -1,7 +1,7 @@
 """Ground-truth Brownian-motion track generator for validating fit pipelines.
 
-Produces tracks in the same schema `io.load_tracks` produces (particle,
-frame, t_s, x_um, y_um, x_std_um, y_std_um, track_length), so simulated data
+Produces tracks in the same schema `io.load_tracks` produces (track_id,
+frame, t_s, x_um, y_um, sigma_x_um, sigma_y_um, track_length), so simulated data
 flows through `compute_all_tamsd` / `fit_all_tracks` / `viz.*` unmodified.
 This lets a suspected fitting bias be checked against a known ground truth
 rather than just inferred from real data: simulate, run the exact
@@ -36,18 +36,18 @@ def simulate_brownian_tracks(
     frame = np.arange(track_length)
 
     rows = {
-        "particle": [],
+        "track_id": [],
         "frame": [],
         "t_s": [],
         "x_um": [],
         "y_um": [],
-        "x_std_um": [],
-        "y_std_um": [],
+        "sigma_x_um": [],
+        "sigma_y_um": [],
         "track_length": [],
         "true_D_um2_s": [],
     }
 
-    particle_id = 0
+    track_id = 0
     for D in D_values_um2_s:
         step_std = np.sqrt(2 * D * dt_s)
         for _ in range(n_replicates):
@@ -56,15 +56,15 @@ def simulate_brownian_tracks(
             x_obs = x_true + rng.normal(0.0, sigma_loc_um, size=track_length)
             y_obs = y_true + rng.normal(0.0, sigma_loc_um, size=track_length)
 
-            rows["particle"].extend([particle_id] * track_length)
+            rows["track_id"].extend([track_id] * track_length)
             rows["frame"].extend(frame.tolist())
             rows["t_s"].extend((frame * dt_s).tolist())
             rows["x_um"].extend(x_obs.tolist())
             rows["y_um"].extend(y_obs.tolist())
-            rows["x_std_um"].extend([sigma_loc_um] * track_length)
-            rows["y_std_um"].extend([sigma_loc_um] * track_length)
+            rows["sigma_x_um"].extend([sigma_loc_um] * track_length)
+            rows["sigma_y_um"].extend([sigma_loc_um] * track_length)
             rows["track_length"].extend([track_length] * track_length)
             rows["true_D_um2_s"].extend([D] * track_length)
-            particle_id += 1
+            track_id += 1
 
     return pl.DataFrame(rows)

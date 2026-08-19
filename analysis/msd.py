@@ -34,7 +34,7 @@ def _track_tamsd_arrays(
 def compute_all_tamsd(
     tracks: pl.DataFrame, dt_s: float, max_lag_frac: float = 1.0
 ) -> pl.DataFrame:
-    """Per-track TAMSD for every particle, stacked into one long-format table.
+    """Per-track TAMSD for every track, stacked into one long-format table.
 
     max_lag_frac caps the largest lag computed per track, as a fraction of
     (track_length - 1). Default 1.0 computes the full curve; downstream
@@ -50,13 +50,13 @@ def compute_all_tamsd(
         )
         return pl.DataFrame(
             {
-                "particle": np.full(max_lag, group["particle"][0], dtype=np.int64),
+                "track_id": np.full(max_lag, group["track_id"][0], dtype=np.int64),
                 "track_length": np.full(max_lag, n, dtype=np.int64),
                 **arrays,
             }
         )
 
-    return tracks.group_by("particle", maintain_order=True).map_groups(_per_track)
+    return tracks.group_by("track_id", maintain_order=True).map_groups(_per_track)
 
 
 def ensemble_average_msd(tamsd: pl.DataFrame, min_tracks: int = 5) -> pl.DataFrame:
