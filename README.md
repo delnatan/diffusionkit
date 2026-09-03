@@ -38,6 +38,9 @@ Verify:
 python -c "from diffusionkit.bayes import fit_track; print('ok')"
 ```
 
+The scripts in `scripts/` also run straight from a clone without installing
+-- they put the repo root on `sys.path` themselves.
+
 ---
 
 ## The 60-second example
@@ -232,7 +235,7 @@ Input CSV: one row per `(track_id, frame)` with `x`, `y`, `sigma_x`,
 (`x_um`, `sigma_x_um`, `t_s`, ...), with `track_length` derived internally.
 Every function below takes this DataFrame or a single-track slice of it.
 
-### Classic API -- `analysis`
+### Classic API -- `diffusionkit.classic`
 
 ```python
 from diffusionkit.classic import fit_population
@@ -250,7 +253,7 @@ Underneath: `compute_all_tamsd` -> `ensemble_average_msd` ->
 `fit_normal_diffusion` / `fit_anomalous_diffusion`, all exposed
 individually if you want the pieces.
 
-### Bayesian API -- `bayes`
+### Bayesian API -- `diffusionkit.bayes`
 
 Two entry points, split by regime.
 
@@ -270,11 +273,23 @@ table = fit_population(tracks, params.dt_s, model="both")
 | `model` | `"normal"`, `"anomalous"`, `"both"` | `"both"` fits each and joins on `track_id` |
 | `prior` | `None` (default) or a prior dataclass | `None` builds an informative `sigma_loc` prior from *this track's own* measured precision -- the honest default when data are scarce |
 | `method` (`fit_track`) | `"map"` (default), `"nuts"` | MAP + Laplace interval; NUTS when the posterior's *shape* matters |
-| `engine` (`fit_population`) | `"map"` (default), `"svi"` | See [Making it fast](#making-it-fast) |
+| `max_batch_size` (`fit_population`) | `20` (default) | Tracks per optimizer call. See [Making it fast](#making-it-fast) |
 
 `prior=None` anchors `sigma_loc` to the precision the tracking software
 already measured for those frames -- independent information, never that
-track's own MSD, so it is not smuggling the classic estimate back in.
+track's own MSD, so it is not smuggling the classic estimate back in. It is
+rejected with `model="both"`, since the normal and anomalous models take
+different prior types.
+
+`fit_population` deliberately has no engine switch. If you want the SVI or
+NUTS table for comparison, the builders are importable directly:
+
+```python
+from diffusionkit.bayes import fit_table_svi, fit_table_nuts, batched_anomalous_diffusion_model
+```
+
+They take a model function and a `prior_fn` rather than a `model=` string --
+that is the layer below `fit_population`, not a different estimator.
 
 ### Anisotropy -- `diffusionkit.bayes.anisotropy`
 
@@ -358,6 +373,12 @@ The physics is untouched -- passing `(n_tracks, 1, 1)`-shaped parameters
 through the same broadcasting covariance code yields a
 `(n_tracks, n_disp, n_disp)` batch for free. Only the trace cost changes,
 amortized across every track in the group.
+
+That grouping is written once. `_per_track_table` selects eligible tracks,
+splits them into length-homogeneous batches, optionally sub-batches those,
+runs the caller's fit, and stacks the result; the three table builders and
+the anisotropy Bayes factor all go through it and differ only in which
+engine they call and which columns they return.
 
 ### Three table builders, and why the slowest is production
 
@@ -512,6 +533,10 @@ Stated plainly; `FINDINGS.md` has the measurements behind each.
   if per-track granularity matters.
 - **Tracks must be gapless.** `assert_contiguous_tracks` enforces it; there
   is no gap-filling.
+- **`classic.fit_population` needs enough tracks to form an ensemble curve.**
+  Below `min_tracks_for_ensemble` (default 10) every lag is dropped and the
+  ensemble fit fails with a `ZeroDivisionError` rather than a useful message.
+  Lower the threshold, or use the per-track pieces directly, on small sets.
 
 ---
 
