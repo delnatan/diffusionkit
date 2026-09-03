@@ -7,7 +7,7 @@ name = "diffusionkit"
 version = "0.1.0"
 description = "MSD and Bayesian diffusion-coefficient/anisotropy analysis for single-particle-tracking data"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "numpy",
     "pandas",
@@ -22,3 +22,8 @@ dependencies = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["analysis", "bayes"]
+
+[tool.hatch.build.targets.sdist]
+# Keep the sample datasets and committed run outputs out of the distribution;
+# they are ~11 MB and are only needed to reproduce the study from a clone.
+exclude = ["*.csv", "results/", "graphify-out/", "notes.org"]

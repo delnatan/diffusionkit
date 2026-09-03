@@ -1,495 +1,510 @@
-# Diffusion analysis: SPT mini-study
+# diffusionkit
 
-Two parallel pipelines for estimating diffusion coefficient (D) and
-anomalous exponent (alpha) from single-particle tracking data, run on the
-same raw localizations for direct comparison:
+Estimate how fast a particle diffuses -- and whether its motion is normal or
+anomalous -- from single-particle tracking (SPT) data, two ways:
 
-- **`analysis/`** -- classic MSD-curve-fitting approach.
-- **`bayes/`** -- exact-likelihood Bayesian approach (numpyro), fit directly
-  to per-frame displacements; never computes an MSD curve.
+- **classic** (`analysis/`) -- fit a curve to the mean squared displacement.
+  The standard method, fast, and a useful cross-check.
+- **Bayesian** (`bayes/`) -- fit the exact likelihood of the raw
+  displacements. No MSD curve is computed anywhere. Slower, and much more
+  honest when data are scarce.
 
-Empirical results, comparisons, and known pitfalls from running these
-pipelines are documented in `FINDINGS.md`, not here -- this file covers
-layout and how to reproduce a run. For "which function do I call for what I
-have" (a handful of tracks vs. a full-dataset bulk run vs. anisotropy on
-short tracks), see `WORKFLOW.md`.
+Both read the same localization table and write per-track results that join
+on `track_id`, so the two estimators can be compared directly on the same
+particles.
+
+| Document | What's in it |
+| --- | --- |
+| **README.md** (this file) | Operating principles, install, the APIs, why the Bayesian side is computationally involved |
+| `WORKFLOW.md` | Which call to make for the data you have |
+| `FINDINGS.md` | Empirical results: what was measured, and why every default is what it is |
+| `TABLES.md` | Column reference for every output table |
+
+---
+
+## Install
+
+```bash
+git clone <this repo> && cd diffusionkit
+pip install -e .
+```
+
+Python >=3.11. Pulls in numpy, polars, scipy, matplotlib, seaborn, jax,
+numpyro, tqdm. CPU-only jax is fine -- nothing here needs a GPU.
+
+Verify:
+
+```bash
+python -c "from bayes import fit_track; print('ok')"
+```
+
+---
+
+## The 60-second example
+
+One short track, both estimators. This is the whole argument for the
+Bayesian side, in twelve lines.
+
+```python
+import polars as pl
+from analysis import AcquisitionParams, load_tracks, compute_all_tamsd
+from analysis.fitting import fit_normal_diffusion, n_fit_points
+from bayes import fit_track
+
+params = AcquisitionParams(pixel_size_um=0.1043, dt_s=0.033)
+tracks = load_tracks("mobile_beads_1to200.csv", params)
+track  = tracks.filter(pl.col("track_id") == 13)      # 10 frames -- a short one
+
+# classic: build the MSD curve, fit a line to its first few lags
+msd = compute_all_tamsd(track, dt_s=params.dt_s).sort("lag")
+tau, y, w = msd["tau_s"].to_numpy(), msd["msd_um2"].to_numpy(), msd["n_pairs"].to_numpy()
+classic = fit_normal_diffusion(tau, y, n_fit_points(len(tau)), weights=w)
+
+# Bayesian: fit the 9 displacements directly
+bayes = fit_track(track, params.dt_s, model="normal")
+```
+
+What comes back:
+
+```
+classic   D = -0.0103 +/- 0.0254 um^2/s        <- negative diffusion coefficient
+Bayesian  D =  0.1004  (0.0700, 0.1440) um^2/s
+          sigma_loc = 0.0142 um
+```
+
+The classic fit returns a **negative diffusion coefficient**, silently. It
+is not a bug in the implementation -- a least-squares line through three
+noisy, correlated MSD points has no reason to come back with a positive
+slope, and nothing in the method forbids it. Ask the same track for an
+exponent and it returns `alpha = -0.16`, which is not a number the physics
+admits either.
+
+The Bayesian fit cannot do this. `D` and `sigma_loc` are positive by their
+prior's support and `alpha` is bounded to `(0, 2)`, so an impossible answer
+is not in the parameter space to begin with -- and it reports an interval,
+which on nine displacements is wide, as it should be. Its anomalous fit
+says `alpha = 0.45 (0.17, 0.73)`: sub-diffusive, with the uncertainty
+stated, rather than `-0.16` stated as fact. That difference follows entirely
+from the operating principle below, not from more data or a better
+optimizer.
+
+Runnable version: `scripts/quickstart_single_track.py`.
+
+---
+
+## Terms
+
+Used consistently throughout the code, this README, `WORKFLOW.md`,
+`FINDINGS.md`, and `TABLES.md`.
+
+| Term | Meaning |
+| --- | --- |
+| **track** | One particle's trajectory: `track_length` localizations on a gapless, uniform frame grid |
+| **displacement** | `dx[k] = x[k+1] - x[k]`. A track has `n_disp = track_length - 1` of them |
+| **lag** | A frame separation `n`; `tau = n * dt_s` is the corresponding time |
+| **D** | Brownian diffusion coefficient, um^2/s. From a model with `alpha` pinned to 1 |
+| **D_alpha** | Generalized diffusion coefficient, um^2/s^alpha. From a model with `alpha` free |
+| **alpha** | Anomalous exponent. `<1` sub-diffusive, `1` Brownian, `>1` super-diffusive |
+| **sigma_loc** | Static localization precision, um. Per-frame position uncertainty. Named `sigma` as a model parameter (`fit.params["sigma"]`), `sigma_*_um` in output columns |
+| **eps** | Anisotropy fraction `(D_par - D_perp)/(D_par + D_perp)`, in `[0,1)`. `0` = isotropic |
+| **psi** | Orientation of the anisotropy axis, radians in `[0, pi)` |
+| **single-track regime** | A handful of tracks, examined individually |
+| **population regime** | Hundreds to thousands of tracks, one row each |
+
+Two conventions that hold everywhere: 2D MSD is `4*D_alpha*tau^alpha` (so
+per-axis it is `2*D_alpha*tau^alpha`), and a `_um`/`_um2_s`/`_um2_s_alpha`
+column suffix marks physical units while a bare name is dimensionless.
+
+---
+
+## Operating principle
+
+Both pipelines start from the same raw material: a track's positions. They
+differ in **which statistic of that track they consume**, and everything
+else follows.
+
+### Classic: summarize, then fit
+
+Compress the track into its time-averaged MSD curve, then fit a model to
+that curve.
+
+```
+MSD(tau) = 4*D*tau + b                 normal      (weighted least squares)
+MSD(tau) = 4*D_alpha*tau^alpha         anomalous   (least squares in log-log space)
+```
+
+`b` is the static-localization offset, `~4*sigma_loc^2`. Fits use only the
+first few lags, because MSD at large lag is computed from few, heavily
+overlapping pairs and its variance grows accordingly.
+
+Two structural consequences, neither fixable by fitting more carefully:
+
+1. **The summary is lossy.** MSD at each lag is a *mean* over overlapping
+   displacement pairs from one trajectory. Those pairs are correlated, and
+   the curve keeps only the mean, discarding the correlation structure that
+   carries real information about D and alpha.
+2. **Nothing constrains the answer to be physical.** The fit is linear
+   algebra on a curve. Negative D, negative intercepts, and alpha outside
+   `(0,2)` are all reachable, and on short tracks they are reached
+   regularly. The classic pipeline therefore *flags* these
+   (`D_negative`, `intercept_negative`) rather than silently dropping them.
+
+### Bayesian: skip the summary
+
+Don't build a curve. Michalet & Berglund (2012) showed the efficient
+estimator works on the raw displacement sequence, and Vestergaard et al.
+(2014) wrote down its exact distribution. For fractional Brownian motion
+observed with static localization noise, the displacement sequence is a
+zero-mean multivariate Gaussian with a covariance you can write in closed
+form:
+
+```
+dx ~ Normal(0, Sigma)          Sigma = Sigma_motion + Sigma_noise
+
+Sigma_motion[i,j] = gamma(|i-j|),   gamma(k) = D_alpha * dt^alpha *
+                                               (|k+1|^a - 2|k|^a + |k-1|^a)
+Sigma_noise[i,i]   =  2*sigma_loc^2
+Sigma_noise[i,i+-1] = -sigma_loc^2
+```
+
+That is the entire model. `Sigma_motion` is the autocovariance of
+fractional Gaussian noise; `Sigma_noise` is what differencing an iid
+per-frame error does to neighboring displacements. They add because motion
+and localization error are independent.
+
+Three things follow from this being *exact* rather than a summary:
+
+- **alpha = 1 is exact, not approximate.** At `alpha=1`, `gamma(0) = 2*D*dt`
+  and `gamma(k>=1) = 0` -- independent increments, ordinary Brownian
+  motion. The normal model is a restriction of the anomalous one, so
+  comparing them is a comparison of nested models, not of two separately
+  derived formulas.
+- **Localization noise is a parameter, not a correction.** `sigma_loc` is
+  estimated jointly with D from the same likelihood. The classic pipeline
+  instead subtracts an offset estimated separately, which overcorrects when
+  that estimate is itself noisy.
+- **Impossible answers are unreachable.** D and `sigma_loc` get LogNormal
+  priors, alpha a Beta prior rescaled to `(0,2)`. Positivity and bounds are
+  properties of the parameter space, so no post-hoc flag is needed.
+
+### Bayes, in one line
+
+```
+posterior(theta | data)  proportional to  Normal(dx; 0, Sigma(theta)) * prior(theta)
+```
+
+`theta` is `(D_alpha, alpha, sigma_loc)`, or `(D, sigma_loc)` with alpha
+pinned. There is no second estimator hiding anywhere: a near-flat prior
+(`WEAK_*_PRIOR`) turns the same code into a maximum-likelihood fit, and an
+informative prior turns it back. One model, one likelihood, one code path.
+
+**The statistics are this simple. The computation is not** -- see
+[Making it fast](#making-it-fast) below, which is where most of the code in
+`bayes/` actually goes.
+
+---
+
+## The two APIs
+
+Deliberately separate. Same input schema, same `track_id`, different
+namespaces -- so it is always obvious which estimator produced a number.
+
+| You have | Call |
+| --- | --- |
+| A handful of tracks, exploratory | `bayes.fit_track` |
+| Hundreds to thousands of tracks | `analysis.fit_population` (fast cross-check) + `bayes.fit_population` |
+| Short tracks, orientation arbitrary | `bayes.anisotropy.analyze` |
+
+`WORKFLOW.md` works each of these through in full.
+
+### Load data (both pipelines)
+
+```python
+from analysis import AcquisitionParams, load_tracks, assert_contiguous_tracks
+
+params = AcquisitionParams(pixel_size_um=0.1043, dt_s=0.033)
+tracks = load_tracks("mobile_beads_1to200.csv", params)
+assert_contiguous_tracks(tracks)     # both pipelines assume no frame gaps
+```
+
+Input CSV: one row per `(track_id, frame)` with `x`, `y`, `sigma_x`,
+`sigma_y` in pixels. `tracks` comes back tidy and in physical units
+(`x_um`, `sigma_x_um`, `t_s`, ...), with `track_length` derived internally.
+Every function below takes this DataFrame or a single-track slice of it.
+
+### Classic API -- `analysis`
+
+```python
+from analysis import fit_population
+
+fit = fit_population(tracks, params.dt_s)
+
+fit.per_track                # one row per track: D, alpha, quality flags
+fit.ensemble                 # n_pairs-weighted MSD curve across all tracks
+fit.ensemble_normal_fit      # D from the ensemble curve
+fit.ensemble_anomalous_fit   # alpha from the ensemble curve
+fit.mean_localization_offset_um2
+```
+
+Underneath: `compute_all_tamsd` -> `ensemble_average_msd` ->
+`fit_normal_diffusion` / `fit_anomalous_diffusion`, all exposed
+individually if you want the pieces.
+
+### Bayesian API -- `bayes`
+
+Two entry points, split by regime.
+
+```python
+from bayes import fit_track, fit_population
+
+# single-track regime
+fit = fit_track(track, params.dt_s, model="anomalous")
+fit.params["alpha"], fit.lo["alpha"], fit.hi["alpha"]
+
+# population regime
+table = fit_population(tracks, params.dt_s, model="both")
+```
+
+| Argument | Options | Notes |
+| --- | --- | --- |
+| `model` | `"normal"`, `"anomalous"`, `"both"` | `"both"` fits each and joins on `track_id` |
+| `prior` | `None` (default) or a prior dataclass | `None` builds an informative `sigma_loc` prior from *this track's own* measured precision -- the honest default when data are scarce |
+| `method` (`fit_track`) | `"map"` (default), `"nuts"` | MAP + Laplace interval; NUTS when the posterior's *shape* matters |
+| `engine` (`fit_population`) | `"map"` (default), `"svi"` | See [Making it fast](#making-it-fast) |
+
+`prior=None` anchors `sigma_loc` to the precision the tracking software
+already measured for those frames -- independent information, never that
+track's own MSD, so it is not smuggling the classic estimate back in.
+
+### Anisotropy -- `bayes.anisotropy`
+
+Kept in its own module rather than added as a third `model=` option,
+because it answers a different *kind* of question.
+
+```python
+from bayes import anisotropy
+
+result = anisotropy.analyze(tracks, params.dt_s, min_track_length=5, max_track_length=10)
+result.per_track   # log_bf10 (the detector) + eps/psi posterior (descriptive)
+result.ensemble    # sum_log_bf10, optionally grouped by label_col
+```
+
+The model generalizes the Brownian one to a rotated diffusion tensor with
+principal diffusivities `D_mean*(1 +- eps)` at angle `psi`; `eps=0` reduces
+to it exactly, so H0 is nested in H1.
+
+At `track_length` 5-10 there are only 4-9 displacement vectors, and any
+continuous estimate of `eps` from that sits above a large sampling-noise
+floor -- a genuinely isotropic track often looks elongated by chance. So
+`eps` is reported as an honestly wide descriptive interval, and the
+**Bayes factor is the detector**:
+
+```
+log_BF10 = log p(data | eps free) - log p(data | eps = 0)
+```
+
+Individual short tracks come back inconclusive almost every time -- that is
+correct, not a failure. Evidence accumulates by summing `log_bf10` across
+tracks that plausibly share the behavior (group by any column on `tracks`
+via `label_col=`), and `anisotropy.null_calibration` turns that sum into a
+p-value against a matched-composition isotropic null. Calibration costs
+~100 simulated replicate datasets, so it is a separate call.
+
+---
+
+## Making it fast
+
+The statistics above are a page of algebra. Nearly everything else in
+`bayes/` exists to make evaluating them tractable on real datasets. If you
+are reading the code and wondering why it is not shorter, this section is
+the answer.
+
+### Numerical ground rules
+
+- **float64 everywhere.** `bayes/__init__.py` sets
+  `jax.config.update("jax_enable_x64", True)` on import. jax defaults to
+  float32, which is not enough precision for a covariance whose motion and
+  noise terms can differ by orders of magnitude (a slow particle observed
+  with ordinary localization error). Note this is a *process-wide* jax
+  setting: importing `bayes` changes it for everything in the process.
+- **Dense covariance on purpose.** `Sigma` is Toeplitz, so an O(n log n)
+  solver exists. Tracks here are <=200 frames, making a dense `n_disp^2`
+  matrix trivially cheap, and staying dense lets the motion and noise terms
+  be built and added the same way. Not worth the complexity.
+- **One covariance implementation, four uses.** `likelihood.py` is plain
+  `jax.numpy` with no numpyro import, and its functions are written as
+  broadcasting arithmetic rather than explicit matrix assembly. The same
+  code therefore serves single-track inference, batched inference,
+  simulation of ground truth, and the Bayes-factor integrand -- so the
+  generative model and the inference model can never drift apart.
+
+### The bottleneck is tracing, not linear algebra
+
+Fitting 365 real tracks one at a time took **~17 minutes**. The linear
+algebra accounts for almost none of that: each Python-level call pays a
+fresh JAX trace and compile, regardless of the shape being identical to the
+last call's.
+
+The fix is to fit many tracks in one call. Tracking datasets conveniently
+have many tracks of *exactly* the same length (everything that survived to
+an acquisition cutoff), and a `batched_*` model wraps the same per-track
+sample statements in a `numpyro.plate`:
+
+```
+group tracks by track_length  ->  one plated call per group  ->  ~9 minutes
+```
+
+The physics is untouched -- passing `(n_tracks, 1, 1)`-shaped parameters
+through the same broadcasting covariance code yields a
+`(n_tracks, n_disp, n_disp)` batch for free. Only the trace cost changes,
+amortized across every track in the group.
+
+### Two engines, and why the default is the slower one
+
+| | `engine="map"` (default) | `engine="svi"` |
+| --- | --- | --- |
+| Method | L-BFGS-B on numpyro's own unconstrained `potential_fn`, exact JAX gradient + Hessian | Mean-field `AutoNormal` guide, Adam-optimized ELBO |
+| Uncertainty | Laplace, from the exact Hessian | Guide quantiles |
+| 365 real tracks | ~21 min | ~9 min |
+| Calibration | alpha stderr within 1-4% of NUTS | **3-10x too narrow** |
+
+Mean-field SVI assumes the parameters are independent in the posterior.
+They are not -- D_alpha, alpha, and `sigma_loc` are strongly correlated,
+and that correlation carries much of the real uncertainty. Throwing it away
+produces intervals that look great and are wrong. So MAP is the production
+default and SVI is the documented escape valve for when throughput is the
+binding constraint. Same call, one keyword.
+
+MAP's accuracy has a price. Its Hessian is dense over *every* free
+parameter in the call at once, so cost is superlinear in batch size: 10
+tracks ~6s, 20 ~8s, 40 ~27s, and 140 tracks **ran out of memory**.
+`fit_batch_map` therefore splits each length-group into sub-batches of
+`max_batch_size` (default 20) and appends results -- trading some
+amortization back for a memory ceiling that does not depend on how many
+tracks share a length. (A block-diagonal Hessian via `jax.vmap` over
+per-track blocks would fix this properly; not yet implemented.)
+
+### Report in log-space
+
+The Laplace approximation is Gaussian in numpyro's *unconstrained* space --
+`log(D)` for a LogNormal-supported parameter. So the results table reports
+D and `sigma_loc` as `exp(log_mean +- log_stderr)`: an asymmetric interval
+in physical units, plus `log10_*` columns. Pushing that Gaussian through
+`exp()` and quoting a symmetric `mean +- stderr` instead understates the
+skew and can produce an interval touching zero for a strictly positive
+quantity. alpha, being bounded rather than positive-scaled, keeps a
+symmetric interval.
+
+### The Bayes factor, computed efficiently
+
+`log_BF10` needs two marginal likelihoods, each an integral over the prior.
+Three choices make it cheap and stable:
+
+- **Prior-predictive Monte Carlo, not Savage-Dickey.** `eps=0` sits at the
+  boundary of a Beta support, and no continuous NUTS draw lands exactly
+  there, so estimating the posterior density at that point is fragile.
+  Averaging the closed-form Gaussian likelihood over prior draws needs no
+  density estimation at all. This works *because* the target regime has a
+  weak likelihood relative to the prior -- for long, informative tracks it
+  would need bridge sampling instead.
+- **Common random numbers.** `D_mean` and `sigma_loc` are nuisance
+  parameters shared by H0 and H1, so the *same* prior draws are used for
+  both integrals. Their Monte Carlo error largely cancels in the ratio,
+  even though each marginal likelihood individually still carries it.
+- **One distribution against all tracks.** For each Monte Carlo draw, a
+  single `MultivariateNormal` is evaluated against every track's
+  displacement vector at once by broadcasting, with `jax.vmap` stacking
+  that over the `n_mc` draws. No per-track loop.
+
+### Known cost centers
+
+- `_stack_tracks` marshals a length-group into arrays with one polars
+  filter per `track_id`. It is a Python loop, and on large groups it is a
+  measurable fraction of wall time. `partition_by` would be faster.
+- The dense Hessian, as above.
+- `analysis/__init__.py` and `bayes/__init__.py` both import their `viz`
+  module, which pulls in matplotlib and seaborn at import time.
+
+---
 
 ## Layout
 
 ```
-analysis/                   classic MSD pipeline, data-oriented design:
-  io.py                       load CSV -> tidy polars DataFrame, physical units
-  msd.py                      per-track TAMSD + n_pairs-weighted ensemble MSD
-  fitting.py                  normal-diffusion (linear) & anomalous (log-log) fits,
-                               localization-offset diagnostics, quality flags
-  api.py                      fit_population: one-call bulk entry point (TAMSD ->
-                               ensemble fit -> per-track fits), see WORKFLOW.md
-  simulate.py                  ground-truth Brownian track generator (same schema
-                               as io.load_tracks, for bias validation)
-  viz.py                      plotting functions (pure: data in, Figure out)
-bayes/                      exact-likelihood Bayesian pipeline (numpyro), no MSD:
-  likelihood.py                covariance of observed displacements, jax.numpy
-                               (Brownian + fGn-generalized anomalous, + static
-                               localization noise) -- pure math, no numpyro import
-  model.py                     numpyro models built on likelihood.py: normal_/
-                               anomalous_diffusion_model (single track, used for
-                               NUTS) and batched_normal_/batched_anomalous_
-                               diffusion_model (numpyro.plate over many tracks
-                               of the same length at once, used for the full
-                               per-track table -- see its docstring)
-  priors.py                    prior hyperparameters (dataclasses), incl.
-                               WEAK_*_PRIOR (near-flat, MLE-equivalent) and a
-                               per-track sigma prior from measured
-                               sigma_x_um/sigma_y_um
-  inference.py                 fit_map (single track, exact MAP + Laplace via
-                               numpyro's own potential_fn + JAX autodiff),
-                               sample_posterior (single track, full NUTS),
-                               fit_batch_map (grouped by track_length,
-                               sub-batched exact MAP -- production full-table
-                               path), fit_batch_svi + fit_all_tracks (grouped
-                               by track_length, mean-field SVI -- comparison/
-                               validation path)
-  api.py                       fit_track (low-data, one track -> one fit) and
-                               fit_population (bulk, model="normal"/"anomalous"/
-                               "both") -- one-call entry points wrapping the
-                               above, see WORKFLOW.md
-  simulate.py                   ground-truth fBm(+noise) track generator, any
-                               alpha (same schema as analysis.io.load_tracks);
-                               simulate_anisotropic_tracks does the same for
-                               the anisotropic model below (re-exported from
-                               anisotropy.py, not bayes/__init__.py)
-  bayes_factor.py              prior-predictive Monte Carlo log Bayes factor
-                               for anisotropic_diffusion_model vs. its eps=0
-                               (isotropic) restriction, plus per-track and
-                               label-grouped aggregation across many tracks
-                               -- see Method notes and FINDINGS.md
-                               ("Anisotropy detection")
-  anisotropy.py                 insulated anisotropy-detection workflow --
-                               analyze() and null_calibration(), wrapping
-                               bayes_factor.py + the anisotropic model; import
-                               as `from bayes import anisotropy`, not via
-                               bayes/__init__.py's flat namespace (see
-                               WORKFLOW.md for why it's kept separate)
-  viz.py                      posterior/fit diagnostic plots
-scripts/
-  quickstart_single_track.py  low-data workflow: one track -> bayes.fit_track
-  run_msd_analysis.py         classic pipeline: real data -> tables/figures
-  validate_localization_bias.py  classic pipeline: simulated ground truth ->
-                               checks whether a fitting bias is an artifact
-                               vs. real physics
-  run_bayes_analysis.py       exact-likelihood pipeline: real data -> tables/
-                               figures, incl. comparison against the classic
-                               pipeline's saved results
-  validate_bayes_recovery.py  exact-likelihood pipeline: simulated ground
-                               truth -> null-bias check, alpha-recovery check,
-                               short-track degeneracy rate
-  validate_anisotropy_recovery.py  anisotropic model: simulated ground truth
-                               -> eps reduction/recovery/coverage checks and
-                               log-Bayes-factor null-calibration/ensemble-
-                               aggregation checks (see FINDINGS.md)
-  run_anisotropy_analysis.py  anisotropic model: real data (track_length
-                               5-10) -> per-track log Bayes factor + eps/psi
-                               posterior, ensemble aggregation, matched-null
-                               calibration, and the trajectory/spatial/
-                               interval plots in FINDINGS.md ("Visual
-                               inspection")
-results/
-  tables/
-    classic/                    real-data per-track and ensemble fit tables,
-                               from run_msd_analysis.py
-    bayes/                      real-data per-track fit table and the
-                               vs.-classic comparison table, from
-                               run_bayes_analysis.py (the comparison table
-                               lives here since it's that script's output,
-                               not a third pipeline)
-    anisotropy/                  real-data per-track log Bayes factor, eps/psi
-                               posterior, joined master table, and ensemble/
-                               null-calibration tables, from
-                               run_anisotropy_analysis.py
-    validate_localization_bias/  simulation-recovery table, classic pipeline
-    validate_bayes_recovery/     simulation-recovery tables, Bayesian pipeline
-    validate_anisotropy_recovery/  simulation-recovery tables, anisotropic model
-  figures/                     same split as tables/, same reasons:
-                               classic/, bayes/, anisotropy/,
-                               validate_localization_bias/,
-                               validate_bayes_recovery/, validate_anisotropy_recovery/
+analysis/     classic MSD pipeline
+  io.py         CSV -> tidy polars DataFrame in physical units
+  msd.py        per-track TAMSD, n_pairs-weighted ensemble MSD
+  fitting.py    normal (linear) and anomalous (log-log) curve fits
+  api.py        fit_population
+bayes/        exact-likelihood Bayesian pipeline
+  likelihood.py the covariance -- the only place the physics lives
+  model.py      numpyro models (single-track and batched_*)
+  priors.py     prior dataclasses, WEAK_* presets, per-track sigma prior
+  inference.py  fit_map, sample_posterior, fit_batch_map, fit_batch_svi
+  api.py        fit_track, fit_population
+  bayes_factor.py / anisotropy.py   log BF10, analyze, null_calibration
+scripts/      runnable studies (below)
+results/      tables/ and figures/, one subfolder per script
 ```
 
-Every script owns one `results/{tables,figures}/<subfolder>/`: the two
-production scripts get one each named for their workflow (`classic`,
-`bayes`), and the two `validate_*.py` scripts (which fit *simulated* ground
-truth, not the real dataset) get one each named for the script. Nothing is
-written to the flat top level of `results/tables/` or `results/figures/`
-directly -- this keeps real-data production results, and simulation/
-validation results, and the two pipelines' own results, from ever mixing in
-one folder.
+Both packages also carry `simulate.py` (ground-truth generators, same
+schema as `load_tracks`) and `viz.py` (plots). Every function in both is
+pure -- arrays or DataFrames in, new data out, no shared mutable state --
+which is what lets the two pipelines be composed for direct comparison
+despite consuming entirely different statistics.
 
-Every function in both `analysis/` and `bayes/` is pure: numpy/jax arrays or
-polars DataFrames in, new data out, no shared mutable state -- which is what
-makes the two pipelines directly composable for comparison
-(`run_bayes_analysis.py` joins its own per-track table against `analysis`'s
-saved per-track table on `track_id`) despite estimating from entirely
-different statistics (a fitted MSD curve vs. the raw displacement
-likelihood).
+---
 
-## Input data
+## Reproducing the study
 
-Raw localization CSV, one row per (track_id, frame): columns `track_id`,
-`frame`, `x`, `y` (pixels), `sigma_x`, `sigma_y` (localization precision,
-pixels). `track_length` is derived internally (row count per `track_id`),
-not read from the CSV. `analysis.io.load_tracks` converts to physical
-units given an `AcquisitionParams(pixel_size_um, dt_s)`.
-`analysis.io.assert_contiguous_tracks` checks every track sits on a gapless,
-uniform frame grid -- both pipelines' time-averaged statistics assume this.
+```bash
+python scripts/quickstart_single_track.py       # the example above
 
-## Run
+python scripts/run_msd_analysis.py              # classic, real data
+python scripts/validate_localization_bias.py    # classic, simulated ground truth
 
-```
-python3 scripts/run_msd_analysis.py
-python3 scripts/validate_localization_bias.py
-python3 scripts/run_bayes_analysis.py          # run the classic pipeline first,
-python3 scripts/validate_bayes_recovery.py     # so the vs.-classic comparison table gets built
+python scripts/run_bayes_analysis.py            # Bayesian, real data (run classic first --
+                                                #   the comparison table joins against it)
+python scripts/validate_bayes_recovery.py       # Bayesian, simulated ground truth
+
+python scripts/run_anisotropy_analysis.py       # anisotropy, real data
+python scripts/validate_anisotropy_recovery.py  # anisotropy, simulated ground truth
 ```
 
-Each run overwrites its own tables/figures in `results/` in place (by
-filename, not a timestamped subfolder) -- `results/` always reflects the
-most recent run of each script, not a history of past runs.
+Each script overwrites its own subfolder under `results/` in place --
+`results/` reflects the latest run of each script, not a history.
+`FINDINGS.md` interprets what these produce; `TABLES.md` documents every
+column.
 
-## Method notes
+---
 
-### Classic pipeline (`analysis/`)
+## Known limits
 
-- **TAMSD**: `MSD(lag) = mean_i[(x[i+lag]-x[i])^2 + (y[i+lag]-y[i])^2]` per
-  track (`msd.py::_track_tamsd_arrays`).
-- **Ensemble MSD**: per-track TAMSD averaged across tracks at each common
-  lag, weighted by each track's `n_pairs` at that lag. Lags supported by
-  fewer than `min_tracks` tracks are dropped.
-- **Fit range**: normal- and anomalous-diffusion fits use only the first
-  `n_fit_points` lags (`fitting.n_fit_points`: a fraction of a track's lags,
-  capped at a fixed maximum -- see its docstring for why both parts of the
-  rule matter).
-- **D fit**: `MSD(tau) = 4*D*tau + b`, weighted least squares (weight =
-  n_pairs at each lag).
-- **alpha fit**: `MSD(tau) = 4*D_alpha*tau^alpha`, OLS in log-log space.
-- **Localization-offset diagnostic**: `b` should approximate
-  `2*(mean(sigma_x^2) + mean(sigma_y^2))` for static, R=0 (no motion-blur
-  correction) localization noise. `weighted_expected_offset` computes this
-  with the same n_pairs weighting as the ensemble fit. Camera exposure/duty
-  cycle isn't recorded in the input schema here, so R=0 is a simplification.
+Stated plainly; `FINDINGS.md` has the measurements behind each.
 
-### Exact-likelihood pipeline (`bayes/`)
+- **Sub-diffusive alpha is biased toward 1.** At true `alpha = 0.5` the
+  fitted median is ~0.66. Anti-persistent fBm increments and localization
+  noise are both negatively correlated at lag 1, so the two are hard to
+  separate. Real limitation, not a validation artifact.
+- **D_alpha degrades faster than D on short tracks.** Treat D (normal
+  model) and alpha (anomalous model) as the primary per-track quantities;
+  D_alpha is diagnostic.
+- **Motion blur is not modeled.** Both pipelines assume `R = 0` (negligible
+  exposure duty cycle), because camera exposure is not in the input schema.
+- **Per-track anisotropy sensitivity is limited by design** at
+  `track_length` 5-10. Only the population-level sum is a detector.
+- **`converged` from `fit_batch_map` is per sub-batch**, not per track --
+  there is one optimizer call per sub-batch. Keep `max_batch_size` modest
+  if per-track granularity matters.
+- **Tracks must be gapless.** `assert_contiguous_tracks` enforces it; there
+  is no gap-filling.
 
-- **Likelihood**: the observed per-frame displacement sequence is modeled as
-  zero-mean multivariate Gaussian, with covariance = true-motion covariance
-  (fractional Gaussian noise, generalizing Brownian motion to anomalous
-  diffusion) + static localization-noise covariance. See `likelihood.py` and
-  `model.py` for the full derivation and references. No MSD curve is
-  computed anywhere in this pipeline.
-- **Models**: `normal_diffusion_model` (2 params: D, sigma; alpha pinned to
-  1) and `anomalous_diffusion_model` (3 params: D_alpha, sigma, alpha).
-  `batched_*` variants fit many same-length tracks at once via
-  `numpyro.plate` -- see `inference.fit_all_tracks`'s docstring for when and
-  why this matters.
-- **Priors**: LogNormal on D/D_alpha and sigma, Beta (rescaled to (0,2)) on
-  alpha; see `priors.py`. A near-flat preset (`WEAK_*_PRIOR`) makes the same
-  inference code behave like a flat-prior MLE.
-- **Inference**: `inference.fit_map`/`sample_posterior` for single-track
-  exact MAP / full NUTS. For the full per-track table, `inference.fit_batch_map`
-  (batched exact MAP via L-BFGS-B, sub-batched to a `max_batch_size` cap) is
-  production; `inference.fit_all_tracks` (batched SVI/Adam) remains for
-  comparison/validation -- see FINDINGS.md for why and the accuracy/speed
-  tradeoff between them.
-- **D and D_alpha are reported in log-space with an asymmetric interval**
-  (`{name}_median`/`_lo`/`_hi`, `log10_{name}`/`_stderr`), not a symmetric
-  mean +/- stderr in linear units -- see FINDINGS.md ("D should be reported
-  in log-space, with an asymmetric interval") for why a linear-space
-  symmetric interval is a poor description of D's uncertainty, especially on
-  short tracks. alpha keeps a symmetric physical-space interval.
-- **D (normal model) and alpha (anomalous model) are the primary per-track
-  diffusive-behavior metrics; D_alpha is a secondary/diagnostic quantity** --
-  D_alpha's posterior degrades much faster than D's on short tracks
-  (FINDINGS.md).
-- **Two distinct D-vs-alpha comparisons**: pairing D from
-  `normal_diffusion_model` against alpha from `anomalous_diffusion_model`
-  (cross-model) answers a different question than pairing D_alpha and alpha
-  *within* the same joint anomalous fit -- see `model.py`'s docstring. Don't
-  conflate the two; both scripts report them separately.
+---
 
-### Anisotropy detection (`bayes/anisotropic_diffusion_model`, `bayes/bayes_factor.py`)
+## References
 
-Targets short (N=5-10) tracks specifically -- a directional generalization
-of `normal_diffusion_model`, not a separate pipeline. See FINDINGS.md
-("Anisotropy detection") for the full derivation, critique of the earlier
-draft it replaced, and the empirical results below; this section is only
-the operating summary.
-
-- **Model**: rotated anisotropic diffusion tensor, parameterized by
-  `D_mean` (mean of the two principal diffusivities), `eps` in [0,1) (their
-  normalized difference -- the anisotropy fraction/eccentricity, 0 =
-  isotropic), and `psi` (orientation, mod pi). `eps=0` reduces *exactly* to
-  `normal_diffusion_model` (verified in `validate_anisotropy_recovery.py`),
-  so H0 is nested in H1 rather than a separately-constructed alternative.
-- **A point/interval estimate of `eps` has limited value at N=5-10**: 4-9
-  displacement vectors carry a large sampling-noise floor on any continuous
-  eccentricity estimate (even a genuinely isotropic track often "looks"
-  substantially elongated by chance) -- no fixed prior strength gives both a
-  controlled false-positive rate and real sensitivity from one track's data
-  alone. Read `eps`'s posterior as an honestly wide, descriptive interval,
-  not a detector.
-- **The Bayes factor is the detector.** `bayes_factor.log_bayes_factor_anisotropy`
-  (single track) / `batched_log_bayes_factor_anisotropy` (many tracks
-  sharing n_disp) answer a better-posed question instead: "is this data more
-  consistent with some anisotropy than with none," via prior-predictive
-  Monte Carlo estimation of `p(data|H1)`/`p(data|H0)` -- no separate
-  reference-distribution simulation needed, since how much apparent
-  elongation is expected from sampling noise alone at this track length
-  falls directly out of the marginal-likelihood integral.
-- **Individual short tracks are almost always "inconclusive" by this
-  measure -- correctly, not a bug.** Evidence only becomes decisive when
-  summed across many tracks that share real anisotropic behavior (see
-  FINDINGS.md's ensemble-aggregation check). `per_track_log_bayes_factor`
-  computes `log_bf10` for every track in a table (same input schema as
-  `inference.fit_all_tracks`); `aggregate_log_bayes_factor(per_track,
-  label_col)` sums it grouped by **any** column already on (or joined onto)
-  that table -- there is nothing anisotropy-specific about what defines a
-  group. Group by track-length-derived buckets, an experimental condition,
-  or (once available) a per-track spatial/structural classification, by
-  joining that classification onto `per_track_log_bayes_factor`'s output and
-  passing its column name as `label_col`; no code change needed to add a new
-  kind of grouping.
-
-## Model equations
-
-Compact reference for the model each fit actually solves. `x_i`/`y_i` are
-observed positions, `Δt` the frame interval, `D`/`D_alpha` diffusion
-coefficients, `alpha` the anomalous exponent, `sigma` static localization
-precision. Full derivations, references, and empirical checks are in
-`FINDINGS.md`; this is only "what is the equation."
-
-**Classic MSD (`analysis/`)** -- fit to the time-averaged mean squared
-displacement, `MSD(n*dt) = mean_i[ (x[i+n]-x[i])^2 + (y[i+n]-y[i])^2 ]`:
-
-- Normal diffusion: `MSD(tau) = 4*D*tau + b` (weighted least squares; `b`
-  is the static-localization-noise offset, `~2*sigma^2`).
-- Anomalous diffusion: `MSD(tau) = 4*D_alpha*tau^alpha` (OLS in log-log
-  space).
-
-**Exact-likelihood displacement model (`bayes/normal_diffusion_model`,
-`anomalous_diffusion_model`)** -- no MSD curve; the per-frame displacement
-sequence `dx_k = x[k+1]-x[k]` (dy likewise) is modeled directly as one
-zero-mean multivariate Gaussian, `dx ~ N(0, Sigma)`, `Sigma = Sigma_motion +
-Sigma_noise`:
-
-- True-motion term (fractional Gaussian noise; generalizes Brownian motion
-  to anomalous diffusion): `gamma(k) = D_alpha * dt^alpha * (|k+1|^alpha -
-  2*|k|^alpha + |k-1|^alpha)`, `Sigma_motion[i,j] = gamma(|i-j|)`. At
-  `alpha=1`: `gamma(0) = 2*D*dt`, `gamma(k>=1) = 0` -- ordinary Brownian
-  motion (independent increments), i.e. `normal_diffusion_model`; general
-  `alpha` is `anomalous_diffusion_model`.
-- Static localization-noise term (`x_obs = x_true + eps`, `eps ~
-  N(0,sigma^2)` iid per frame): `Sigma_noise[i,i] = 2*sigma^2`,
-  `Sigma_noise[i, i+/-1] = -sigma^2`, `0` otherwise.
-- `dx` and `dy` are independent (isotropic motion) and fit as two separate
-  length-`n_disp` Gaussians sharing the same `Sigma`.
-
-**Anisotropic diffusion model (`bayes/anisotropic_diffusion_model`)** --
-generalizes the `alpha=1` model above to a rotated, directional diffusion
-tensor. Per-step true-motion covariance (2x2, replacing the scalar
-`2*D*dt`):
-
-```
-Sigma_step(psi) = R(psi) . diag(2*D_par*dt, 2*D_perp*dt) . R(psi)^T
-R(psi) = [[cos(psi), -sin(psi)], [sin(psi), cos(psi)]]
-D_par = D_mean*(1+eps),  D_perp = D_mean*(1-eps)
-```
-
-`eps` in `[0,1)` is the anisotropy fraction (0 = isotropic), `psi` in
-`[0,pi)` the orientation. `dx`/`dy` are no longer independent (`Sigma_step`
-has off-diagonal terms unless `psi` is 0 or pi/2), so this is one joint
-`2*n_disp`-dim Gaussian over the interleaved `(dx_1,dy_1,dx_2,dy_2,...)`
-sequence, block-tridiagonal in 2x2 blocks: diagonal block =
-`Sigma_step + 2*sigma^2*I2`, adjacent off-diagonal block = `-sigma^2*I2`.
-`eps=0` reduces exactly to the isotropic model above, any `psi`.
-
-**Anisotropy Bayes factor (`bayes/bayes_factor.py`)** -- model comparison,
-not parameter estimation. H0: `eps=0` (isotropic); H1: `eps ~ Beta(1,b)`
-(shrunk toward isotropy), `psi ~ Uniform(0,pi)`; `D_mean`/`sigma` share one
-`LogNormal` prior under both. Each marginal likelihood is a prior-predictive
-Monte Carlo average (no NUTS/MAP involved):
-
-```
-p(data | H) ~= (1/S) * sum_s p(data | theta_s),   theta_s ~ p(theta | H)
-log_BF10 = log p(data | H1) - log p(data | H0)
-```
-
-`log_BF10 > 0` favors anisotropy, `< 0` favors isotropic diffusion, `~0` is
-inconclusive. Individual N=5-10 tracks are almost always inconclusive by
-design (see FINDINGS.md); `aggregate_log_bayes_factor` sums `log_BF10`
-across many tracks (grouped by any label column) to accumulate real
-evidence for a population that genuinely shares anisotropic behavior.
-
-## Results tables -- column reference
-
-Both pipelines write `track_id` and `track_length` with the same meaning
-(track ID from the input CSV; number of localizations in the track), so
-their per-track tables always join cleanly on `track_id`. Column names
-otherwise follow one convention throughout: a `_um`/`_um2_s`/`_um2_s_alpha`
-suffix marks physical units; no suffix means dimensionless (`alpha`) or
-log10 units (`log10_*`). Quantities that only exist in one framework (e.g.
-the Bayesian posterior/Laplace interval columns, `r2_*` goodness-of-fit from
-the MSD fit) are kept under their own names rather than forced into a shared
-column -- see the method notes above for why they aren't directly
-comparable.
-
-### `classic/per_track_msd_fits.csv` (classic, `run_msd_analysis.py`)
-
-One row per track. `msd.py`'s TAMSD passed through `fitting.fit_all_tracks`.
-
-| Column | Meaning |
-| --- | --- |
-| `track_id` | Track ID. |
-| `track_length` | Number of localizations in the track. |
-| `n_points_used` | Number of lags used in the normal-diffusion (and uncorrected anomalous) fit. |
-| `at_min_points` | True if `n_points_used` hit the `min_points` floor rather than the fractional rule. |
-| `D_um2_s`, `D_stderr_um2_s` | Diffusion coefficient from the linear `MSD=4*D*tau+b` fit, weighted-least-squares standard error. |
-| `intercept_um2`, `intercept_stderr_um2` | Fitted offset `b` of the same linear fit and its standard error. |
-| `r2_normal` | R^2 of the linear (normal-diffusion) fit. |
-| `D_negative` | True if the fitted `D_um2_s` is negative (unphysical -- kept, not dropped). |
-| `intercept_negative` | True if the fitted intercept is negative (unphysical for R=0 static noise -- kept, not dropped). |
-| `alpha`, `alpha_stderr` | Anomalous exponent from the log-log `MSD=4*D_alpha*tau^alpha` fit (OLS), and its standard error. |
-| `n_points_used_alpha` | Lags actually used in that fit (may be fewer than `n_points_used` if some points were non-positive). |
-| `D_alpha_um2_s_alpha` | Generalized diffusion coefficient from the same log-log fit. |
-| `r2_anomalous` | R^2 of the log-log fit. |
-| `alpha_corrected`, `alpha_corrected_stderr` | Same anomalous fit after subtracting the track's estimated localization offset from MSD first (see `offset_um2`) -- isolates the tau^alpha signal from the localization-noise plateau. |
-| `n_points_used_alpha_corrected` | Lags surviving the offset subtraction (points driven non-positive are dropped). |
-| `D_alpha_corrected_um2_s_alpha`, `r2_anomalous_corrected` | Generalized D and R^2 of the offset-corrected fit. |
-| `offset_um2` | Per-track expected localization-noise MSD offset, `2*(mean(sigma_x_um^2)+mean(sigma_y_um^2))`, from the raw localization precision -- an independent check on `intercept_um2` and the value subtracted for `alpha_corrected`. |
-
-### `classic/ensemble_msd.csv` (classic, `run_msd_analysis.py`)
-
-One row per lag of the n_pairs-weighted ensemble MSD curve.
-
-| Column | Meaning |
-| --- | --- |
-| `lag` | Lag index (in frames). |
-| `tau_s` | Lag time in seconds (`lag * dt_s`). |
-| `n_tracks` | Number of tracks contributing to this lag (lags below `min_tracks` are dropped upstream). |
-| `n_pairs_total` | Total displacement pairs behind this lag's MSD estimate, summed across contributing tracks -- the ensemble-fit weight. |
-| `msd_um2` | n_pairs-weighted ensemble-averaged MSD at this lag. |
-| `msd_sem` | Standard error of the ensemble MSD at this lag. |
-
-`classic/per_track_tamsd.parquet` holds the per-track, per-lag TAMSD this
-table is averaged from (`track_id`, `track_length`, `lag`, `tau_s`,
-`msd_um2`, `n_pairs`) -- intermediate data, not a fit result, kept for
-re-plotting without recomputing TAMSD from raw localizations.
-
-### `validate_localization_bias/simulation_recovery.csv` (classic validation, `validate_localization_bias.py`)
-
-Same columns as `classic/per_track_msd_fits.csv`, plus:
-
-| Column | Meaning |
-| --- | --- |
-| `true_D_um2_s` | Ground-truth D used to simulate this track (true alpha is always 1 here -- see the script's docstring). |
-
-### `bayes/per_track_bayes_fits.csv` (Bayesian, `run_bayes_analysis.py`)
-
-One row per track: the Brownian-constrained normal model and the anomalous
-model, batched exact MAP (`inference.fit_batch_map`) joined on
-`track_id`/`track_length`/`n_disp`. D, D_alpha and sigma are Laplace-fit in
-log-space and back-transformed to an asymmetric `_median`/`_lo`/`_hi`
-interval (see method notes above); alpha keeps a symmetric physical-space
-interval.
-
-| Column | Meaning |
-| --- | --- |
-| `track_id` | Track ID. |
-| `track_length` | Number of localizations in the track. |
-| `n_disp` | Number of per-frame displacements fit (`track_length - 1`). |
-| `normal_converged` | L-BFGS-B convergence flag for the normal-model sub-batch containing this track (per sub-batch, not per track -- see `fit_batch_map`'s docstring). |
-| `D_median_um2_s`, `D_lo_um2_s`, `D_hi_um2_s` | Normal-model (Brownian-constrained) D: back-transformed posterior/Laplace median and asymmetric 1-sigma interval. **Primary D estimate.** |
-| `log10_D`, `log10_D_stderr` | The same normal-model D fit in log10 space (symmetric there by construction). |
-| `sigma_normal_median_um`, `sigma_normal_lo_um`, `sigma_normal_hi_um` | Localization precision sigma from the normal-model fit, same median/interval convention as D. |
-| `log10_sigma_normal`, `log10_sigma_normal_stderr` | That sigma in log10 space. |
-| `anomalous_converged` | L-BFGS-B convergence flag for the anomalous-model sub-batch containing this track. |
-| `D_alpha_median_um2_s_alpha`, `D_alpha_lo_um2_s_alpha`, `D_alpha_hi_um2_s_alpha` | Anomalous-model generalized diffusion coefficient, same median/interval convention. **Secondary/diagnostic** -- degrades faster than D on short tracks (FINDINGS.md). |
-| `log10_D_alpha`, `log10_D_alpha_stderr` | That D_alpha in log10 space. |
-| `sigma_anom_median_um`, `sigma_anom_lo_um`, `sigma_anom_hi_um` | Localization precision sigma from the anomalous-model fit. |
-| `log10_sigma_anom`, `log10_sigma_anom_stderr` | That sigma in log10 space. |
-| `alpha`, `alpha_stderr` | Anomalous exponent MAP and symmetric Laplace standard error (physical space -- not log-transformed). **Primary alpha estimate.** |
-
-### `bayes/bayes_vs_classic_comparison.csv` (`run_bayes_analysis.py`)
-
-`bayes/per_track_bayes_fits.csv`'s columns, inner-joined on `track_id`
-against the classic table, plus:
-
-| Column | Meaning |
-| --- | --- |
-| `D_classic_um2_s` | Classic pipeline's `D_um2_s` for the same track, carried over for direct comparison. |
-| `alpha_classic` | Classic pipeline's `alpha` for the same track. |
-
-### `validate_bayes_recovery/bayes_validate_null_D_alpha_bias.csv` (Bayesian validation, `validate_bayes_recovery.py`, check 1)
-
-One row per simulated track (true alpha=1, true D swept), flat-prior and
-informative-prior fits side by side.
-
-| Column | Meaning |
-| --- | --- |
-| `track_id`, `track_length`, `n_disp` | As above. |
-| `D_weak`, `D_stderr_weak`, `sigma_normal_weak`, `sigma_stderr_normal_weak` | Normal-model D/sigma, flat (`WEAK_NORMAL_PRIOR`) fit. |
-| `D_bayes`, `D_stderr_bayes`, `sigma_normal_bayes`, `sigma_stderr_normal_bayes` | Normal-model D/sigma, informative-prior fit. |
-| `D_alpha_weak`, `D_alpha_stderr_weak`, `sigma_weak`, `sigma_stderr_weak`, `alpha_weak`, `alpha_stderr_weak` | Anomalous-model fit, flat prior. |
-| `D_alpha_bayes`, `D_alpha_stderr_bayes`, `sigma_bayes`, `sigma_stderr_bayes`, `alpha_bayes`, `alpha_stderr_bayes` | Anomalous-model fit, informative prior. |
-| `true_D_um2_s_alpha` | Ground-truth D used to simulate this track. |
-
-(This check uses the SVI comparison path, `fit_all_tracks`, not the
-production `fit_batch_map` -- hence the un-suffixed `D`/`alpha` names rather
-than `_median`/`_lo`/`_hi`, and the `_weak`/`_bayes` prior-comparison suffix
-in place of `_um2_s`.)
-
-### `validate_bayes_recovery/bayes_validate_alpha_recovery.csv` (Bayesian validation, `validate_bayes_recovery.py`, check 2)
-
-One row per simulated track (true alpha swept at fixed D, flat prior).
-
-| Column | Meaning |
-| --- | --- |
-| `track_id`, `track_length`, `n_disp` | As above. |
-| `D_alpha`, `D_alpha_stderr`, `sigma`, `sigma_stderr`, `alpha`, `alpha_stderr` | Anomalous-model fit (flat prior, SVI path). |
-| `true_D_um2_s_alpha`, `true_alpha` | Ground truth used to simulate this track. |
-
-### `validate_bayes_recovery/bayes_validate_short_track_degeneracy.csv` (Bayesian validation, `validate_bayes_recovery.py`, check 3)
-
-One row per simulated `track_length`, not per track.
-
-| Column | Meaning |
-| --- | --- |
-| `track_length` | Simulated track length tested. |
-| `n_replicates` | Number of simulated tracks at this length. |
-| `degenerate_frac_weak` | Fraction of flat-prior fits landing on a parameter's support boundary (`D_alpha` below floor, or `alpha` within epsilon of 0 or 2). |
-| `degenerate_frac_bayes` | Same, informative-prior fit. |
-
-### `anisotropy/per_track_master.csv` (anisotropy, `run_anisotropy_analysis.py`)
-
-One row per short (track_length 5-10) track: `per_track_log_bayes_factor`'s
-Bayes factor joined against `sample_posterior_table`'s (NUTS) `eps`/`psi`
-posterior and each track's mean field-of-view position -- the table the
-plots in FINDINGS.md ("Visual inspection") are built from. Every quantity
-keeps its own explicit name; `log_bf10` and the `eps_*`/`psi_*` columns
-answer different questions with very different per-track reliability at
-this N (see Method notes above and FINDINGS.md) and should not be conflated.
-
-| Column | Meaning |
-| --- | --- |
-| `track_id`, `track_length`, `n_disp` | As above. |
-| `log_bf10` | Log Bayes factor for anisotropy (`bayes_factor.log_bayes_factor_anisotropy`) -- the quantity meant to be trusted per-track at this N; near 0 for nearly every real track here (see FINDINGS.md). |
-| `eps_median`, `eps_lo`, `eps_hi` | Anisotropy-fraction posterior median and 90% HPDI (NUTS) -- a secondary, honestly-wide descriptive interval, not a per-track detector (FINDINGS.md's sampling-noise-floor result). |
-| `psi_median_rad`, `psi_lo_rad`, `psi_hi_rad` | Orientation posterior median/HPDI, radians in [0, pi) -- expect this to be poorly constrained whenever `eps_hi` is small (the psi-ridge FINDINGS.md documents). |
-| `D_mean_median_um2_s`, `D_par_median_um2_s`, `D_perp_median_um2_s` | Mean/parallel/perpendicular diffusivity posterior medians from the same anisotropic-model fit (with matching `_lo_um2_s`/`_hi_um2_s` columns, omitted here for brevity). |
-| `x_mean_um`, `y_mean_um` | Track's mean position in the field of view -- used for `plot_spatial_map`; join any future per-track spatial/structural label onto this table by `track_id` to group by it (`bayes.anisotropy.aggregate_log_bayes_factor`). |
-
-`anisotropy/per_track_log_bf.csv` and `anisotropy/per_track_eps_posterior.csv`
-hold the two halves of this table before the join (same columns, no
-`x_mean_um`/`y_mean_um`); `anisotropy/ensemble_log_bf_all.csv` and
-`_by_track_length.csv` hold the population-level `sum_log_bf10` this
-script's verdict is based on; `anisotropy/null_calibration_ensemble_sums.csv`
-holds the matched-composition null distribution (`null_sum_log_bf10`) it's
-calibrated against.
+- Michalet & Berglund, *Phys. Rev. E* **85**, 061916 (2012) -- MSD fitting
+  is a lossy summary statistic; optimal estimation from displacements.
+- Vestergaard, Blainey & Flyvbjerg, *Phys. Rev. E* **89**, 022726 (2014) --
+  exact covariance for Brownian motion with static localization noise.
+- Kepten, Bronshtein & Garini, *Phys. Rev. E* **87**, 052713 (2013) --
+  fractional Gaussian noise for anomalous-exponent estimation.
