@@ -10,21 +10,25 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Run straight from a clone without installing: put the repo root ahead of
+# sys.path so `import diffusionkit` resolves. Harmless once pip-installed.
 sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 
-from analysis import (
+from diffusionkit.classic import (
     AcquisitionParams,
-    load_tracks,
     assert_contiguous_tracks,
     fit_population,
-    plot_tamsd_curves,
-    plot_ensemble_fit,
-    plot_parameter_distributions,
-    plot_localization_diagnostic,
+    load_tracks,
+)
+from diffusionkit.classic.viz import (
     plot_D_alpha_jointplot,
     plot_D_vs_track_length,
+    plot_ensemble_fit,
+    plot_localization_diagnostic,
+    plot_parameter_distributions,
+    plot_tamsd_curves,
 )
 
 DATA_CSV = REPO_ROOT / "mobile_beads_1to200.csv"

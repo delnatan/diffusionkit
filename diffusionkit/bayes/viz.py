@@ -49,7 +49,7 @@ def plot_posterior_corner(
 
     If `laplace_mean`/`laplace_cov` are given, overlays the Laplace
     (Gaussian) approximation used for the full per-track batch fit
-    (`inference.fit_map`, `inference.fit_all_tracks`) as a 1-2 sigma ellipse
+    (`inference.fit_map`, `inference.fit_table_svi`) as a 1-2 sigma ellipse
     on each 2D panel and a Gaussian curve on each 1D panel -- the visual
     check that the fast approximation used everywhere else is trustworthy
     where it's applied. `samples` is a flat (n_samples, dim) array; use
@@ -472,7 +472,7 @@ def plot_trajectory_gallery(
     by eye" check: `panel_labels` (one string per `track_ids`, e.g.
     "logBF10=+1.23") is meant to carry whatever per-track attribute
     (`bayes_factor.per_track_log_bayes_factor`'s `log_bf10`,
-    `inference.sample_posterior_table`'s `eps_median`, ...) motivated
+    `inference.fit_table_nuts`'s `eps_median`, ...) motivated
     picking that track, so the plotted shape can be checked against the
     number that was computed from it.
 

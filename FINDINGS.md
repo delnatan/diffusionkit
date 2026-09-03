@@ -9,7 +9,7 @@ Re-running the scripts can change the specific numbers below (different
 data, different track counts, different random seeds) -- treat this as a
 record of one analysis pass, not a spec.
 
-## Classic MSD pipeline (`analysis/`)
+## Classic MSD pipeline (`diffusionkit.classic`)
 
 Produced by `scripts/run_msd_analysis.py` and
 `scripts/validate_localization_bias.py`.
@@ -110,7 +110,17 @@ unless noted otherwise.
      solved problem, and its failure mode is systematic overcorrection, not
      just added noise.
 
-## Exact-likelihood Bayesian pipeline (`bayes/`)
+## Exact-likelihood Bayesian pipeline (`diffusionkit.bayes`)
+
+> **Naming note (2026-09-02 refactor).** The three per-track table builders
+> were renamed for consistency and now share one grouping loop:
+> `fit_batch_map` -> `fit_table_map`, `fit_all_tracks` -> `fit_table_svi`,
+> `sample_posterior_table` -> `fit_table_nuts`. The single-batch engines
+> (`fit_map`, `sample_posterior`, `fit_batch_svi`) keep their names. Findings
+> below are unchanged and were re-verified bit-for-bit against the new code;
+> only the identifiers were updated. `fit_table_svi` is no longer reachable
+> through `fit_population` -- it is a comparison/validation path now, for the
+> calibration reason documented below.
 
 Produced by `scripts/run_bayes_analysis.py` and
 `scripts/validate_bayes_recovery.py`.
@@ -131,7 +141,7 @@ and they give different numbers:
   pinned to 1) against alpha from the **separate** anomalous fit -- a
   short-time D under a forced normal-diffusion assumption, paired against an
   independently-fit power-law exponent. This is what the classic pipeline's
-  r=0.73 measures (see `analysis.viz.plot_D_alpha_jointplot`), so it's the
+  r=0.73 measures (see `diffusionkit.classic.viz.plot_D_alpha_jointplot`), so it's the
   metric comparable across pipelines.
 - Correlating D_alpha and alpha **from the same joint 3-parameter fit**.
   These two are jointly estimated from one likelihood surface with a real,
@@ -189,7 +199,7 @@ default.
   construction.** D (or D_alpha) and sigma have LogNormal priors/support
   (always positive) and alpha has Beta-rescaled support in (0, 2).
   
-  **A short-track boundary-degeneracy pathology was found with the exact single-track MAP engine (`inference.fit_map`) under a flat prior, and an informative prior fixed it -- but the batched mean-field SVI engine now used for the full per-track table (`inference.fit_all_tracks`) doesn't reproduce the same pathology even under a flat prior**, on the same
+  **A short-track boundary-degeneracy pathology was found with the exact single-track MAP engine (`inference.fit_map`) under a flat prior, and an informative prior fixed it -- but the batched mean-field SVI engine now used for the full per-track table (`inference.fit_table_svi`) doesn't reproduce the same pathology even under a flat prior**, on the same
   controlled test (150 simulated tracks at track_length=10/12/15, true
   D=0.05, alpha=1): exact MAP showed 6.0-9.3% of the shortest tracks running
   to the edge of parameter support (D -> ~0 or alpha -> the 0/2 boundary)
@@ -244,7 +254,7 @@ default.
 
 The batched-SVI engine (`inference.fit_batch_svi`, mean-field `AutoNormal`,
 Adam-optimized ELBO -- the "Batched inference performance" section above)
-was the first working batched approach and is what `fit_all_tracks` still
+was the first working batched approach and is what `fit_table_svi` still
 runs today. Follow-up checks comparing it against exact per-track/per-group
 optimization (`inference.fit_map`, L-BFGS-B on numpyro's own unconstrained
 `potential_fn` with an exact JAX Hessian) found consistent, material
@@ -288,9 +298,9 @@ advantages for L-BFGS-B, motivating a switch for production:
   (exploiting that tracks are independent given the plate, e.g. via
   `jax.vmap` over per-track Hessian blocks) -- not yet implemented.
 
-### Production deployment: `fit_batch_map`, log-space, asymmetric intervals
+### Production deployment: `fit_table_map`, log-space, asymmetric intervals
 
-`bayes.inference.fit_batch_map` implements the production decision from the
+`diffusionkit.bayes.inference.fit_table_map` implements the production decision from the
 sections above: batched exact MAP via L-BFGS-B, sub-batched at
 `max_batch_size` (default 20) tracks per `fit_map` call to stay within the
 dense-Hessian memory limit, with each track's D (or D_alpha, sigma) reported
@@ -300,7 +310,7 @@ via its log-space Laplace fit as an asymmetric interval
 in linear units. alpha keeps a symmetric physical-space interval. D (normal
 model) and alpha (anomalous model) are the primary per-particle metrics;
 D_alpha (anomalous model) is retained as a secondary/diagnostic column.
-`scripts/run_bayes_analysis.py` runs this in production; `fit_all_tracks`
+`scripts/run_bayes_analysis.py` runs this in production; `fit_table_svi`
 (SVI/Adam) remains for comparison/validation use.
 
 Full real-dataset run (365 tracks, both models + a flat-prior comparison
@@ -323,18 +333,18 @@ fit, `max_batch_size=20`):
   ~484s (anomalous model) = **~21.4 minutes** for the two batched fits
   alone (whole script, including the flat-prior comparison fit and NUTS on
   3 example tracks: ~26-27 minutes wall-clock). The earlier SVI/Adam
-  (`fit_all_tracks`) production run did the same two fits in **~9.4
-  minutes**. `fit_batch_map` is *slower in aggregate* than SVI at full
+  (`fit_table_svi`) production run did the same two fits in **~9.4
+  minutes**. `fit_table_map` is *slower in aggregate* than SVI at full
   dataset scale despite being faster *and* more accurate per sub-batch in
   isolated tests (e.g. 11.7s vs. 29.0s for one 28-track group) -- the
   `max_batch_size` cap forces many more, smaller L-BFGS-B/Hessian calls than
-  `fit_all_tracks`'s one-call-per-length-group (e.g. the largest real
+  `fit_table_svi`'s one-call-per-length-group (e.g. the largest real
   length-group, 37 tracks, needs 2 sub-batches instead of 1), and each call
   pays its own JAX trace. This was an accepted, explicit tradeoff (better
   calibration and point-estimate accuracy over raw throughput) rather than
   an oversight -- worth revisiting via the block-diagonal-Hessian fix noted
   above if the ~3x slowdown becomes a real constraint.
-- Progress visibility: `fit_batch_map`/`fit_all_tracks` gained a `tqdm`
+- Progress visibility: `fit_table_map`/`fit_table_svi` gained a `tqdm`
   progress bar (`show_progress=True` by default) after this run was
   already in flight -- this run itself had none, but future runs will show
   live per-track progress rather than fully-buffered output that only
@@ -414,7 +424,7 @@ the uncertainty for short tracks. Same treatment applies to D_alpha and to
 sigma (also `LogNormal`-supported), for whatever secondary/diagnostic value
 they retain per the previous section.
 
-## Anisotropy detection (`bayes/anisotropic_diffusion_model`, N=5-10 tracks)
+## Anisotropy detection (`diffusionkit.bayes.anisotropic_diffusion_model`, N=5-10 tracks)
 
 A Bayesian anisotropy score was drafted externally (Gemini) as a
 polar-turning-angle Bayes-factor scheme; reviewed and replaced with a direct
@@ -518,7 +528,7 @@ constructed Bayes factor automatically weighs in how much apparent
 elongation is expected from sampling noise alone at this exact n_disp/D/sigma
 (no separately-simulated reference distribution needed -- that expectation
 falls directly out of integrating the isotropic model's own likelihood over
-its prior). Implemented as `bayes.bayes_factor.log_bayes_factor_anisotropy`
+its prior). Implemented as `diffusionkit.bayes.bayes_factor.log_bayes_factor_anisotropy`
 / `batched_log_bayes_factor_anisotropy`: prior-predictive Monte Carlo
 estimate of `p(data|H1)` and `p(data|H0)` (H0 = H1 with `eps` pinned to 0),
 sharing Monte Carlo draws of `D_mean`/`sigma` between the two integrals
@@ -638,7 +648,7 @@ Reproducible via `scripts/run_anisotropy_analysis.py`
 ### Visual inspection: mapping per-track outputs back onto the real tracks
 
 Same script, extended to also fit each track's `eps`/`psi` posterior
-(`inference.sample_posterior_table`, NUTS) and join it onto `log_bf10` in
+(`inference.fit_table_nuts`, NUTS) and join it onto `log_bf10` in
 one `per_track_master.csv` (`particle`, `track_length`, `x_mean_um`/
 `y_mean_um`, `log_bf10`, `eps_median`/`_lo`/`_hi`, `psi_median_rad`/`_lo_rad`/
 `_hi_rad`, `D_mean_median_um2_s`, `D_par_median_um2_s`,
@@ -676,6 +686,6 @@ N.
 
 Adding a new per-particle label column (e.g. once a spatial/structural
 classification exists) is a join onto `per_track_master.csv` plus
-`bayes.anisotropy.aggregate_log_bayes_factor(..., label_col=...)` -- no new plotting or
+`diffusionkit.bayes.anisotropy.aggregate_log_bayes_factor(..., label_col=...)` -- no new plotting or
 fitting code needed; `plot_spatial_map`/`plot_trajectory_gallery` already
 take any table with the right column names.

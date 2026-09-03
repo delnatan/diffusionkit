@@ -32,18 +32,20 @@ bare number.
 """
 from __future__ import annotations
 
-import sys
 import time
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Run straight from a clone without installing: put the repo root ahead of
+# sys.path so `import diffusionkit` resolves. Harmless once pip-installed.
 sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 import polars as pl
 
-from analysis import AcquisitionParams, assert_contiguous_tracks, load_tracks
-from bayes import anisotropy
+from diffusionkit.classic import AcquisitionParams, assert_contiguous_tracks, load_tracks
+from diffusionkit.bayes import anisotropy
 
 DATA_CSV = REPO_ROOT / "mobile_beads_1to200.csv"
 WORKFLOW = "anisotropy"

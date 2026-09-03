@@ -117,7 +117,7 @@ def sigma_prior_from_localization(
     mean = log(RMS combined x/y precision), averaged over the last axis, so
     a single track's 1D (n_frames,) arrays give scalars and a batch's 2D
     (n_tracks, n_frames) arrays give one (mean, sd) pair per track --
-    `inference.fit_all_tracks` groups tracks by shared track_length and fits
+    `inference`'s table builders group tracks by shared track_length and fit
     each group in one batched call (see model.py), so this needs to produce
     a per-track prior array, not just a per-track scalar, without a separate
     code path for the two cases.

@@ -10,12 +10,14 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Run straight from a clone without installing: put the repo root ahead of
+# sys.path so `import diffusionkit` resolves. Harmless once pip-installed.
 sys.path.insert(0, str(REPO_ROOT))
 
 import polars as pl
 
-from analysis import AcquisitionParams, load_tracks
-from bayes import fit_track
+from diffusionkit.classic import AcquisitionParams, load_tracks
+from diffusionkit.bayes import fit_track
 
 DATA_CSV = REPO_ROOT / "mobile_beads_1to200.csv"
 PARAMS = AcquisitionParams(pixel_size_um=0.1043, dt_s=0.033)

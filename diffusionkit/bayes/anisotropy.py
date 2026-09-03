@@ -14,7 +14,7 @@ bayes.anisotropy as anisotropy`, not a name buried in `from bayes import *`.
 
 `analyze` wraps the per-track log Bayes factor
 (`bayes_factor.per_track_log_bayes_factor`) together with the descriptive
-`eps`/`psi` posterior (`inference.sample_posterior_table` on the batched
+`eps`/`psi` posterior (`inference.fit_table_nuts` on the batched
 anisotropic model) into one call -- see FINDINGS.md for why both are
 reported and why only the Bayes factor (not `eps` alone) is the detector.
 `null_calibration` is the matched-composition Monte Carlo check for turning
@@ -37,7 +37,7 @@ from .bayes_factor import (
     log_bayes_factor_anisotropy,
     per_track_log_bayes_factor,
 )
-from .inference import sample_posterior_table
+from .inference import fit_table_nuts
 from .model import anisotropic_diffusion_model, batched_anisotropic_diffusion_model
 from .priors import WEAK_ANISOTROPIC_PRIOR, AnisotropicModelPrior
 from .simulate import simulate_anisotropic_tracks
@@ -124,7 +124,7 @@ def analyze(
     )
 
     if fit_eps_posterior:
-        eps_posterior = sample_posterior_table(
+        eps_posterior = fit_table_nuts(
             short, batched_anisotropic_diffusion_model, dt_s, lambda xstd, ystd, _p=p: _p,
             param_names=_EPS_PARAM_NAMES, min_track_length=min_track_length, hpdi_prob=hpdi_prob,
             seed=seed, show_progress=show_progress,

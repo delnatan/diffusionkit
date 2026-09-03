@@ -8,8 +8,8 @@ and keep in sync by hand (see `scripts/run_bayes_analysis.py` before this
 module existed): which `model_fn` goes with which prior dataclass, which
 `param_names` that model exposes, and the project's unit-suffixed column
 renaming for the bulk table. No inference math lives here -- this only
-wires together `inference.py`'s `fit_map`/`sample_posterior`/`fit_batch_map`/
-`fit_all_tracks` and `model.py`'s normal/anomalous models.
+wires together `inference.py`'s `fit_map`/`sample_posterior`/`fit_table_map`
+and `model.py`'s normal/anomalous models.
 
 `prior=None` on either function means "build an informative prior from this
 track's (or this track-length-group's) own measured localization precision"
@@ -32,7 +32,7 @@ import numpy as np
 import polars as pl
 from numpyro.diagnostics import hpdi
 
-from .inference import fit_all_tracks, fit_batch_map, fit_map, sample_posterior
+from .inference import fit_map, fit_table_map, sample_posterior
 from .model import (
     anomalous_diffusion_model,
     batched_anomalous_diffusion_model,
@@ -191,47 +191,40 @@ def fit_population(
     dt_s: float,
     model: Literal["normal", "anomalous", "both"] = "anomalous",
     prior: NormalModelPrior | AnomalousModelPrior | None = None,
-    engine: Literal["map", "svi"] = "map",
     min_track_length: int = 10,
     max_batch_size: int = 20,
-    num_steps: int = 2000,
     seed: int = 0,
     show_progress: bool = True,
 ) -> pl.DataFrame:
-    """Fit every eligible track in `tracks`, bulk regime.
+    """Fit every eligible track in `tracks`, population regime.
 
-    `engine="map"` (default) is `inference.fit_batch_map` -- batched exact
-    MAP, FINDINGS.md's production choice for accuracy/calibration. `engine=
-    "svi"` is `inference.fit_all_tracks` (mean-field SVI/Adam) -- faster in
-    aggregate at full-dataset scale (FINDINGS.md's "Inference-engine choice"
-    section: ~9 vs. ~21 minutes on 365 real tracks), the throughput escape
-    valve for when the dataset is large enough that the ~3x MAP slowdown is
-    the binding constraint, at some cost to calibration.
+    Runs `inference.fit_table_map` (batched exact MAP), FINDINGS.md's
+    production choice for accuracy and calibration. `inference.fit_table_svi`
+    is faster in aggregate but reports uncertainty 3-10x too narrow, so it is
+    not offered here -- call it directly if you want the comparison the
+    validation scripts make.
 
     `model="both"` fits the normal and anomalous models and inner-joins them
-    on `(track_id, track_length, n_disp)` -- the pairing README.md's
-    `bayes/per_track_bayes_fits.csv` documents (primary D from the normal
-    model, primary alpha from the anomalous model).
+    on `(track_id, track_length, n_disp)`: primary D from the normal model,
+    primary alpha from the anomalous one (see TABLES.md).
 
-    Column naming differs by engine, since the two report genuinely
-    different statistics, not just different numbers: `engine="map"` gives
-    the project's unit-suffixed median/asymmetric-interval convention
-    (`D_median_um2_s`/`D_lo_um2_s`/`D_hi_um2_s`/`log10_D`/..., matching
-    `results/tables/bayes/per_track_bayes_fits.csv`); `engine="svi"` gives
-    bare parameter name + `_stderr` (`D`/`D_stderr`/...), matching
-    `fit_all_tracks`'s existing mean-field SVI convention used throughout
-    `validate_bayes_recovery.py`.
+    Columns follow the project's unit-suffixed median/asymmetric-interval
+    convention (`D_median_um2_s`/`D_lo_um2_s`/`D_hi_um2_s`/`log10_D`/...).
     """
     if model == "both":
+        if prior is not None:
+            raise ValueError(
+                "prior= cannot be used with model='both': the normal and anomalous models "
+                "take different prior types. Fit each model separately, or pass prior=None "
+                "to build an informative per-track prior for both."
+            )
         normal = fit_population(
-            tracks, dt_s, model="normal", prior=None, engine=engine,
-            min_track_length=min_track_length, max_batch_size=max_batch_size,
-            num_steps=num_steps, seed=seed, show_progress=show_progress,
+            tracks, dt_s, model="normal", min_track_length=min_track_length,
+            max_batch_size=max_batch_size, seed=seed, show_progress=show_progress,
         )
         anomalous = fit_population(
-            tracks, dt_s, model="anomalous", prior=None, engine=engine,
-            min_track_length=min_track_length, max_batch_size=max_batch_size,
-            num_steps=num_steps, seed=seed, show_progress=show_progress,
+            tracks, dt_s, model="anomalous", min_track_length=min_track_length,
+            max_batch_size=max_batch_size, seed=seed, show_progress=show_progress,
         )
         return normal.join(anomalous, on=["track_id", "track_length", "n_disp"], how="inner")
 
@@ -244,18 +237,9 @@ def fit_population(
         def prior_fn(xstd_um: np.ndarray, ystd_um: np.ndarray, _cls=prior_cls):
             return _default_prior(_cls, xstd_um, ystd_um)
 
-    if engine == "map":
-        table = fit_batch_map(
-            tracks, batched_model_fn, dt_s, prior_fn, param_names,
-            min_track_length=min_track_length, max_batch_size=max_batch_size,
-            seed=seed, show_progress=show_progress,
-        )
-        return table.rename(rename)
-    elif engine == "svi":
-        return fit_all_tracks(
-            tracks, batched_model_fn, dt_s, prior_fn, param_names,
-            min_track_length=min_track_length, num_steps=num_steps,
-            seed=seed, show_progress=show_progress,
-        )
-    else:
-        raise ValueError(f"engine must be 'map' or 'svi', got {engine!r}")
+    table = fit_table_map(
+        tracks, batched_model_fn, dt_s, prior_fn, param_names,
+        min_track_length=min_track_length, max_batch_size=max_batch_size,
+        seed=seed, show_progress=show_progress,
+    )
+    return table.rename(rename)

@@ -41,7 +41,7 @@ covariance functions are plain broadcasting arithmetic (no reshaping of
 their own), so passing (n_tracks, 1, 1)-shaped D/alpha/sigma inside the
 plate is all it takes to get a batched (n_tracks, n_disp, n_disp) covariance
 and a `MultivariateNormal` with batch_shape=(n_tracks,) -- same physics, one
-extra `with` block. `inference.fit_all_tracks` groups tracks by shared
+extra `with` block. `inference._per_track_table` groups tracks by shared
 track_length (many tracking datasets have several tracks sharing a length
 exactly, e.g. everything that survived to a fixed acquisition cutoff) and
 fits each group with one `batched_*` SVI run instead of one optimizer call
@@ -52,7 +52,7 @@ would suggest -- one plated call per length-group amortizes that trace cost
 across every track in the group (see FINDINGS.md for a measured example).
 
 `inference.py` runs these two ways: fast batched MAP-like fit
-(`fit_all_tracks`, mean-field SVI on the `batched_*` models) for the full
+(`fit_table_map`, batched exact MAP on the `batched_*` models) for the full
 per-track table, and full NUTS posteriors (`sample_posterior`, single-track
 models) for a handful of illustrative tracks. MLE, in the pre-numpyro
 version of this package a separate implementation with its own optimizer, is

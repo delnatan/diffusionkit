@@ -3,7 +3,7 @@ the direct counterpart to `validate_localization_bias.py`, run against the
 same kind of question but with `bayes.simulate_fbm_tracks` ground truth and
 no MSD anywhere in the estimator.
 
-One inference engine (`bayes.inference.fit_all_tracks`) serves both the
+One inference engine (`diffusionkit.bayes.fit_table_svi`) serves both the
 informative Bayesian fit and, with `bayes.WEAK_ANOMALOUS_PRIOR`, what used
 to be a separate MLE implementation -- used below only where a flat prior is
 specifically the point (checks 2 and 3): check 2 as a prior-free test of
@@ -44,29 +44,33 @@ See FINDINGS.md for results from running these checks.
 """
 from __future__ import annotations
 
-import sys
 import time
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Run straight from a clone without installing: put the repo root ahead of
+# sys.path so `import diffusionkit` resolves. Harmless once pip-installed.
 sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 import polars as pl
 
-from bayes import (
-    AnomalousModelPrior,
-    NormalModelPrior,
+from diffusionkit.bayes import (
     WEAK_ANOMALOUS_PRIOR,
     WEAK_NORMAL_PRIOR,
+    AnomalousModelPrior,
+    NormalModelPrior,
     batched_anomalous_diffusion_model,
     batched_normal_diffusion_model,
+    fit_table_svi,
     sigma_prior_from_localization,
-    fit_all_tracks,
     simulate_fbm_tracks,
-    plot_bias_vs_D_null,
-    plot_alpha_recovery,
+)
+from diffusionkit.bayes.viz import (
     plot_D_recovery,
+    plot_alpha_recovery,
+    plot_bias_vs_D_null,
 )
 
 EXPERIMENT = "validate_bayes_recovery"
@@ -98,7 +102,7 @@ def weak_normal_prior(sigma_x_um: np.ndarray, sigma_y_um: np.ndarray) -> NormalM
 
 
 def fit_anomalous(sim: pl.DataFrame, prior_fn, min_track_length: int, suffix: str) -> pl.DataFrame:
-    fit = fit_all_tracks(
+    fit = fit_table_svi(
         sim, batched_anomalous_diffusion_model, dt_s=DT_S, prior_fn=prior_fn,
         param_names=PARAM_NAMES, min_track_length=min_track_length,
     )
@@ -110,7 +114,7 @@ def fit_anomalous(sim: pl.DataFrame, prior_fn, min_track_length: int, suffix: st
 
 
 def fit_normal(sim: pl.DataFrame, prior_fn, min_track_length: int, suffix: str) -> pl.DataFrame:
-    fit = fit_all_tracks(
+    fit = fit_table_svi(
         sim, batched_normal_diffusion_model, dt_s=DT_S, prior_fn=prior_fn,
         param_names=["D", "sigma"], min_track_length=min_track_length,
     )
@@ -215,7 +219,7 @@ def check_2_alpha_recovery() -> None:
         sigma_loc_um=SIGMA_LOC_UM, seed=200,
     )
     truth = sim.select(["track_id", "true_D_um2_s_alpha", "true_alpha"]).unique()
-    fit = fit_all_tracks(
+    fit = fit_table_svi(
         sim, batched_anomalous_diffusion_model, dt_s=DT_S, prior_fn=weak_prior,
         param_names=PARAM_NAMES, min_track_length=10,
     ).join(truth, on="track_id")
@@ -261,9 +265,9 @@ def check_3_short_track_degeneracy() -> None:
             n_replicates=N_REP, track_length=track_length, dt_s=DT_S,
             sigma_loc_um=SIGMA_LOC_UM, seed=300 + track_length,
         )
-        weak = fit_all_tracks(sim, batched_anomalous_diffusion_model, dt_s=DT_S, prior_fn=weak_prior,
+        weak = fit_table_svi(sim, batched_anomalous_diffusion_model, dt_s=DT_S, prior_fn=weak_prior,
                                param_names=PARAM_NAMES, min_track_length=track_length)
-        bay = fit_all_tracks(sim, batched_anomalous_diffusion_model, dt_s=DT_S, prior_fn=informative_prior,
+        bay = fit_table_svi(sim, batched_anomalous_diffusion_model, dt_s=DT_S, prior_fn=informative_prior,
                               param_names=PARAM_NAMES, min_track_length=track_length)
         frac_weak = degenerate_fraction(weak["D_alpha"], weak["alpha"])
         frac_bayes = degenerate_fraction(bay["D_alpha"], bay["alpha"])

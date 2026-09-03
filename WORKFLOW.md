@@ -9,18 +9,18 @@ have.
 
 | You have | Call | Why |
 | --- | --- | --- |
-| A handful of tracks, interactive/exploratory use | `bayes.fit_track` | Bayesian is the more honest estimator with little data (no MSD-curve summary-statistic loss, priors do real work) -- see FINDINGS.md's "D should be reported in log-space" and short-track sections. |
-| Hundreds-to-thousands of tracks, a full-dataset table | `analysis.fit_population` + `bayes.fit_population` | Classic MSD is fast and a useful cross-check; the Bayesian fit costs more at this scale but is worth it for the same honesty reasons, and is now itself a one-liner. |
-| Short (track_length 5-10) tracks where each dataset's orientation is arbitrary | `bayes.anisotropy.analyze` (+ `null_calibration` for a population verdict) | A model-*comparison* question, not a point estimate -- see below. Kept as its own module, not a third `model=` option, because it's used differently: population-pooled, not per-track-table-shaped. |
+| A handful of tracks, interactive/exploratory use | `diffusionkit.bayes.fit_track` | Bayesian is the more honest estimator with little data (no MSD-curve summary-statistic loss, priors do real work) -- see FINDINGS.md's "D should be reported in log-space" and short-track sections. |
+| Hundreds-to-thousands of tracks, a full-dataset table | `diffusionkit.classic.fit_population` + `diffusionkit.bayes.fit_population` | Classic MSD is fast and a useful cross-check; the Bayesian fit costs more at this scale but is worth it for the same honesty reasons, and is now itself a one-liner. |
+| Short (track_length 5-10) tracks where each dataset's orientation is arbitrary | `diffusionkit.bayes.anisotropy.analyze` (+ `null_calibration` for a population verdict) | A model-*comparison* question, not a point estimate -- see below. Kept as its own module, not a third `model=` option, because it's used differently: population-pooled, not per-track-table-shaped. |
 
-All three sit on top of the same validated primitives (`bayes.fit_map`,
-`fit_batch_map`, `sample_posterior`, `bayes_factor.py`, ...) -- nothing below
+All three sit on top of the same validated primitives (`diffusionkit.bayes.fit_map`,
+`fit_table_map`, `sample_posterior`, `bayes_factor.py`, ...) -- nothing below
 changes what those compute, only how many lines it takes to call them.
 
 ## Load data (every workflow starts here)
 
 ```python
-from analysis import AcquisitionParams, load_tracks, assert_contiguous_tracks
+from diffusionkit.classic import AcquisitionParams, load_tracks, assert_contiguous_tracks
 
 params = AcquisitionParams(pixel_size_um=0.1043, dt_s=0.033)
 tracks = load_tracks("mobile_beads_1to200.csv", params)
@@ -31,11 +31,11 @@ assert_contiguous_tracks(tracks)  # both pipelines assume a gapless, uniform fra
 units (`x_um`, `y_um`, `sigma_x_um`, `sigma_y_um`, ...). Every function below
 takes a `tracks`-shaped DataFrame (or a single-track slice of one).
 
-## Low-data workflow: `bayes.fit_track`
+## Low-data workflow: `diffusionkit.bayes.fit_track`
 
 ```python
 import polars as pl
-from bayes import fit_track
+from diffusionkit.bayes import fit_track
 
 track = tracks.filter(pl.col("track_id") == 42)
 fit = fit_track(track, params.dt_s, model="anomalous")  # model="normal" for D, alpha pinned to 1
@@ -65,8 +65,8 @@ Full runnable example: `scripts/quickstart_single_track.py`.
 ## Bulk workflow: thousands of tracks
 
 ```python
-from analysis import fit_population as fit_population_classic
-from bayes import fit_population as fit_population_bayes
+from diffusionkit.classic import fit_population as fit_population_classic
+from diffusionkit.bayes import fit_population as fit_population_bayes
 
 classic = fit_population_classic(tracks, params.dt_s)
 # classic.per_track, classic.ensemble, classic.ensemble_normal_fit, ...
@@ -81,12 +81,13 @@ Both run the same production path the two pipelines have always used
 (`compute_all_tamsd`/`fit_all_tracks` for classic; batched exact MAP for
 Bayes) -- this is a repackaging, not a different estimator.
 
-`bayes.fit_population`'s `engine="map"` (default) is FINDINGS.md's
-production choice: more accurate, better-calibrated, and the one worth its
-extra cost per-track. If the dataset is large enough that raw throughput
-becomes the binding constraint, `engine="svi"` is the documented escape
-valve (~9 vs. ~21 minutes on 365 real tracks in FINDINGS.md's benchmark,
-at some cost to calibration) -- same call, one keyword.
+`diffusionkit.bayes.fit_population` runs `inference.fit_table_map` (batched
+exact MAP), FINDINGS.md's production choice: more accurate and much better
+calibrated, and worth its extra cost per track. The faster SVI path
+(~9 vs. ~21 minutes on 365 real tracks) reports uncertainty 3-10x too
+narrow, so it is not offered as a keyword here -- call
+`inference.fit_table_svi` directly if you want the comparison the recovery
+scripts make.
 
 Full runnable examples: `scripts/run_msd_analysis.py`,
 `scripts/run_bayes_analysis.py`.
@@ -94,7 +95,7 @@ Full runnable examples: `scripts/run_msd_analysis.py`,
 ## Anisotropy workflow: short tracks, per-dataset orientation
 
 ```python
-from bayes import anisotropy
+from diffusionkit.bayes import anisotropy
 
 result = anisotropy.analyze(tracks, params.dt_s, min_track_length=5, max_track_length=10)
 # result.per_track: log_bf10 (the detector) + eps/psi posterior (descriptive) + geometry

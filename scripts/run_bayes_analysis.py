@@ -31,8 +31,8 @@ run_msd_analysis.py) -> save tables/figures.
 
 from __future__ import annotations
 
-import sys
 import time
+import sys
 from pathlib import Path
 
 import numpyro
@@ -42,15 +42,15 @@ numpyro.set_host_device_count(
 )  # must precede any jax device use -- for real parallel NUTS chains
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Run straight from a clone without installing: put the repo root ahead of
+# sys.path so `import diffusionkit` resolves. Harmless once pip-installed.
 sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 import polars as pl
-from analysis import AcquisitionParams, assert_contiguous_tracks, load_tracks
-from bayes import (
-    WEAK_ANOMALOUS_PRIOR,
-    fit_population,
-    fit_track,
+from diffusionkit.classic import AcquisitionParams, assert_contiguous_tracks, load_tracks
+from diffusionkit.bayes import WEAK_ANOMALOUS_PRIOR, fit_population, fit_track
+from diffusionkit.bayes.viz import (
     plot_D_alpha_joint,
     plot_classic_vs_bayes_joint,
     plot_estimator_scatter,

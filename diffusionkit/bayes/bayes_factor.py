@@ -45,9 +45,8 @@ import numpy as np
 import numpyro.distributions as dist
 import polars as pl
 from jax.scipy.special import logsumexp
-from tqdm import tqdm
 
-from .inference import _stack_tracks
+from .inference import _Batch, _per_track_table
 from .likelihood import anisotropic_displacement_covariance
 from .priors import AnisotropicModelPrior
 
@@ -143,54 +142,37 @@ def per_track_log_bayes_factor(
     seed: int = 0,
     show_progress: bool = True,
 ) -> pl.DataFrame:
-    """log BF10 for every eligible track in `tracks` (same input schema
-    `inference.fit_all_tracks` expects: track_id, frame, x_um, y_um,
-    track_length), one row per track (`track_id`, `track_length`, `n_disp`,
-    `log_bf10`).
+    """log BF10 for every eligible track in `tracks`, one row per track
+    (`track_id`, `track_length`, `n_disp`, `log_bf10`). Same input schema the
+    `inference.fit_table_*` builders take.
 
-    Tracks are grouped by shared track_length purely for efficient batched
-    Monte Carlo evaluation (`batched_log_bayes_factor_anisotropy` needs
-    every track in one call to share a covariance shape, same reason
-    `fit_all_tracks`/`fit_batch_map` group that way -- reuses
-    `inference._stack_tracks` for the grouping/stacking itself). This is an
-    implementation detail only: `log_bf10` is a per-track additive quantity
-    (log evidence) by the time this returns, so it can be aggregated
-    (`aggregate_log_bayes_factor`) across *any* grouping the caller wants
-    afterward, including across tracks of different lengths.
+    Grouping by shared track_length (via `inference._per_track_table`) is
+    purely for efficient batched Monte Carlo: every track in one
+    `batched_log_bayes_factor_anisotropy` call must share a covariance shape.
+    That is an implementation detail only -- `log_bf10` is a per-track
+    additive quantity (log evidence) by the time this returns, so
+    `aggregate_log_bayes_factor` can pool it across *any* grouping the caller
+    wants afterward, including across tracks of different lengths.
 
-    `prior` is shared across every track (not a per-track `prior_fn` the way
-    `fit_all_tracks` takes one, e.g. from `sigma_prior_from_localization`):
-    `_log_marginal_likelihoods_batch` draws one shared set of Monte Carlo
-    prior samples for a whole batch specifically so every track in it can
-    reuse the same `n_mc` covariance matrices -- a genuinely per-track prior
-    would need its own Monte Carlo draws per track, losing that reuse. Not
-    needed for the N=5-10 regime this targets (see this module's docstring).
+    `prior` is shared across every track, not a per-track `prior_fn` the way
+    the `fit_table_*` builders take one: `_log_marginal_likelihoods_batch`
+    draws one shared set of Monte Carlo prior samples per batch precisely so
+    every track in it reuses the same `n_mc` covariance matrices, and a
+    genuinely per-track prior would lose that reuse. Not needed for the
+    N=5-10 regime this targets (see this module's docstring).
     """
-    eligible = tracks.filter(pl.col("track_length") >= min_track_length)
-    lengths = eligible["track_length"].unique().sort().to_list()
 
-    chunks = []
-    progress = tqdm(total=eligible["track_id"].n_unique(), desc="per_track_log_bayes_factor",
-                     unit="track", disable=not show_progress)
-    for track_length in lengths:
-        group = eligible.filter(pl.col("track_length") == track_length)
-        particles, dx, dy, _, _ = _stack_tracks(group)
-        n_disp = track_length - 1
-
-        progress.set_postfix(track_length=track_length, n_tracks=len(particles))
-        logbf = np.asarray(batched_log_bayes_factor_anisotropy(
-            jnp.asarray(dx), jnp.asarray(dy), dt_s, n_disp, prior, n_mc=n_mc, seed=seed
+    def fit_batch(batch: _Batch) -> pl.DataFrame:
+        log_bf10 = np.asarray(batched_log_bayes_factor_anisotropy(
+            jnp.asarray(batch.dx), jnp.asarray(batch.dy), dt_s, batch.n_disp,
+            prior, n_mc=n_mc, seed=seed,
         ))
-        chunks.append(pl.DataFrame({
-            "track_id": particles,
-            "track_length": [track_length] * len(particles),
-            "n_disp": [n_disp] * len(particles),
-            "log_bf10": logbf.tolist(),
-        }))
-        progress.update(len(particles))
-    progress.close()
+        return pl.DataFrame({**batch.index(), "log_bf10": log_bf10.tolist()})
 
-    return pl.concat(chunks).sort("track_id")
+    return _per_track_table(
+        tracks, fit_batch, "per_track_log_bayes_factor", min_track_length,
+        show_progress=show_progress,
+    )
 
 
 def aggregate_log_bayes_factor(per_track: pl.DataFrame, label_col: str) -> pl.DataFrame:

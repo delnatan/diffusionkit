@@ -62,8 +62,8 @@ See FINDINGS.md for results from running these checks.
 """
 from __future__ import annotations
 
-import sys
 import time
+import sys
 from pathlib import Path
 
 import numpyro
@@ -71,6 +71,8 @@ import numpyro
 numpyro.set_host_device_count(4)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Run straight from a clone without installing: put the repo root ahead of
+# sys.path so `import diffusionkit` resolves. Harmless once pip-installed.
 sys.path.insert(0, str(REPO_ROOT))
 
 import jax.numpy as jnp
@@ -78,19 +80,19 @@ import numpy as np
 import polars as pl
 from numpyro.diagnostics import hpdi
 
-from bayes import (
+from diffusionkit.bayes import (
     anisotropic_displacement_covariance,
     displacement_covariance,
     sample_posterior,
 )
-from bayes.anisotropy import (
+from diffusionkit.bayes.anisotropy import (
     AnisotropicModelPrior,
     WEAK_ANISOTROPIC_PRIOR,
     batched_anisotropic_diffusion_model,
     batched_log_bayes_factor_anisotropy,
     simulate_anisotropic_tracks,
 )
-from bayes.viz import plot_estimator_scatter
+from diffusionkit.bayes.viz import plot_estimator_scatter
 
 EXPERIMENT = "validate_anisotropy_recovery"
 FIG_DIR = REPO_ROOT / "results" / "figures" / EXPERIMENT

@@ -3,9 +3,9 @@
 Estimate how fast a particle diffuses -- and whether its motion is normal or
 anomalous -- from single-particle tracking (SPT) data, two ways:
 
-- **classic** (`analysis/`) -- fit a curve to the mean squared displacement.
-  The standard method, fast, and a useful cross-check.
-- **Bayesian** (`bayes/`) -- fit the exact likelihood of the raw
+- **classic** (`diffusionkit.classic`) -- fit a curve to the mean squared
+  displacement. The standard method, fast, and a useful cross-check.
+- **Bayesian** (`diffusionkit.bayes`) -- fit the exact likelihood of the raw
   displacements. No MSD curve is computed anywhere. Slower, and much more
   honest when data are scarce.
 
@@ -35,7 +35,7 @@ numpyro, tqdm. CPU-only jax is fine -- nothing here needs a GPU.
 Verify:
 
 ```bash
-python -c "from bayes import fit_track; print('ok')"
+python -c "from diffusionkit.bayes import fit_track; print('ok')"
 ```
 
 ---
@@ -47,9 +47,9 @@ Bayesian side, in twelve lines.
 
 ```python
 import polars as pl
-from analysis import AcquisitionParams, load_tracks, compute_all_tamsd
-from analysis.fitting import fit_normal_diffusion, n_fit_points
-from bayes import fit_track
+from diffusionkit.classic import AcquisitionParams, load_tracks, compute_all_tamsd
+from diffusionkit.classic.fitting import fit_normal_diffusion, n_fit_points
+from diffusionkit.bayes import fit_track
 
 params = AcquisitionParams(pixel_size_um=0.1043, dt_s=0.033)
 tracks = load_tracks("mobile_beads_1to200.csv", params)
@@ -200,7 +200,7 @@ informative prior turns it back. One model, one likelihood, one code path.
 
 **The statistics are this simple. The computation is not** -- see
 [Making it fast](#making-it-fast) below, which is where most of the code in
-`bayes/` actually goes.
+`diffusionkit/bayes/` actually goes.
 
 ---
 
@@ -211,16 +211,16 @@ namespaces -- so it is always obvious which estimator produced a number.
 
 | You have | Call |
 | --- | --- |
-| A handful of tracks, exploratory | `bayes.fit_track` |
-| Hundreds to thousands of tracks | `analysis.fit_population` (fast cross-check) + `bayes.fit_population` |
-| Short tracks, orientation arbitrary | `bayes.anisotropy.analyze` |
+| A handful of tracks, exploratory | `diffusionkit.bayes.fit_track` |
+| Hundreds to thousands of tracks | `diffusionkit.classic.fit_population` (fast cross-check) + `diffusionkit.bayes.fit_population` |
+| Short tracks, orientation arbitrary | `diffusionkit.bayes.anisotropy.analyze` |
 
 `WORKFLOW.md` works each of these through in full.
 
 ### Load data (both pipelines)
 
 ```python
-from analysis import AcquisitionParams, load_tracks, assert_contiguous_tracks
+from diffusionkit.classic import AcquisitionParams, load_tracks, assert_contiguous_tracks
 
 params = AcquisitionParams(pixel_size_um=0.1043, dt_s=0.033)
 tracks = load_tracks("mobile_beads_1to200.csv", params)
@@ -235,7 +235,7 @@ Every function below takes this DataFrame or a single-track slice of it.
 ### Classic API -- `analysis`
 
 ```python
-from analysis import fit_population
+from diffusionkit.classic import fit_population
 
 fit = fit_population(tracks, params.dt_s)
 
@@ -255,7 +255,7 @@ individually if you want the pieces.
 Two entry points, split by regime.
 
 ```python
-from bayes import fit_track, fit_population
+from diffusionkit.bayes import fit_track, fit_population
 
 # single-track regime
 fit = fit_track(track, params.dt_s, model="anomalous")
@@ -276,13 +276,13 @@ table = fit_population(tracks, params.dt_s, model="both")
 already measured for those frames -- independent information, never that
 track's own MSD, so it is not smuggling the classic estimate back in.
 
-### Anisotropy -- `bayes.anisotropy`
+### Anisotropy -- `diffusionkit.bayes.anisotropy`
 
 Kept in its own module rather than added as a third `model=` option,
 because it answers a different *kind* of question.
 
 ```python
-from bayes import anisotropy
+from diffusionkit.bayes import anisotropy
 
 result = anisotropy.analyze(tracks, params.dt_s, min_track_length=5, max_track_length=10)
 result.per_track   # log_bf10 (the detector) + eps/psi posterior (descriptive)
@@ -315,13 +315,13 @@ p-value against a matched-composition isotropic null. Calibration costs
 ## Making it fast
 
 The statistics above are a page of algebra. Nearly everything else in
-`bayes/` exists to make evaluating them tractable on real datasets. If you
+`diffusionkit/bayes/` exists to make evaluating them tractable on real datasets. If you
 are reading the code and wondering why it is not shorter, this section is
 the answer.
 
 ### Numerical ground rules
 
-- **float64 everywhere.** `bayes/__init__.py` sets
+- **float64 everywhere.** `diffusionkit/bayes/__init__.py` sets
   `jax.config.update("jax_enable_x64", True)` on import. jax defaults to
   float32, which is not enough precision for a covariance whose motion and
   noise terms can differ by orders of magnitude (a slow particle observed
@@ -359,26 +359,35 @@ through the same broadcasting covariance code yields a
 `(n_tracks, n_disp, n_disp)` batch for free. Only the trace cost changes,
 amortized across every track in the group.
 
-### Two engines, and why the default is the slower one
+### Three table builders, and why the slowest is production
 
-| | `engine="map"` (default) | `engine="svi"` |
-| --- | --- | --- |
-| Method | L-BFGS-B on numpyro's own unconstrained `potential_fn`, exact JAX gradient + Hessian | Mean-field `AutoNormal` guide, Adam-optimized ELBO |
-| Uncertainty | Laplace, from the exact Hessian | Guide quantiles |
-| 365 real tracks | ~21 min | ~9 min |
-| Calibration | alpha stderr within 1-4% of NUTS | **3-10x too narrow** |
+`inference.py` has three single-batch engines -- `fit_map`,
+`sample_posterior` (NUTS), `fit_batch_svi` -- and three per-track table
+builders wrapping them, all sharing one grouping loop:
+
+| | `fit_table_map` | `fit_table_svi` | `fit_table_nuts` |
+| --- | --- | --- | --- |
+| Method | L-BFGS-B on numpyro's unconstrained `potential_fn`, exact JAX gradient + Hessian | Mean-field `AutoNormal` guide, Adam-optimized ELBO | Full NUTS |
+| Uncertainty | Laplace, from the exact Hessian | Guide quantiles | HPDI from draws |
+| 365 real tracks | ~21 min | ~9 min | far slower |
+| Calibration | alpha stderr within 1-4% of NUTS | **3-10x too narrow** | reference |
 
 Mean-field SVI assumes the parameters are independent in the posterior.
 They are not -- D_alpha, alpha, and `sigma_loc` are strongly correlated,
 and that correlation carries much of the real uncertainty. Throwing it away
-produces intervals that look great and are wrong. So MAP is the production
-default and SVI is the documented escape valve for when throughput is the
-binding constraint. Same call, one keyword.
+produces intervals that look great and are wrong.
+
+So `fit_population` runs `fit_table_map` and offers no engine switch: a
+keyword that silently changed how trustworthy the intervals are (and, since
+the two report different statistics, what the columns are named) is not a
+convenience. `fit_table_svi` remains importable and is what the recovery
+scripts compare against; `fit_table_nuts` is for when posterior shape
+matters, and backs the anisotropy workflow's `eps` intervals.
 
 MAP's accuracy has a price. Its Hessian is dense over *every* free
 parameter in the call at once, so cost is superlinear in batch size: 10
 tracks ~6s, 20 ~8s, 40 ~27s, and 140 tracks **ran out of memory**.
-`fit_batch_map` therefore splits each length-group into sub-batches of
+`fit_table_map` therefore splits each length-group into sub-batches of
 `max_batch_size` (default 20) and appends results -- trading some
 amortization back for a memory ceiling that does not depend on how many
 tracks share a length. (A block-diagonal Hessian via `jax.vmap` over
@@ -418,32 +427,38 @@ Three choices make it cheap and stable:
 
 ### Known cost centers
 
-- `_stack_tracks` marshals a length-group into arrays with one polars
-  filter per `track_id`. It is a Python loop, and on large groups it is a
-  measurable fraction of wall time. `partition_by` would be faster.
-- The dense Hessian, as above.
-- `analysis/__init__.py` and `bayes/__init__.py` both import their `viz`
-  module, which pulls in matplotlib and seaborn at import time.
+- The dense Hessian, as above -- the one real scaling limit.
+- Every table builder marshals a length-group from polars into stacked
+  numpy arrays (`_stack_tracks`). It is linear and cheap next to the fit
+  itself, but it is a Python-level step in an otherwise vectorized path.
+
+Plotting is deliberately *not* on this list any more: `viz` is a submodule
+of each pipeline rather than a re-export, so neither `import diffusionkit`
+nor `from diffusionkit import bayes` pulls in matplotlib.
 
 ---
 
 ## Layout
 
 ```
-analysis/     classic MSD pipeline
-  io.py         CSV -> tidy polars DataFrame in physical units
-  msd.py        per-track TAMSD, n_pairs-weighted ensemble MSD
-  fitting.py    normal (linear) and anomalous (log-log) curve fits
-  api.py        fit_population
-bayes/        exact-likelihood Bayesian pipeline
-  likelihood.py the covariance -- the only place the physics lives
-  model.py      numpyro models (single-track and batched_*)
-  priors.py     prior dataclasses, WEAK_* presets, per-track sigma prior
-  inference.py  fit_map, sample_posterior, fit_batch_map, fit_batch_svi
-  api.py        fit_track, fit_population
-  bayes_factor.py / anisotropy.py   log BF10, analyze, null_calibration
-scripts/      runnable studies (below)
-results/      tables/ and figures/, one subfolder per script
+diffusionkit/
+  __init__.py     load_tracks + AcquisitionParams (polars only, no jax)
+  classic/        MSD-curve pipeline
+    io.py           CSV -> tidy polars DataFrame in physical units
+    msd.py          per-track TAMSD, n_pairs-weighted ensemble MSD
+    fitting.py      normal (linear) and anomalous (log-log) curve fits
+    api.py          fit_population
+  bayes/          exact-likelihood pipeline
+    likelihood.py   the covariance -- the only place the physics lives
+    model.py        numpyro models (single-track and batched_*)
+    priors.py       prior dataclasses, WEAK_* presets, per-track sigma prior
+    inference.py    engines (fit_map / sample_posterior / fit_batch_svi) and
+                    table builders (fit_table_map / _svi / _nuts)
+    api.py          fit_track, fit_population
+    bayes_factor.py log BF10
+    anisotropy.py   analyze, null_calibration
+scripts/          runnable studies (below)
+results/          tables/ and figures/, one subfolder per script
 ```
 
 Both packages also carry `simulate.py` (ground-truth generators, same
@@ -492,7 +507,7 @@ Stated plainly; `FINDINGS.md` has the measurements behind each.
   exposure duty cycle), because camera exposure is not in the input schema.
 - **Per-track anisotropy sensitivity is limited by design** at
   `track_length` 5-10. Only the population-level sum is a detector.
-- **`converged` from `fit_batch_map` is per sub-batch**, not per track --
+- **`converged` from `fit_table_map` is per sub-batch**, not per track --
   there is one optimizer call per sub-batch. Keep `max_batch_size` modest
   if per-track granularity matters.
 - **Tracks must be gapless.** `assert_contiguous_tracks` enforces it; there
