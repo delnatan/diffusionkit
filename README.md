@@ -80,23 +80,24 @@ Bayesian  D =  0.1004  (0.0700, 0.1440) um^2/s
           sigma_loc = 0.0142 um
 ```
 
-The classic fit returns a **negative diffusion coefficient**, silently. It
-is not a bug in the implementation -- a least-squares line through three
-noisy, correlated MSD points has no reason to come back with a positive
-slope, and nothing in the method forbids it. Ask the same track for an
-exponent and it returns `alpha = -0.16`, which is not a number the physics
-admits either.
+The classic fit returns a **negative diffusion coefficient**, silently.
+That's not a bug: a least-squares line through three noisy, correlated MSD
+points has no reason to come back with a positive slope, and nothing in the
+method stops it from going negative. Fit the same track for `alpha` instead
+of `D` and it returns `alpha = -0.16` -- also not a number the physics
+allows.
 
-The Bayesian fit cannot do this. `D` and `sigma_loc` are positive by their
-prior's support and `alpha` is bounded to `(0, 2)`, so an impossible answer
-is not in the parameter space to begin with -- and it reports an interval,
-which on nine displacements is wide, as it should be. Its anomalous fit
-says `alpha = 0.45 (0.17, 0.73)`: sub-diffusive, with the uncertainty
-stated, rather than `-0.16` stated as fact. That difference follows entirely
-from the operating principle below, not from more data or a better
-optimizer.
+The Bayesian fit cannot land on either. Its priors give `D` and `sigma_loc`
+only positive support and keep `alpha` inside `(0, 2)`, so an impossible
+answer simply isn't in the parameter space to begin with. The interval it
+reports is wide, because nine displacements don't pin much down -- but it's
+never nonsense: the anomalous fit gives `alpha = 0.45 (0.17, 0.73)`,
+sub-diffusive with the uncertainty stated, instead of `-0.16` stated as
+fact. That difference comes entirely from the operating principle below,
+not from more data or a better optimizer.
 
-Runnable version: `scripts/quickstart_single_track.py`.
+Runnable version (same track, same point about the Bayesian side, plus a
+NUTS check and the anomalous fit's `K`): `scripts/quickstart_single_track.py`.
 
 ---
 
@@ -110,7 +111,7 @@ Used consistently throughout the code, this README, `WORKFLOW.md`,
 | **track** | One particle's trajectory: `track_length` localizations on a gapless, uniform frame grid |
 | **displacement** | `dx[k] = x[k+1] - x[k]`. A track has `n_disp = track_length - 1` of them |
 | **lag** | A frame separation `n`; `tau = n * dt_s` is the corresponding time |
-| **D** | Brownian diffusion coefficient, um^2/s. From a model with `alpha` pinned to 1 |
+| **D** | Standard (Brownian) diffusion coefficient, um^2/s. From a model with `alpha` pinned to 1 |
 | **K** | Generalized diffusion coefficient, um^2/s^alpha. From a model with `alpha` free |
 | **alpha** | Anomalous exponent. `<1` sub-diffusive, `1` Brownian, `>1` super-diffusive |
 | **sigma_loc** | Static localization precision, um. Per-frame position uncertainty. Named `sigma` as a model parameter (`fit.params["sigma"]`), `sigma_*_um` in output columns |
@@ -122,6 +123,13 @@ Used consistently throughout the code, this README, `WORKFLOW.md`,
 Two conventions that hold everywhere: 2D MSD is `4*K*tau^alpha` (so
 per-axis it is `2*K*tau^alpha`), and a `_um`/`_um2_s`/`_um2_s_alpha`
 column suffix marks physical units while a bare name is dimensionless.
+
+One more thing worth knowing up front: **K is D, generalized.** At
+`alpha = 1` they describe the same physics, but they are not the same
+*number* in practice. `D` comes from the normal model (`alpha` pinned to
+1); `K` comes from the anomalous model (`alpha` free). Those are two
+separate fits, not one fit read two ways, so don't expect them to agree
+exactly even on a track that is genuinely Brownian.
 
 ---
 
@@ -170,7 +178,7 @@ form:
 dx ~ Normal(0, Sigma)          Sigma = Sigma_motion + Sigma_noise
 
 Sigma_motion[i,j] = gamma(|i-j|),   gamma(k) = K * dt^alpha *
-                                               (|k+1|^a - 2|k|^a + |k-1|^a)
+                             (|k+1|^alpha - 2*|k|^alpha + |k-1|^alpha)
 Sigma_noise[i,i]   =  2*sigma_loc^2
 Sigma_noise[i,i+-1] = -sigma_loc^2
 ```
@@ -188,12 +196,13 @@ Three things follow from this being *exact* rather than a summary:
   comparing them is a comparison of nested models, not of two separately
   derived formulas.
 - **Localization noise is a parameter, not a correction.** `sigma_loc` is
-  estimated jointly with D from the same likelihood. The classic pipeline
-  instead subtracts an offset estimated separately, which overcorrects when
-  that estimate is itself noisy.
-- **Impossible answers are unreachable.** D and `sigma_loc` get LogNormal
-  priors, alpha a Beta prior rescaled to `(0,2)`. Positivity and bounds are
-  properties of the parameter space, so no post-hoc flag is needed.
+  estimated jointly with the diffusion coefficient from the same
+  likelihood. The classic pipeline instead subtracts an offset estimated
+  separately, which overcorrects when that estimate is itself noisy.
+- **Impossible answers are unreachable.** The diffusion coefficient (`K` or
+  `D`, depending on the model) and `sigma_loc` get LogNormal priors, alpha a
+  Beta prior rescaled to `(0,2)`. Positivity and bounds are properties of
+  the parameter space, so no post-hoc flag is needed.
 
 ### Bayes, in one line
 
@@ -448,13 +457,13 @@ per-track blocks would fix this properly; not yet implemented.)
 ### Report in log-space
 
 The Laplace approximation is Gaussian in numpyro's *unconstrained* space --
-`log(D)` for a LogNormal-supported parameter. So the results table reports
-D and `sigma_loc` as `exp(log_mean +- log_stderr)`: an asymmetric interval
-in physical units, plus `log10_*` columns. Pushing that Gaussian through
-`exp()` and quoting a symmetric `mean +- stderr` instead understates the
-skew and can produce an interval touching zero for a strictly positive
-quantity. alpha, being bounded rather than positive-scaled, keeps a
-symmetric interval.
+`log(D)` or `log(K)` for a LogNormal-supported parameter. So the results
+table reports the diffusion coefficient and `sigma_loc` as
+`exp(log_mean +- log_stderr)`: an asymmetric interval in physical units,
+plus `log10_*` columns. Pushing that Gaussian through `exp()` and quoting a
+symmetric `mean +- stderr` instead understates the skew and can produce an
+interval touching zero for a strictly positive quantity. alpha, being
+bounded rather than positive-scaled, keeps a symmetric interval.
 
 ### The Bayes factor, computed efficiently
 
