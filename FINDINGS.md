@@ -424,24 +424,73 @@ the uncertainty for short tracks. Same treatment applies to D_alpha and to
 sigma (also `LogNormal`-supported), for whatever secondary/diagnostic value
 they retain per the previous section.
 
-## Anisotropy detection (`diffusionkit.bayes.anisotropic_diffusion_model`, N=5-10 tracks)
+## Anisotropy detection (`diffusionkit.bayes.nested`, per track, all track lengths)
 
-A Bayesian anisotropy score was drafted externally (Gemini) as a
-polar-turning-angle Bayes-factor scheme; reviewed and replaced with a direct
-extension of the existing exact-likelihood MVN machinery instead: H1 is a
-rotated anisotropic diffusion tensor (`D_mean`, `eps` in [0,1) =
-(D_par-D_perp)/(D_par+D_perp), orientation `psi`) at alpha=1, with H0 nested
-exactly at `eps=0` (verified: `anisotropic_displacement_covariance(eps=0,
-any psi)` reduces bit-for-bit to the isotropic `displacement_covariance`,
-`scripts/validate_anisotropy_recovery.py`'s `_reduction_sanity_check`). This
-replaces the draft's separately-constructed, undifferentiated H0/H1 pair and
-its underived turning-angle "noise convolution" step with one generative
-model the way `normal_diffusion_model`/`anomalous_diffusion_model` already
-relate. Output is a posterior credible interval on `eps` (median + HPDI),
-not a Bayes-factor point score -- see the project's anisotropy-detection
-plan for the full critique/design rationale.
+The question is per-track and it is a model comparison: does *this*
+trajectory's data prefer a rotated diffusion tensor over a single scalar D?
+H0 is nested exactly inside H1 (verified bit-for-bit, check 2 of
+`validate_anisotropy_recovery.py`), so the two hypotheses share one
+generative model rather than being separately constructed.
+
+**Superseded approaches, and why.** Three earlier pieces were removed
+outright; the measurements that justified removing them are below.
+
+| Removed | Why |
+| --- | --- |
+| Prior-predictive Monte Carlo Bayes factor (`bayes_factor.py`) | Valid only while the likelihood stays weak relative to the prior -- i.e. only on tracks too short to answer the question. Returns nothing usable past `n_disp` ~19. |
+| Separate NUTS pass for the `eps`/`psi` posterior | Redundant. One nested-sampling run yields the evidence *and* the posterior. |
+| Ensemble aggregation (`aggregate_log_bayes_factor`, `null_calibration`) | Ensemble averaging, which this package exists to avoid -- and it answered the wrong question besides (see "Pooling is not just an averaging objection"). |
+
+### Coordinates: log-Euclidean, not (eps, psi)
+
+The tensor is carried as `Sigma = 2*dt*D_g*expm(h1*sigma_z + h2*sigma_x)`,
+making `(log D_g, h1, h2, log sigma)` unconstrained in `R^4` with
+positive-definiteness automatic. This is not cosmetic:
+
+- **Isotropy becomes an interior point** `h=(0,0)` instead of a boundary
+  with an unidentified `psi` sitting on it. The old parameterization made
+  the comparison non-regular (Davies' problem), which is why a likelihood-
+  ratio test was never an option and why a Savage-Dickey ratio needed a
+  boundary-corrected density fit.
+- **Rotation invariance becomes structural.** A lab-frame rotation by
+  `theta` rotates `(h1,h2)` by `2*theta`, so any isotropic prior on the
+  h-plane is exactly invariant to the mounting angle.
+- **The prior becomes elicitable.** `tau_log_ratio` is the prior sd of
+  `0.5*log(D_par/D_perp)`, a log-fold. The old `Beta(1, eps_b)` prior on
+  `eps` pushes forward onto the h-plane as a density `~1/|h|` -- *singular
+  exactly at the null*. That is the mechanism behind the step-function
+  behaviour of the `eps_b` sweep recorded below: a prior "flat in eps" is
+  not flat on the plane, it piles mass onto isotropy in a non-smooth way.
+
+The problem is formally identical to polarization-fraction debiasing in
+radio/CMB astronomy: `(h1,h2)` is `(Q,U)`, and estimating the magnitude
+`|h|` from noisy components is biased high by construction. The
+sampling-noise floor below is that same bias.
+
+### The DST-I identity: n 2x2 solves instead of one (2n,2n) Cholesky
+
+Static localization noise contributes `T (x) sigma^2 I2` to the displacement
+covariance with `T = tridiag(-1,2,-1)`, and T's eigenbasis is the type-I
+discrete sine transform. Because that noise term is *isotropic*, the DST
+block-diagonalizes the full `(2n,2n)` covariance into n independent 2x2
+blocks `Sigma_m + lambda_j*sigma^2*I2`, `lambda_j = 2-2cos(j*pi/(n+1))`.
+
+Exact, not approximate: `max |dense - DST| = 1.1e-13` across 12
+parameter/length combinations (check 1 of `validate_anisotropy_recovery.py`,
+against `likelihood.anisotropic_displacement_covariance`). It also makes the
+structure legible -- the anisotropy is the eccentricity *common to all n
+modes*, and the noise only inflates each mode isotropically. This is what
+makes a five-figure likelihood-evaluation count per track affordable.
 
 ### The real obstacle is a sampling-noise floor, not localization noise
+
+> Measured under the earlier `(D_mean, eps, psi)` parameterization with a
+> `Beta(eps_a, eps_b)` prior, both since replaced. The finding itself is
+> parameterization-independent and still governs everything above -- it is
+> the reason per-track anisotropy needs track length. The `eps_b` sweep is
+> retained because it is what the log-Euclidean coordinates explain: a prior
+> flat in `eps` is singular at isotropy on the h-plane, which is why the
+> trade-off behaved like a step function rather than a dial.
 
 The Gemini draft's stated concern (Section 6.1) was localization noise
 creating spurious apparent anisotropy. `validate_anisotropy_recovery.py`
@@ -477,7 +526,7 @@ against sensitivity almost as a step function, not a gentle dial --
 | 1.0 | 0.50 | 100% | 100% |
 | 1.5 | 0.40 | 94% | 100% |
 | 2.0 | 0.33 | 32% | 54% |
-| 3.0 (shipped default) | 0.25 | 0% | 0% |
+| 3.0 (the then-default) | 0.25 | 0% | 0% |
 | 5.0 | 0.17 | 0% | 0% |
 
 ("false-positive rate" = fraction of true-eps=0 tracks with posterior
@@ -500,192 +549,134 @@ directly recovering eps from simulated data with negligible noise and many
 replicates pooled). A single 5-frame track does not contain enough
 information to reliably separate real anisotropy up to eps~0.6 from pure
 sampling noise, and a Bayesian model that reported a narrow, confident
-interval anyway would be *wrong*, not more sensitive. This is the
-concrete argument -- not just the a priori one in the design plan -- for why
-per-track-only inference (this iteration's scope) has limited standalone
-value at N=5, and why hierarchical/population-level pooling of `eps` (and
-`D_mean`) across tracks is the necessary next step, not an optional
-refinement: pooling is what lets the ensemble's information add up faster
-than any single 4-point track's sampling floor. Until that exists,
-`eps`'s posterior interval should be read/reported per-track as-is (wide
-intervals at N=5 are the honest answer, not a defect to fix by tightening
-the prior), not collapsed into a flag/threshold call the way the numbers
-above were only for characterizing the trade-off.
+interval anyway would be *wrong*, not more sensitive.
 
-Reduction check, false-positive/coverage tables, and recovery scatter plots
-reproducible via `scripts/validate_anisotropy_recovery.py`
-(`results/tables/validate_anisotropy_recovery/`,
-`results/figures/validate_anisotropy_recovery/`).
+At the time this was read as an argument for pooling `eps` across tracks.
+That conclusion was wrong, and is now retracted: pooling answers a different
+question than intended and invents anisotropy out of D-heterogeneity (see
+"Pooling is not just an averaging objection" below). The correct response is
+the one the evidence itself gives -- report the near-zero Bayes factor, and
+recognise that resolving anisotropy per track requires longer tracks, not
+more of them.
 
-### Reframing fixes it: ask "more anisotropic than free diffusion at this N", not "what is eps"
+Reduction check and detectability tables reproducible via
+`scripts/validate_anisotropy_recovery.py`
+(`results/tables/validate_anisotropy_recovery/`).
 
-Point/interval estimation of `eps` asks the data to pin down a continuous
-value; the sampling-noise floor above shows 4-9 displacements usually can't.
-Model *comparison* -- "is this track's data more consistent with some
-anisotropy than with none" -- is a different, better-posed question at this
-N: it doesn't need to resolve *how much* anisotropy, and a correctly
-constructed Bayes factor automatically weighs in how much apparent
-elongation is expected from sampling noise alone at this exact n_disp/D/sigma
-(no separately-simulated reference distribution needed -- that expectation
-falls directly out of integrating the isotropic model's own likelihood over
-its prior). Implemented as `diffusionkit.bayes.bayes_factor.log_bayes_factor_anisotropy`
-/ `batched_log_bayes_factor_anisotropy`: prior-predictive Monte Carlo
-estimate of `p(data|H1)` and `p(data|H0)` (H0 = H1 with `eps` pinned to 0),
-sharing Monte Carlo draws of `D_mean`/`sigma` between the two integrals
-(common random numbers) to cancel most of their variance out of the ratio.
-Chosen over a Savage-Dickey ratio off the NUTS posterior specifically
-because `eps=0` is a boundary point that no continuous posterior sample ever
-lands on exactly -- direct marginal-likelihood MC needs no density
-estimation there at all. This only works because the likelihood is weak
-relative to the prior at N=5-10 (confirmed above); a much longer, more
-informative track would need a smarter estimator (bridge/nested sampling).
+### Why nested sampling, and what it costs
 
-`scripts/validate_anisotropy_recovery.py` checks 3-4 (D_mean=0.05 um^2/s,
-dt=0.033s, n_mc=20000, `AnisotropicModelPrior()` default):
+Against prior-predictive Monte Carlo where MC is still trustworthy, and
+against Laplace where it is not (D=0.05 um^2/s, sigma_loc=0.025 um,
+dt=0.033 s, eps=0.8):
 
-- **Check 3 (null calibration, true eps=0):** median/mean logBF10 stays at
-  or below 0 at every track length (5/7/10) and both sigma regimes tested
-  (0.01, 0.05 um) -- e.g. track_length=5: median -0.008 (low sigma), -0.014
-  (high sigma); track_length=10: median -0.042/-0.052. 0% of tracks reach
-  even "moderate" evidence (logBF10>1.1) for anisotropy on truly isotropic
-  data, at any condition tested. No false-positive inflation, unlike the raw
-  `eps` threshold rule in checks 1-2.
+| n_disp | brute MC (400k) | jaxns | Laplace |
+| --- | --- | --- | --- |
+| 4 | +0.13 | +0.12 | +0.14 |
+| 19 | +2.82 | +2.85 | +2.99 |
+| 49 | -- | +13.15 | +12.58 |
+| 99 | -- | +18.57 | **+15.79** |
 
-- **Check 4 (ensemble aggregation, track_length=5):** individual-track
-  logBF10 is small regardless of true eps (consistent with check 3 -- a
-  single 5-frame track rarely reaches decisive evidence on its own, honestly
-  reflecting how little one track can say). But summing logBF10 across M
-  independent tracks sharing the same true (eps, psi) behaves exactly like
-  proper Bayesian evidence accumulation should:
+The blanks are the point: prior-predictive MC has no usable answer past
+`n_disp` ~19, which is exactly where the question becomes answerable.
+Laplace runs everywhere but is 2.8 nats low at `n_disp`=99. Adaptive
+Gauss-Hermite quadrature was also validated (converged at 5 nodes/dim,
+~650 likelihood evaluations, matching jaxns to 2 decimals) and is ~200x
+cheaper; it was not shipped because it is Laplace-centred and therefore
+assumes unimodality, which nested sampling does not.
 
-  | true eps | M=10 (median) | M=30 (median) | M=100 (median) |
-  |---|---|---|---|
-  | 0.0 | -0.06 | -0.14 | -0.46 |
-  | 0.3 | -0.01 | -0.04 | -0.15 |
-  | 0.6 | +0.17 | +0.47 | +1.55 |
-  | 0.8 | +0.35 | +1.07 | +3.69 |
+The cost is a **stochastic evidence**: jaxns reports +/-0.18 to 0.41 nats
+per track. Seed-to-seed scatter on a real 200-frame track was 0.145 against
+a quoted 0.449, so the error bar is conservative. That uncertainty is
+negligible against a long track's log BF10 and larger than the entire signal
+on a 5-frame track -- hence `log_bf10_stderr` is a first-class output column
+and the `evidence` label reports `inconclusive (below sampler noise)`.
 
-  Isotropic (eps=0) and mildly-anisotropic (eps=0.3) populations stay flat
-  or trend *more negative* as M grows (expected: the log BF's expectation
-  under a true H0 is `-KL(p0||p1) <= 0`, so summing more evidence for a true
-  null drives the total down, not up -- no risk of manufacturing false
-  significance by pooling more tracks). Genuinely anisotropic populations
-  (eps=0.6, 0.8) cross into "moderate" (>1.1) evidence by M~30 and approach
-  "strong"/"decisive" (>2.3-4.6) by M~100.
+### Per-track detectability: it needs track length, not track count
 
-**Practical recommendation:** report both outputs, for different questions.
-`eps`'s posterior interval (checks 1-2) describes one track's own
-diffusivity tensor, honestly wide at N=5-10 -- useful as a rough per-track
-descriptive summary, not a detector. `log_bayes_factor_anisotropy`
-(checks 3-4) answers "is there evidence of anisotropy" -- per track it will
-almost always read "inconclusive" at this N (correctly, not a bug), but
-summed across a population of tracks expected to share the same anisotropic
-behavior (e.g. all tracks from one condition/structure), it is a
-well-calibrated, genuinely sensitive detector. This is the corrected version
-of the original Gemini draft's own instinct (a Bayes-factor "score",
-aggregated via sec. 5.3's log-sum-across-tracks) -- valid here specifically
-because H0 and H1 share one generative model and one well-specified prior,
-which the draft's version did not have.
+Fraction of *single* tracks reaching strong evidence (log BF10 > 3) on their
+own, 60 independent tracks per cell:
 
-### Real-data anisotropy check (`mobile_beads_1to200.csv`, track_length 5-10)
+| track_length | eps=0 (false positive) | eps=0.5 | eps=0.8 |
+| --- | --- | --- | --- |
+| 5 | 0% | 0% | 0% |
+| 10 | 0% | 0% | 0% |
+| 20 | 0% | 3% | 33% |
+| 50 | 0% | 35% | 97% |
+| 100 | 0% | 75% | 100% |
+| 200 | 2% | 98% | 100% |
 
-`scripts/run_anisotropy_analysis.py`. 185/539 tracks fall in the N=5-10
-target range. These are freely-diffusing beads, so this doubles as a
-real-data negative control for everything validated on simulation above.
+Median log BF10 under the null drifts *more* negative as tracks lengthen
+(-0.02 at L=5 to -1.98 at L=200), which is what proper evidence does for a
+true H0. False positives stay at 0% throughout.
 
-- **Individual tracks behave exactly as predicted**: per-track log BF10
-  median -0.0005, mean +0.019, IQR [-0.058, +0.083]; 0% reach even
-  "moderate" evidence (>1.1) alone. Matches the simulated null-calibration
-  result -- no single short track is ever overconfident.
-- **The ensemble sum does not**: summed across all 185 tracks, log BF10 =
-  **+3.54** -- "strong" on the generic Jeffreys scale. Stable across MC
-  seed (0-3) and n_mc (20000/60000): range +3.26 to +3.54, so not Monte
-  Carlo noise.
-- **Calibrated against its own null, this holds up as a real excess, not
-  sampling luck.** The generic Jeffreys buckets say nothing about how much
-  an M=185-track sum can fluctuate by chance -- calibrated instead against
-  200 simulated isotropic replicates at the *exact* real composition
-  (39/49/32/24/30/11 tracks at track_length 5/6/7/8/9/10, D_mean=0.05,
-  sigma_loc=0.025 from the prior's own central values): null median -1.71,
-  p90 +0.33, p99 +1.94, max +3.46 across all 200 replicates. The observed
-  +3.54 exceeds every one of them (empirical p<0.005).
-- **A persistent instrumental x/y asymmetry (astigmatism, non-square
-  pixels) was checked and ruled out**: pooling the *full* dataset (539
-  tracks, all lengths, ~25700 displacements -- far more statistical power)
-  gives var(dy)/var(dx) = 1.0004, essentially perfectly balanced. A real
-  optical/camera effect should show up there too and doesn't. The
-  short-track subset alone shows var(dy)/var(dx) = 1.11 pooled, and 69% of
-  its track_length=7 tracks individually lean positive (not a couple of
-  outliers driving the sum -- top 3 of 32 tracks account for only 1.1 of
-  that subgroup's +2.54).
-- **Interpretation, held loosely: this is not evidence the beads are
-  physically anisotropic.** It's evidence that this particular short-track
-  subset deviates from the null model in a way neither Monte Carlo noise
-  nor matched-composition sampling variance explains, and neither does a
-  simple optics artifact. Plausible untested mechanisms: (a)
-  motion-direction-dependent track-length censoring (a known SPT effect --
-  particles that move far/fast in some direction during a window may be
-  disproportionately likely to leave the tracking gate in that direction,
-  which correlates *why a track is short* with its displacement direction
-  in a way this model has no way to distinguish from real anisotropy); (b)
-  unmodeled transient/correlated noise specific to short acquisition
-  windows (stage/vibration); (c) the short-track subset isn't a random
-  draw from the full population, and whatever caused early loss might
-  correlate with something else. None were testable with the metadata
-  available here (no acquisition timestamps or stage log in this CSV).
-- **Practical takeaway**: the method performed as designed -- never
-  overconfident on any individual track, and sensitive enough at the
-  ensemble level to surface a real, calibration-confirmed deviation that
-  per-track methods would have missed entirely. That sensitivity is exactly
-  the point of the ensemble-aggregation piece; it just surfaced a data
-  question (why is this specific subset non-isotropic) rather than
-  confirming the expected null outright. Worth a follow-up with more
-  metadata before drawing any physical conclusion.
+This is why `analyze` has no `max_track_length`. The old cap of 10 existed
+because the Monte Carlo estimator broke above it, and its effect was to
+restrict the analysis to precisely the tracks that hold too little
+information to answer anything. Short tracks are still worth running -- the
+near-zero answer is the honest one -- they just should not be read as a
+null result to be summed away.
 
-Reproducible via `scripts/run_anisotropy_analysis.py`
-(`results/tables/anisotropy/`, `results/figures/anisotropy/`).
+### Pooling is not just an averaging objection -- it is also wrong
 
-### Visual inspection: mapping per-track outputs back onto the real tracks
+Two separate problems, both measured.
 
-Same script, extended to also fit each track's `eps`/`psi` posterior
-(`inference.fit_table_nuts`, NUTS) and join it onto `log_bf10` in
-one `per_track_master.csv` (`particle`, `track_length`, `x_mean_um`/
-`y_mean_um`, `log_bf10`, `eps_median`/`_lo`/`_hi`, `psi_median_rad`/`_lo_rad`/
-`_hi_rad`, `D_mean_median_um2_s`, `D_par_median_um2_s`,
-`D_perp_median_um2_s` -- see README's column reference). Every quantity keeps
-its own explicit name (`log_bf10` vs. `eps_median`) specifically so the two
-methods' outputs are never mistaken for each other -- they answer different
-questions and, per the checks above, have very different reliability at this
-N.
+**It answers a different question than intended.** Summing per-track
+log BF10 is the evidence for an H1 in which *each track draws its own
+independent orientation*. The physically interesting alternative -- one
+shared axis -- is a different model. At M=100 tracks of length 5 (median
+over 40 replicate datasets):
 
-- **`plot_trajectory_gallery`** (top-9 by `log_bf10` vs. a random-9 sample,
-  `trajectory_gallery_top_logbf.png`/`_random.png`): the top-log_bf10 tracks
-  visibly look more directional/elongated by eye (e.g. particles 2987, 1903,
-  3678 trace an almost straight diagonal) than the random sample (more
-  wandering, e.g. particles 62, 4102) -- a useful sanity check that the score
-  tracks something visually real, not just a number.
-- **`plot_eps_vs_log_bf`** (`eps_vs_log_bf_scatter.png`): `eps_median` and
-  `log_bf10` are strongly monotonically related (expected -- both come from
-  the same underlying data), but every point's 90% HPDI is wide and crosses
-  `eps=0` except the single most extreme track -- the plotted picture of
-  exactly the "eps alone has limited per-track power, log_bf10 is the piece
-  to trust" finding above, not just a claim about it.
-- **`plot_eps_forest`** (`eps_forest_top30.png`): confirms the same point for
-  the 30 tracks driving the ensemble result specifically -- all 30 have a 90%
-  HPDI upper bound near 0.6, i.e. even the tracks `log_bf10` is most
-  confident about remain individually honest/wide on `eps`.
-- **`plot_spatial_map`** (`spatial_map_log_bf.png`, diverging red/blue
-  centered at 0; `spatial_map_eps.png`, sequential): no obvious large-scale
-  spatial gradient or clustering across the ~55x55 um field of view for
-  either quantity -- but the two single most extreme tracks by both measures
-  (particles 2987 and 1903, the top two in the gallery above) sit right next
-  to each other spatially (~20,17 um). n=2 is not evidence of a real
-  region-specific effect on its own, but it's a concrete, checkable lead for
-  the follow-up this section already flagged (motion-direction-dependent
-  censoring, acquisition-window effects) rather than a settled finding.
+| scenario | sum of per-track log BF10 | shared-axis log BF10 |
+| --- | --- | --- |
+| isotropic | -0.66 | -2.11 |
+| eps=0.5, shared psi | +1.60 | **+22.68** |
+| eps=0.5, random psi per track | +1.92 | **-1.85** |
+| eps=0.8, shared psi | +7.89 | **+95.72** |
 
-Adding a new per-particle label column (e.g. once a spatial/structural
-classification exists) is a join onto `per_track_master.csv` plus
-`diffusionkit.bayes.anisotropy.aggregate_log_bayes_factor(..., label_col=...)` -- no new plotting or
-fitting code needed; `plot_spatial_map`/`plot_trajectory_gallery` already
-take any table with the right column names.
+The summed statistic cannot distinguish rows 2 and 3 -- it accumulates
+evidence just as happily for tracks with no common axis at all.
+
+**A pooled fit invents anisotropy from D-heterogeneity.** Fitting M=20
+genuinely isotropic tracks with one shared D, varying only the per-track D
+spread:
+
+| D spread | D range spanned | median log BF10 | max |
+| --- | --- | --- | --- |
+| 0.00 dec | 0.050-0.050 | -1.45 | -0.67 |
+| 0.15 dec | 0.025-0.100 | -1.14 | -0.62 |
+| 0.30 dec | 0.013-0.199 | -1.24 | +0.72 |
+| 0.50 dec | 0.005-0.500 | -1.19 | **+2.98** |
+
+Half a decade of ordinary diffusivity heterogeneity -- unremarkable in a
+real bead or particle population -- produces moderate false evidence for
+anisotropy. Per-track inference is structurally immune, because every track
+carries its own D.
+
+### Real-data check (`mobile_beads_1to200.csv`)
+
+These beads are freely diffusing, so this is a negative control. The eight
+longest tracks (all `track_length` 200, the regime where a single track
+*can* resolve the question) give a median log BF10 of **-2.24**, every one
+of them landing on "moderate" or "strong" evidence *for isotropy*, with none
+reaching strong evidence for anisotropy. The single longest track:
+log BF10 = -2.72 +/- 0.45, `eps` = 0.088 with 90% HPDI [0.009, 0.163].
+
+That is the correct answer, and it is a cleaner result than the previous
+ensemble-based one. The earlier finding -- an ensemble sum of +3.54 over 185
+short tracks, exceeding its matched-composition null (p<0.005) and left
+unexplained -- was reproduced under the new parameterization (+7.44 against
+a null max of +5.62) and then diagnosed: the shared-axis evidence for the
+same 185 tracks is only **+0.22**, versus +7.44 for the
+independent-orientation alternative. log BF(shared vs. independent) = -7.2.
+
+So the excess was real but orientation-*incoherent*: the tracks did not
+share an axis. That is the signature of a per-track mechanism -- e.g. the
+direction-dependent track-length censoring listed as untested in the
+original note, where each short track's apparent axis aligns with its own
+escape direction -- and not of a structural or optical axis, which would
+have produced a shared one. The small coherent remainder (`h1` = -0.077)
+matches the `var(dy)/var(dx)` = 1.11 measured on that subset
+(`0.5*log(1.11)` = 0.052).
+
+The practical consequence: that anomaly was an artifact of analysing only
+short tracks, and pooling was what made it look like a finding.

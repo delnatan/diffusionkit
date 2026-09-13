@@ -440,12 +440,13 @@ def plot_bias_vs_D_null(
 def plot_log_bf_distribution(
     per_track: pl.DataFrame, title: str, log_bf_col: str = "log_bf10"
 ) -> plt.Figure:
-    """Histogram of per-track log BF10 (`bayes_factor.per_track_log_bayes_factor`'s
-    output) against the Jeffreys-scale reference lines (>1.1 moderate, >2.3
-    strong) -- the diagnostic for "does this population of tracks show any
-    individual anisotropy signal," complementary to the ensemble sum
-    (`bayes_factor.aggregate_log_bayes_factor`), which answers whether the
-    *population as a whole* does."""
+    """Histogram of per-track log BF10 (`nested.per_track_nested`'s output)
+    against the Jeffreys-scale reference lines (>1.1 moderate, >2.3 strong).
+
+    Read as a distribution of independent per-track answers, not as a
+    population score: the bars are not pooled and deliberately cannot be.
+    On short tracks the histogram piles up at zero, which is the honest
+    result rather than a null to be summed away."""
     fig, ax = plt.subplots(figsize=(6, 4.5))
     vals = per_track[log_bf_col].to_numpy()
     ax.hist(vals, bins=40, color="steelblue", edgecolor="white", alpha=0.85)
@@ -471,8 +472,7 @@ def plot_trajectory_gallery(
     direct "does this track's own inferred anisotropy score look plausible
     by eye" check: `panel_labels` (one string per `track_ids`, e.g.
     "logBF10=+1.23") is meant to carry whatever per-track attribute
-    (`bayes_factor.per_track_log_bayes_factor`'s `log_bf10`,
-    `inference.fit_table_nuts`'s `eps_median`, ...) motivated
+    (`nested.per_track_nested`'s `log_bf10` or `eps_median`, ...) motivated
     picking that track, so the plotted shape can be checked against the
     number that was computed from it.
 

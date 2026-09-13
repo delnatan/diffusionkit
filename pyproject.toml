@@ -20,6 +20,14 @@ dependencies = [
     "tqdm",
 ]
 
+[project.optional-dependencies]
+# Nested sampling, for the validation/oracle scripts only -- an independent
+# evidence estimate that stays reliable on long, informative tracks, where the
+# prior-predictive Monte Carlo in bayes/bayes_factor.py does not (see
+# FINDINGS.md). The production estimators never import it, so it stays out of
+# the core dependency set.
+nested = ["jaxns>2.5"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["diffusionkit"]
 

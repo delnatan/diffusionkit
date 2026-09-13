@@ -140,29 +140,29 @@ One row per simulated `track_length`, not per track.
 | `degenerate_frac_weak` | Fraction of flat-prior fits landing on a parameter's support boundary (`D_alpha` below floor, or `alpha` within epsilon of 0 or 2). |
 | `degenerate_frac_bayes` | Same, informative-prior fit. |
 
-### `anisotropy/per_track_master.csv` (anisotropy, `run_anisotropy_analysis.py`)
+### `anisotropy/per_track_anisotropy.csv` (anisotropy, `run_anisotropy_analysis.py`)
 
-One row per short (track_length 5-10) track: `per_track_log_bayes_factor`'s
-Bayes factor joined against `fit_table_nuts`'s (NUTS) `eps`/`psi`
-posterior and each track's mean field-of-view position -- the table the
-plots in FINDINGS.md ("Visual inspection") are built from. Every quantity
-keeps its own explicit name; `log_bf10` and the `eps_*`/`psi_*` columns
-answer different questions with very different per-track reliability at
-this N (see Method notes above and FINDINGS.md) and should not be conflated.
+One row per track, from a single pair of nested-sampling runs each
+(`bayes.nested.per_track_nested`): the evidence, the posterior it came from,
+and the track's mean field-of-view position. There is no track-length cap
+and nothing is pooled -- each row is one trajectory's own answer.
 
 | Column | Meaning |
 | --- | --- |
 | `track_id`, `track_length`, `n_disp` | As above. |
-| `log_bf10` | Log Bayes factor for anisotropy (`bayes_factor.log_bayes_factor_anisotropy`) -- the quantity meant to be trusted per-track at this N; near 0 for nearly every real track here (see FINDINGS.md). |
-| `eps_median`, `eps_lo`, `eps_hi` | Anisotropy-fraction posterior median and 90% HPDI (NUTS) -- a secondary, honestly-wide descriptive interval, not a per-track detector (FINDINGS.md's sampling-noise-floor result). |
-| `psi_median_rad`, `psi_lo_rad`, `psi_hi_rad` | Orientation posterior median/HPDI, radians in [0, pi) -- expect this to be poorly constrained whenever `eps_hi` is small (the psi-ridge FINDINGS.md documents). |
-| `D_mean_median_um2_s`, `D_par_median_um2_s`, `D_perp_median_um2_s` | Mean/parallel/perpendicular diffusivity posterior medians from the same anisotropic-model fit (with matching `_lo_um2_s`/`_hi_um2_s` columns, omitted here for brevity). |
-| `x_mean_um`, `y_mean_um` | Track's mean position in the field of view -- used for `plot_spatial_map`; join any future per-track spatial/structural label onto this table by `track_id` to group by it (`diffusionkit.bayes.anisotropy.aggregate_log_bayes_factor`). |
+| `log_bf10` | Log Bayes factor for anisotropy vs. isotropy. Positive favours anisotropy, negative favours isotropy, near zero means this track does not say. Self-calibrating -- it already accounts for the apparent elongation sampling noise produces at this track length, so there is no null reference table to compare against. |
+| `log_bf10_stderr` | The nested sampler's own uncertainty on `log_bf10` (both runs' evidence errors in quadrature). **Read this before `log_bf10`**: on short tracks it is larger than the evidence itself, which is the honest statement that the track holds too little information. |
+| `evidence` | Jeffreys-scale label derived from the two columns above, e.g. `strong evidence for isotropic`, or `inconclusive (below sampler noise)` when \|`log_bf10`\| does not exceed `log_bf10_stderr`. |
+| `eps_median`, `eps_lo`, `eps_hi` | Anisotropy-fraction posterior median and 90% HPDI, from the same run that produced the evidence. Descriptive, not a second detector: read `log_bf10` for whether, `eps` for how much. |
+| `psi_median_rad` | Orientation posterior, radians in [0, pi). Summarised as a **circular** mean on the doubled angle -- psi is an axis direction, so an ordinary mean would break across the 0/pi wrap. |
+| `psi_circular_sd_rad` | Circular sd of psi. Expect it near its maximum whenever `eps_hi` is small: with little anisotropy there is no axis to orient. |
+| `D_arith_mean_median_um2_s` | **The diffusion coefficient in the usual sense**: `(D_par+D_perp)/2 = tr(D)/2`. This is what reproduces the 2D MSD, since `MSD_2D(tau) = 2*(D_par+D_perp)*tau`, and what an isotropic fit of the same track recovers. Use this one unless you specifically want a single axis. |
+| `D_geom_mean_median_um2_s` | `sqrt(D_par*D_perp)` -- the natural scale in log-Euclidean coordinates (`exp(u)`), reported because it is the quantity the sampler actually estimates. **Not** the MSD-equivalent D: at `D_par/D_perp = 9` it is 40% low. |
+| `D_par_median_um2_s`, `D_perp_median_um2_s` | Diffusivity along and across the inferred axis, `D_par/D_perp = exp(2|h|)`. Each is a *single-axis* quantity -- `D_par` alone overstates overall mobility (by 80% at a 9x axis ratio) and is not "the" D. |
+| `x_mean_um`, `y_mean_um` | Track's mean position in the field of view -- used by `plot_spatial_map`. |
 
-`anisotropy/per_track_log_bf.csv` and `anisotropy/per_track_eps_posterior.csv`
-hold the two halves of this table before the join (same columns, no
-`x_mean_um`/`y_mean_um`); `anisotropy/ensemble_log_bf_all.csv` and
-`_by_track_length.csv` hold the population-level `sum_log_bf10` this
-script's verdict is based on; `anisotropy/null_calibration_ensemble_sums.csv`
-holds the matched-composition null distribution (`null_sum_log_bf10`) it's
-calibrated against.
+`anisotropy/log_bf10_by_track_length_band.csv` summarises the same table by
+track-length band (median `log_bf10`, count reaching strong evidence, median
+sampler uncertainty), which is where the length dependence is easiest to
+see. It is a descriptive breakdown of independent per-track answers, not a
+pooled statistic.

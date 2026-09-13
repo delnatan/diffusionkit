@@ -14,26 +14,20 @@ same construction Kepten, Bronshtein & Garini (Phys. Rev. E 87, 052713,
 anywhere in this package** -- D_alpha, alpha, and the localization precision
 sigma are fit directly from `dx = diff(x)`, `dy = diff(y)`.
 
-Three motion models:
+Two motion models:
   `normal_diffusion_model`     -- 2 params (D, sigma), alpha pinned to 1,
                                    shares `likelihood.displacement_covariance`.
   `anomalous_diffusion_model`  -- 3 params (D_alpha, sigma, alpha), shares
                                    `likelihood.displacement_covariance`.
-  `anisotropic_diffusion_model`-- 4 params (D_mean, eps, psi, sigma), alpha
-                                   pinned to 1, shares
-                                   `likelihood.anisotropic_displacement_covariance`.
+Anisotropy is not a numpyro model here at all: it is a model *comparison*,
+run by nested sampling over a log-Euclidean tensor in `nested.py`, which
+carries its own likelihood and prior.
+
 `fgn_gamma`'s alpha=1 reduction is exact (see likelihood.py), so the normal
 model isn't a separately-derived likelihood, just the alpha=1 restriction of
 the anomalous one -- kept as its own model because a genuinely
 Brownian-constrained D is often wanted on its own (e.g. for the classic-MSD
 D comparison), not just an anomalous fit that happens to land near alpha=1.
-Likewise `anisotropic_step_covariance`'s eps=0 reduction is exact (see
-likelihood.py), so `anisotropic_diffusion_model` is a strict generalization
-of `normal_diffusion_model`, not a separate model family -- see the project's
-anisotropy-detection plan for why this matters for a Bayes-factor-style
-comparison (H0 nested in H1, rather than a separately-constructed
-alternative that the null and alternative likelihoods might silently
-disagree about).
 
 Each also has a `batched_*` counterpart that wraps the same per-track sample
 statements in a `numpyro.plate("track", n_tracks)`: `likelihood.py`'s
@@ -61,13 +55,12 @@ same code, an (almost) flat prior.
 """
 from __future__ import annotations
 
-import jax
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
 
-from .likelihood import anisotropic_displacement_covariance, displacement_covariance
-from .priors import AnisotropicModelPrior, AnomalousModelPrior, NormalModelPrior
+from .likelihood import displacement_covariance
+from .priors import AnomalousModelPrior, NormalModelPrior
 
 
 def normal_diffusion_model(
@@ -138,60 +131,3 @@ def batched_anomalous_diffusion_model(
         mvn = dist.MultivariateNormal(jnp.zeros(n_disp), covariance_matrix=cov)
         numpyro.sample("dx_obs", mvn, obs=dx_um)
         numpyro.sample("dy_obs", mvn, obs=dy_um)
-
-
-def anisotropic_diffusion_model(
-    dx_um: jnp.ndarray, dy_um: jnp.ndarray, dt_s: float, n_disp: int, prior: AnisotropicModelPrior
-) -> None:
-    """H1 of the anisotropy plan: `normal_diffusion_model` generalized to a
-    rotated, anisotropic diffusion tensor (D_par/D_perp at unknown
-    orientation psi) instead of a shared D. `eps=0` is exactly
-    `normal_diffusion_model` (see `likelihood.anisotropic_step_covariance`'s
-    docstring) -- H0 is nested in H1 here rather than being a separately
-    derived model, so a Savage-Dickey-style comparison at eps=0 is valid and
-    the reported `eps` posterior is directly interpretable as an effect size
-    (see `priors.AnisotropicModelPrior` for why its prior shrinks toward 0).
-
-    Unlike `normal_diffusion_model`/`anomalous_diffusion_model`, x and y are
-    NOT sampled as two independent `n_disp`-dim MVNs sharing one covariance:
-    an anisotropic tensor at an orientation not aligned with the x/y axes
-    induces real x-y cross-covariance, so this needs one joint
-    `2*n_disp`-dim `MultivariateNormal` over the interleaved (dx,dy)
-    displacement vector (see `likelihood.anisotropic_displacement_covariance`).
-    """
-    D_mean = numpyro.sample("D_mean", dist.LogNormal(prior.log_D_mean, prior.log_D_sd))
-    eps = numpyro.sample("eps", dist.Beta(prior.eps_a, prior.eps_b))
-    psi = numpyro.sample("psi", dist.Uniform(0.0, jnp.pi))
-    sigma = numpyro.sample("sigma", dist.LogNormal(prior.log_sigma_mean, prior.log_sigma_sd))
-    numpyro.deterministic("D_par", D_mean * (1.0 + eps))
-    numpyro.deterministic("D_perp", D_mean * (1.0 - eps))
-    cov = anisotropic_displacement_covariance(n_disp, D_mean, eps, psi, dt_s, sigma**2)
-    d_obs = jnp.stack([dx_um, dy_um], axis=-1).reshape(-1)
-    mvn = dist.MultivariateNormal(jnp.zeros(2 * n_disp), covariance_matrix=cov)
-    numpyro.sample("d_obs", mvn, obs=d_obs)
-
-
-def batched_anisotropic_diffusion_model(
-    dx_um: jnp.ndarray, dy_um: jnp.ndarray, dt_s: float, n_disp: int,
-    prior: AnisotropicModelPrior, n_tracks: int,
-) -> None:
-    """`anisotropic_diffusion_model` for `n_tracks` tracks of the same
-    `n_disp` at once. Batches the joint covariance via `jax.vmap` over
-    `likelihood.anisotropic_displacement_covariance` rather than a
-    hand-broadcast version (that function's `jnp.kron` block assembly
-    doesn't extend over a leading batch axis the way the isotropic models'
-    plain elementwise `displacement_covariance` does) -- no `[:, None,
-    None]` reshaping needed as a result, `jax.vmap` handles it."""
-    with numpyro.plate("track", n_tracks):
-        D_mean = numpyro.sample("D_mean", dist.LogNormal(prior.log_D_mean, prior.log_D_sd))
-        eps = numpyro.sample("eps", dist.Beta(prior.eps_a, prior.eps_b))
-        psi = numpyro.sample("psi", dist.Uniform(0.0, jnp.pi))
-        sigma = numpyro.sample("sigma", dist.LogNormal(prior.log_sigma_mean, prior.log_sigma_sd))
-        numpyro.deterministic("D_par", D_mean * (1.0 + eps))
-        numpyro.deterministic("D_perp", D_mean * (1.0 - eps))
-        cov = jax.vmap(anisotropic_displacement_covariance, in_axes=(None, 0, 0, 0, None, 0))(
-            n_disp, D_mean, eps, psi, dt_s, sigma**2
-        )
-        d_obs = jnp.stack([dx_um, dy_um], axis=-1).reshape(n_tracks, -1)
-        mvn = dist.MultivariateNormal(jnp.zeros(2 * n_disp), covariance_matrix=cov)
-        numpyro.sample("d_obs", mvn, obs=d_obs)

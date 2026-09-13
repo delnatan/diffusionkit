@@ -6,6 +6,7 @@ is deliberately not re-exported here, so importing this package does not pull
 in matplotlib.
 """
 from .api import PopulationFit, fit_population
+from .features import track_geometry
 from .fitting import (
     AnomalousDiffusionFit,
     NormalDiffusionFit,

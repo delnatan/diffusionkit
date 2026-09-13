@@ -1,5 +1,9 @@
 """Prior hyperparameters for the two numpyro models in `model.py`.
 
+Anisotropy has its own prior, `nested.LogEuclideanAnisotropicPrior` --
+it parameterizes a diffusion *tensor* rather than a scalar D, and is
+consumed by a nested sampler rather than by numpyro.
+
 D/sigma priors are LogNormal, weakly informative -- the defaults below are a
 reasonable starting point for typical particle-tracking D and localization
 precision, meant to be overridden with dataset-appropriate values (e.g. from
@@ -50,53 +54,9 @@ class AnomalousModelPrior:
     alpha_conc: float = 2.0  # Beta(2,2)/2 -- mildly regularizing toward alpha=1
 
 
-@dataclass(frozen=True)
-class AnisotropicModelPrior:
-    """Prior for the 4-parameter (D_mean, eps, psi, sigma) anisotropic
-    Brownian model (`model.anisotropic_diffusion_model`). D_mean/sigma
-    follow the same LogNormal convention as `NormalModelPrior`.
-
-    eps = (D_par-D_perp)/(D_par+D_perp) in [0,1) is the anisotropy fraction;
-    eps_a/eps_b parameterize a Beta(eps_a, eps_b) prior that by default
-    (Beta(1,3)) shrinks toward eps=0 (isotropy) rather than being flat or
-    favoring anisotropy -- deliberately asymmetric, since at N=5 the null
-    (isotropic) explanation should be favored a priori absent evidence, not
-    treated as one of two equally-weighted options. This is the gap the
-    original Gemini-drafted note left unaddressed for its analogous kappa
-    concentration parameter (no prior was ever specified there).
-
-    psi (orientation, radians in [0, pi) -- a diffusion tensor axis has 180
-    degree symmetry) has no free hyperparameters: `model.py` always samples
-    it Uniform(0, pi), since there's no reason to prefer one orientation
-    over another a priori.
-
-    eps_b=3 is a deliberately conservative default, not a tuned optimum --
-    FINDINGS.md ("Anisotropy detection") found that at N=5 no single eps_b
-    gives both a low false-positive rate and useful per-track sensitivity
-    (the sampling-noise floor of a 4-point 2D covariance estimate is simply
-    too large), so this favors suppressing false positives on a truly
-    isotropic track over detecting real anisotropy from one track's data
-    alone. Read the full `eps` posterior (not a thresholded flag) and see
-    FINDINGS.md before relying on this for anything other than a rough,
-    per-track, honestly-wide interval -- population-level pooling (not yet
-    implemented) is what actually fixes the sensitivity side of this
-    trade-off.
-    """
-
-    log_D_mean: float = float(np.log(0.05))
-    log_D_sd: float = float(np.log(10) * 2)
-    eps_a: float = 1.0
-    eps_b: float = 3.0
-    log_sigma_mean: float = float(np.log(0.025))
-    log_sigma_sd: float = 0.5
-
-
 WEAK_NORMAL_PRIOR = NormalModelPrior(log_D_sd=float(np.log(10) * 4), log_sigma_sd=5.0)
 WEAK_ANOMALOUS_PRIOR = AnomalousModelPrior(
     log_D_sd=float(np.log(10) * 4), log_sigma_sd=5.0, alpha_conc=1.0
-)
-WEAK_ANISOTROPIC_PRIOR = AnisotropicModelPrior(
-    log_D_sd=float(np.log(10) * 4), eps_a=1.0, eps_b=1.0, log_sigma_sd=5.0
 )
 
 

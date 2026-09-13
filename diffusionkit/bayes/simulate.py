@@ -15,11 +15,14 @@ true_D_um2_s_alpha and true_alpha ground-truth columns, so it flows through
 either `analysis`'s MSD pipeline or this package's likelihood-based one
 unmodified.
 
-`simulate_anisotropic_tracks` is the same idea for
-`model.anisotropic_diffusion_model`: draws from
+`simulate_anisotropic_tracks` is the same idea for the anisotropy
+comparison in `nested.py`: draws from
 `likelihood.anisotropic_step_covariance` instead of `fgn_covariance`, same
 generative/inference-model-share-one-implementation principle, same output
 schema plus true_D_mean_um2_s/true_eps/true_psi in place of the fBm
+(true_D_mean_um2_s is the *arithmetic* mean (D_par+D_perp)/2, since
+D_par = D_mean*(1+eps) -- it pairs with `nested`'s
+`D_arith_mean_median_um2_s`, not `D_geom_mean_median_um2_s`)
 ground-truth columns.
 """
 from __future__ import annotations

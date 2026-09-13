@@ -11,11 +11,13 @@ have.
 | --- | --- | --- |
 | A handful of tracks, interactive/exploratory use | `diffusionkit.bayes.fit_track` | Bayesian is the more honest estimator with little data (no MSD-curve summary-statistic loss, priors do real work) -- see FINDINGS.md's "D should be reported in log-space" and short-track sections. |
 | Hundreds-to-thousands of tracks, a full-dataset table | `diffusionkit.classic.fit_population` + `diffusionkit.bayes.fit_population` | Classic MSD is fast and a useful cross-check; the Bayesian fit costs more at this scale but is worth it for the same honesty reasons, and is now itself a one-liner. |
-| Short (track_length 5-10) tracks where each dataset's orientation is arbitrary | `diffusionkit.bayes.anisotropy.analyze` (+ `null_calibration` for a population verdict) | A model-*comparison* question, not a point estimate -- see below. Kept as its own module, not a third `model=` option, because it's used differently: population-pooled, not per-track-table-shaped. |
+| "Is *this* track diffusing anisotropically?" | `diffusionkit.bayes.anisotropy.analyze` | A model-*comparison* question, not a point estimate -- see below. Its own module, not a third `model=` option: it compares two models by nested sampling rather than fitting one, and importing it pulls in matplotlib. |
 
-All three sit on top of the same validated primitives (`diffusionkit.bayes.fit_map`,
-`fit_table_map`, `sample_posterior`, `bayes_factor.py`, ...) -- nothing below
-changes what those compute, only how many lines it takes to call them.
+The first two sit on the same validated primitives (`diffusionkit.bayes.fit_map`,
+`fit_table_map`, `sample_posterior`) -- nothing below changes what those
+compute, only how many lines it takes to call them. The anisotropy workflow
+runs a different engine (`bayes.nested`, nested sampling) because it answers
+a different kind of question.
 
 ## Load data (every workflow starts here)
 
@@ -92,39 +94,57 @@ scripts make.
 Full runnable examples: `scripts/run_msd_analysis.py`,
 `scripts/run_bayes_analysis.py`.
 
-## Anisotropy workflow: short tracks, per-dataset orientation
+## Anisotropy workflow: is *this* track anisotropic?
 
 ```python
 from diffusionkit.bayes import anisotropy
 
-result = anisotropy.analyze(tracks, params.dt_s, min_track_length=5, max_track_length=10)
-# result.per_track: log_bf10 (the detector) + eps/psi posterior (descriptive) + geometry
-# result.ensemble:  sum_log_bf10 across all tracks (or grouped by label_col)
+per_track = anisotropy.analyze(tracks, params.dt_s)   # one row per trajectory
+per_track.select("track_id", "track_length", "log_bf10", "log_bf10_stderr", "evidence")
 ```
 
-`eps`'s posterior interval describes one track's own diffusivity tensor,
-honestly wide at N=5-10 -- a descriptive summary, not a detector.
-`log_bf10` (and its ensemble sum) is the actual detector: individual short
-tracks are almost always "inconclusive" by design (correctly, not a bug),
-but summed across a population that plausibly shares real anisotropic
-behavior, evidence accumulates correctly (FINDINGS.md, "Anisotropy
-detection"). Group by any column already on `tracks` via `label_col=`.
+`log_bf10` is the answer: positive favours anisotropy, negative favours
+isotropy, near zero means this track does not say. It is self-calibrating --
+a proper Bayes factor already accounts for how much apparent elongation
+sampling noise produces at this track length, so there is no null reference
+distribution to simulate and none is shipped. `eps_median`/`eps_lo`/`eps_hi`
+come from the same run and describe *how much*, once `log_bf10` has
+established *whether*.
 
-For a rigorous population-level verdict (not just eyeballing
-`sum_log_bf10` against the generic Jeffreys scale), calibrate against a
-matched-composition null:
+Read `log_bf10_stderr` alongside it. Nested sampling returns a stochastic
+evidence, and on a short track that uncertainty exceeds the evidence itself.
+The `evidence` column does this for you and says `inconclusive (below
+sampler noise)` when it happens.
 
-```python
-composition = {5: 39, 6: 49, 7: 32, ...}  # {track_length: n_tracks}, e.g. from a group_by
-null_sums = anisotropy.null_calibration(composition, params.dt_s, anisotropy.AnisotropicModelPrior(),
-                                          n_null=200)
-p_value = (null_sums >= result.ensemble["sum_log_bf10"][0]).mean()
-```
+### How long a track do you need?
 
-This costs real time (O(100) simulated replicate datasets) -- not run by
-default inside `analyze`.
+Anisotropy is answerable per track only when the track is long enough to
+carry the information. Measured fraction of single tracks reaching strong
+evidence (`log_bf10 > 3`) on their own, at D=0.05 um^2/s, dt=0.033 s:
 
-Full runnable example: `scripts/run_anisotropy_analysis.py`.
+| track_length | true eps=0 (false positives) | true eps=0.5 | true eps=0.8 |
+| --- | --- | --- | --- |
+| 5 | 0% | 0% | 0% |
+| 20 | 0% | 3% | 33% |
+| 50 | 0% | 35% | 97% |
+| 200 | 2% | 98% | 100% |
+
+Short tracks are not excluded -- `analyze` has no track-length cap, and it
+is worth running them precisely to see the honest near-zero answer. Just do
+not read structure into it.
+
+### What this workflow deliberately will not do
+
+It will not pool tracks. Summing `log_bf10` across trajectories is a form of
+ensemble averaging, which is the thing this package exists to avoid; worse,
+the sum answers "does each track have its own independent anisotropy",
+not "do these tracks share an axis". A pooled fit with one shared `D` also
+manufactures anisotropy out of ordinary `D`-heterogeneity once the spread
+reaches ~0.5 decades (FINDINGS.md). Per-track inference is immune to that,
+because every track carries its own `D`.
+
+Full runnable example: `scripts/run_anisotropy_analysis.py`
+(`--limit N` for a quick look at the N longest tracks).
 
 ## Where to go next
 

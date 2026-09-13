@@ -26,11 +26,16 @@ particles.
 
 ```bash
 git clone <this repo> && cd diffusionkit
-pip install -e .
+pip install -e ".[nested]"     # or: pip install -e .  (without anisotropy)
 ```
 
 Python >=3.11. Pulls in numpy, polars, scipy, matplotlib, seaborn, jax,
 numpyro, tqdm. CPU-only jax is fine -- nothing here needs a GPU.
+
+The `nested` extra adds `jaxns`, needed only by the anisotropy workflow
+(`diffusionkit.bayes.nested`). It is optional and imported lazily, so the
+rest of the package works without it. Note that jaxns currently depends on
+a `tfp-nightly` build, which is why it is not a core dependency.
 
 Verify:
 
@@ -216,7 +221,7 @@ namespaces -- so it is always obvious which estimator produced a number.
 | --- | --- |
 | A handful of tracks, exploratory | `diffusionkit.bayes.fit_track` |
 | Hundreds to thousands of tracks | `diffusionkit.classic.fit_population` (fast cross-check) + `diffusionkit.bayes.fit_population` |
-| Short tracks, orientation arbitrary | `diffusionkit.bayes.anisotropy.analyze` |
+| "Is *this* track anisotropic?" | `diffusionkit.bayes.anisotropy.analyze` |
 
 `WORKFLOW.md` works each of these through in full.
 
@@ -293,37 +298,62 @@ that is the layer below `fit_population`, not a different estimator.
 
 ### Anisotropy -- `diffusionkit.bayes.anisotropy`
 
-Kept in its own module rather than added as a third `model=` option,
-because it answers a different *kind* of question.
+Its own module rather than a third `model=` option, because it answers a
+different *kind* of question: not "what is this track's D" but "which of two
+models does this track's data prefer".
 
 ```python
 from diffusionkit.bayes import anisotropy
 
-result = anisotropy.analyze(tracks, params.dt_s, min_track_length=5, max_track_length=10)
-result.per_track   # log_bf10 (the detector) + eps/psi posterior (descriptive)
-result.ensemble    # sum_log_bf10, optionally grouped by label_col
+per_track = anisotropy.analyze(tracks, params.dt_s)   # one row per trajectory
+per_track.select("track_id", "track_length", "log_bf10", "log_bf10_stderr", "evidence")
 ```
 
-The model generalizes the Brownian one to a rotated diffusion tensor with
-principal diffusivities `D_mean*(1 +- eps)` at angle `psi`; `eps=0` reduces
-to it exactly, so H0 is nested in H1.
+The comparison is between a rotated diffusion tensor and a single scalar
+`D`. The tensor is carried in log-Euclidean coordinates,
+`Sigma = 2*dt*D_g*expm(h1*sigma_z + h2*sigma_x)`, so `(log D_g, h1, h2, log
+sigma)` is unconstrained in `R^4` with positive-definiteness automatic and
+isotropy at the *interior* point `h = (0,0)`. `D_par/D_perp = exp(2|h|)`,
+`eps = tanh|h|`, `psi = atan2(h2,h1)/2`. A lab-frame rotation by `theta`
+rotates `(h1,h2)` by `2*theta`, so an isotropic prior on `h` is exactly
+invariant to the mounting angle.
 
-At `track_length` 5-10 there are only 4-9 displacement vectors, and any
-continuous estimate of `eps` from that sits above a large sampling-noise
-floor -- a genuinely isotropic track often looks elongated by chance. So
-`eps` is reported as an honestly wide descriptive interval, and the
-**Bayes factor is the detector**:
+Both evidences are computed by nested sampling (`bayes/nested.py`, jaxns):
 
 ```
-log_BF10 = log p(data | eps free) - log p(data | eps = 0)
+log_BF10 = log p(data | h free) - log p(data | h = 0)
 ```
 
-Individual short tracks come back inconclusive almost every time -- that is
-correct, not a failure. Evidence accumulates by summing `log_bf10` across
-tracks that plausibly share the behavior (group by any column on `tracks`
-via `label_col=`), and `anisotropy.null_calibration` turns that sum into a
-p-value against a matched-composition isotropic null. Calibration costs
-~100 simulated replicate datasets, so it is a separate call.
+Nested sampling rather than an approximation, because this has to stay
+correct across the whole range of track lengths. A Laplace approximation
+is 2.8 nats wrong on a 100-displacement track; the Monte Carlo estimator
+this replaced was only valid while tracks were too short to answer the
+question anyway.
+
+**Read `log_bf10_stderr` next to `log_bf10`.** Nested sampling returns a
+stochastic evidence, and on a short track its uncertainty is larger than the
+evidence itself -- which is the honest statement that four displacement
+vectors cannot resolve the question. The `evidence` column says
+`inconclusive (below sampler noise)` when that happens.
+
+Whether a single track *can* answer depends on its length. Fraction reaching
+strong evidence (`log_bf10 > 3`) on their own:
+
+| track_length | true eps=0 | true eps=0.5 | true eps=0.8 |
+| --- | --- | --- | --- |
+| 5 | 0% | 0% | 0% |
+| 20 | 0% | 3% | 33% |
+| 50 | 0% | 35% | 97% |
+| 200 | 2% | 98% | 100% |
+
+Short tracks are not excluded and there is no length cap -- run them and
+read the honest near-zero answer. What this workflow will *not* do is pool
+tracks into an ensemble score: that is ensemble averaging, and a pooled fit
+with one shared `D` invents anisotropy out of ordinary `D`-heterogeneity
+once the spread reaches ~0.5 decades. Per-track inference is immune, since
+every track carries its own `D`.
+
+Nested sampling is an optional dependency: `pip install -e ".[nested]"`.
 
 ---
 
@@ -377,7 +407,7 @@ amortized across every track in the group.
 That grouping is written once. `_per_track_table` selects eligible tracks,
 splits them into length-homogeneous batches, optionally sub-batches those,
 runs the caller's fit, and stacks the result; the three table builders and
-the anisotropy Bayes factor all go through it and differ only in which
+the per-track anisotropy table all go through it and differ only in which
 engine they call and which columns they return.
 
 ### Three table builders, and why the slowest is production
@@ -403,7 +433,8 @@ keyword that silently changed how trustworthy the intervals are (and, since
 the two report different statistics, what the columns are named) is not a
 convenience. `fit_table_svi` remains importable and is what the recovery
 scripts compare against; `fit_table_nuts` is for when posterior shape
-matters, and backs the anisotropy workflow's `eps` intervals.
+matters. The anisotropy workflow uses none of the three -- one nested-
+sampling run yields its evidence and its `eps`/`psi` posterior together.
 
 MAP's accuracy has a price. Its Hessian is dense over *every* free
 parameter in the call at once, so cost is superlinear in batch size: 10
@@ -476,8 +507,8 @@ diffusionkit/
     inference.py    engines (fit_map / sample_posterior / fit_batch_svi) and
                     table builders (fit_table_map / _svi / _nuts)
     api.py          fit_track, fit_population
-    bayes_factor.py log BF10
-    anisotropy.py   analyze, null_calibration
+    nested.py       anisotropy evidence by nested sampling (optional: jaxns)
+    anisotropy.py   analyze, evidence_label
 scripts/          runnable studies (below)
 results/          tables/ and figures/, one subfolder per script
 ```
@@ -502,7 +533,7 @@ python scripts/run_bayes_analysis.py            # Bayesian, real data (run class
                                                 #   the comparison table joins against it)
 python scripts/validate_bayes_recovery.py       # Bayesian, simulated ground truth
 
-python scripts/run_anisotropy_analysis.py       # anisotropy, real data
+python scripts/run_anisotropy_analysis.py       # anisotropy, real data (--limit N for a quick look)
 python scripts/validate_anisotropy_recovery.py  # anisotropy, simulated ground truth
 ```
 
@@ -526,8 +557,11 @@ Stated plainly; `FINDINGS.md` has the measurements behind each.
   D_alpha is diagnostic.
 - **Motion blur is not modeled.** Both pipelines assume `R = 0` (negligible
   exposure duty cycle), because camera exposure is not in the input schema.
-- **Per-track anisotropy sensitivity is limited by design** at
-  `track_length` 5-10. Only the population-level sum is a detector.
+- **Per-track anisotropy needs track length, not track count.** Below
+  `track_length` ~20 a single trajectory cannot resolve its own anisotropy
+  at any effect size, and `log_bf10` correctly returns near zero with a
+  sampler uncertainty larger than itself. This is an information limit, not
+  a method limit; the workflow reports it rather than pooling around it.
 - **`converged` from `fit_table_map` is per sub-batch**, not per track --
   there is one optimizer call per sub-batch. Keep `max_batch_size` modest
   if per-track granularity matters.

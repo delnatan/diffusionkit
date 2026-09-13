@@ -1,45 +1,64 @@
-"""Anisotropy-detection workflow: everything specific to
-`model.anisotropic_diffusion_model` / `bayes_factor.py`, kept out of the
-bulk `bayes` namespace (`api.fit_track`/`fit_population`) on purpose.
+"""Anisotropy detection: is *this* track diffusing anisotropically?
 
-This targets short (N=5-10) tracks specifically, is a model-*comparison*
-question ("is this more anisotropic than free diffusion at this track
-length") rather than a per-track point estimate (see `priors.
-AnisotropicModelPrior` and FINDINGS.md, "Anisotropy detection", for why),
-and each dataset's orientation is arbitrary (2D acquisition at an unknown
-mounting angle) -- a genuinely different usage pattern from the per-track
-table `fit_population` produces for the bulk regime, not just a third
-`model=` string on the same call. Hence its own module: `import
-bayes.anisotropy as anisotropy`, not a name buried in `from bayes import *`.
+The question is per-track and it is a model comparison, not a point
+estimate. `nested.py` holds the implementation (nested sampling over a
+log-Euclidean diffusion tensor); this module is the workflow layer -- table
+in, table out, plus the plots -- kept out of the bulk `bayes` namespace
+(`api.fit_track`/`fit_population`) because it answers a different question
+than a per-track D and because importing it pulls in matplotlib.
 
-`analyze` wraps the per-track log Bayes factor
-(`bayes_factor.per_track_log_bayes_factor`) together with the descriptive
-`eps`/`psi` posterior (`inference.fit_table_nuts` on the batched
-anisotropic model) into one call -- see FINDINGS.md for why both are
-reported and why only the Bayes factor (not `eps` alone) is the detector.
-`null_calibration` is the matched-composition Monte Carlo check for turning
-an ensemble `sum_log_bf10` into a p-value; kept as an explicit, separate
-call (not part of `analyze`'s default path) since it costs real time
-(O(100) simulated replicate datasets) and is inherently about validating a
-specific `analyze()` result, not something to run unconditionally.
+What replaced what, and why
+---------------------------
+Earlier versions estimated log BF10 by prior-predictive Monte Carlo
+(`bayes_factor.py`, removed) and, separately, fit an eps/psi posterior by
+NUTS, then summed per-track evidence into an ensemble score. All three are
+gone:
+
+  * The Monte Carlo estimator was only valid while the likelihood stayed
+    weak relative to the prior, i.e. exactly on the short tracks that cannot
+    answer the question anyway. It degraded silently on the long tracks that
+    can. Nested sampling is valid across the whole range.
+  * The separate NUTS pass is redundant -- one nested-sampling run yields
+    the evidence *and* the posterior, so `analyze` now runs one engine
+    instead of two.
+  * Ensemble aggregation summed log BF10 across tracks. That is a form of
+    ensemble averaging, which is the thing this package exists to avoid, and
+    it was actively misleading: the sum answers "does each track have its
+    own independent anisotropy", not "do these tracks share an axis", and a
+    pooled fit with a shared D manufactures anisotropy out of ordinary
+    D-heterogeneity once the spread reaches ~0.5 decades. Per-track
+    inference is structurally immune to that, since every track carries its
+    own D.
+
+There is also no `max_track_length` any more. The old cap of 10 existed
+because the Monte Carlo estimator broke above it; it had the effect of
+restricting the analysis to precisely the tracks that hold too little
+information to answer the question. See FINDINGS.md for the measured
+detectability-vs-track-length table.
+
+Reading the output honestly
+---------------------------
+`log_bf10` is evidence, not a decision. It is self-calibrating -- a proper
+Bayes factor already accounts for how much apparent elongation sampling
+noise produces at this track length, so no simulated null reference is
+needed (and none is shipped). Positive favours anisotropy, negative favours
+isotropy, and near zero means the track does not say. Short tracks return
+near zero and that is the honest answer, not a defect: use
+`evidence_label`, which also reports when the sampler's own uncertainty is
+larger than the signal.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
 
-import jax.numpy as jnp
-import numpy as np
 import polars as pl
 
-from .bayes_factor import (
-    aggregate_log_bayes_factor,
-    batched_log_bayes_factor_anisotropy,
-    log_bayes_factor_anisotropy,
-    per_track_log_bayes_factor,
+from .nested import (
+    LogEuclideanAnisotropicPrior,
+    NestedFit,
+    fit_track_nested,
+    per_track_nested,
 )
-from .inference import fit_table_nuts
-from .model import anisotropic_diffusion_model, batched_anisotropic_diffusion_model
-from .priors import WEAK_ANISOTROPIC_PRIOR, AnisotropicModelPrior
 from .simulate import simulate_anisotropic_tracks
 from .viz import (
     plot_eps_forest,
@@ -50,149 +69,78 @@ from .viz import (
 )
 
 __all__ = [
-    "AnisotropicModelPrior",
-    "WEAK_ANISOTROPIC_PRIOR",
-    "anisotropic_diffusion_model",
-    "batched_anisotropic_diffusion_model",
+    "LogEuclideanAnisotropicPrior",
+    "NestedFit",
+    "fit_track_nested",
+    "per_track_nested",
     "simulate_anisotropic_tracks",
-    "log_bayes_factor_anisotropy",
-    "batched_log_bayes_factor_anisotropy",
-    "per_track_log_bayes_factor",
-    "aggregate_log_bayes_factor",
+    "analyze",
+    "evidence_label",
     "plot_log_bf_distribution",
     "plot_trajectory_gallery",
     "plot_spatial_map",
     "plot_eps_vs_log_bf",
     "plot_eps_forest",
-    "AnisotropyResult",
-    "analyze",
-    "null_calibration",
 ]
 
-# eps/psi posterior fields fit alongside log_bf10 -- D_par/D_perp are
-# numpyro.deterministic sites derived from D_mean/eps, included since they're
-# often the more directly interpretable pair (FINDINGS.md, README's
-# per_track_master.csv reference).
-_EPS_PARAM_NAMES = ["D_mean", "eps", "psi", "D_par", "D_perp"]
-_EPS_RENAME = {
-    "D_mean_median": "D_mean_median_um2_s", "D_mean_lo": "D_mean_lo_um2_s", "D_mean_hi": "D_mean_hi_um2_s",
-    "D_par_median": "D_par_median_um2_s", "D_par_lo": "D_par_lo_um2_s", "D_par_hi": "D_par_hi_um2_s",
-    "D_perp_median": "D_perp_median_um2_s", "D_perp_lo": "D_perp_lo_um2_s", "D_perp_hi": "D_perp_hi_um2_s",
-    "psi_median": "psi_median_rad", "psi_lo": "psi_lo_rad", "psi_hi": "psi_hi_rad",
-}
+# Jeffreys' buckets on log BF10 (natural log): 1.1 ~ 3:1, 2.3 ~ 10:1,
+# 4.6 ~ 100:1. Reported as labels rather than a thresholded boolean because
+# the useful per-track answer at short track lengths is "this track does not
+# say", which a flag cannot express.
+_BUCKETS = ((4.6, "decisive"), (2.3, "strong"), (1.1, "moderate"), (0.0, "weak"))
 
 
-@dataclass(frozen=True)
-class AnisotropyResult:
-    per_track: pl.DataFrame  # per track: log_bf10 (the detector) + eps/psi posterior (descriptive) + geometry
-    ensemble: pl.DataFrame  # aggregate_log_bayes_factor output, grouped by label_col (or one "all" group)
+def evidence_label(log_bf10: float, log_bf10_stderr: float = 0.0) -> str:
+    """Jeffreys-scale label for one track's `log_bf10`, direction included.
+
+    Returns "inconclusive (below sampler noise)" whenever the evidence is
+    smaller than the nested sampler's own uncertainty on it -- the case that
+    matters most on short tracks, where a bare number invites reading
+    structure into what is really Monte Carlo scatter.
+    """
+    if abs(log_bf10) <= max(log_bf10_stderr, 1e-12):
+        return "inconclusive (below sampler noise)"
+    direction = "anisotropic" if log_bf10 > 0 else "isotropic"
+    for threshold, name in _BUCKETS:
+        if abs(log_bf10) >= threshold:
+            return f"{name} evidence for {direction}"
+    return f"weak evidence for {direction}"
 
 
 def analyze(
     tracks: pl.DataFrame,
     dt_s: float,
-    prior: AnisotropicModelPrior | None = None,
+    prior: LogEuclideanAnisotropicPrior | None = None,
     min_track_length: int = 5,
-    max_track_length: int = 10,
-    label_col: str | None = None,
-    fit_eps_posterior: bool = True,
-    n_mc: int = 20000,
-    hpdi_prob: float = 0.9,
     seed: int = 0,
     show_progress: bool = True,
-) -> AnisotropyResult:
-    """Anisotropy Bayes-factor workflow for every track with
-    `min_track_length <= track_length <= max_track_length` in `tracks`.
+    progress: Callable[[int, int], None] | None = None,
+    **fit_kwargs,
+) -> pl.DataFrame:
+    """Per-track anisotropy evidence for every track in `tracks`, one row each.
 
-    `prior=None` uses `AnisotropicModelPrior()`'s shrunk-toward-isotropy
-    default (see its docstring for why that shrinkage is deliberate at this
-    N). `label_col`, if given, must already be a column on `tracks` (e.g. an
-    experimental condition or a per-track spatial/structural label) --
-    the ensemble sum is grouped by it; `None` sums everything into one
-    "all_tracks" group. `fit_eps_posterior=False` skips the (slower, NUTS)
-    per-track `eps`/`psi`/`D_mean` posterior and returns only `log_bf10` --
-    useful when only the detector, not the descriptive interval, is needed.
+    Adds the Jeffreys-scale `evidence` label and each track's mean position
+    (`x_mean_um`/`y_mean_um`, for `plot_spatial_map`) to what
+    `nested.per_track_nested` returns. See TABLES.md for the columns.
+
+    No grouping, pooling, or ensemble sum: every row is one trajectory's own
+    answer, computed from that trajectory's own displacements.
     """
-    p = prior if prior is not None else AnisotropicModelPrior()
-    short = tracks.filter(
-        (pl.col("track_length") >= min_track_length) & (pl.col("track_length") <= max_track_length)
+    p = prior if prior is not None else LogEuclideanAnisotropicPrior()
+    per_track = per_track_nested(
+        tracks, dt_s, p, min_track_length=min_track_length, seed=seed,
+        show_progress=show_progress, progress=progress, **fit_kwargs,
     )
-
-    per_track = per_track_log_bayes_factor(
-        short, dt_s, p, min_track_length=min_track_length, n_mc=n_mc, seed=seed,
-        show_progress=show_progress,
+    geometry = tracks.group_by("track_id").agg(
+        x_mean_um=pl.col("x_um").mean(), y_mean_um=pl.col("y_um").mean()
     )
-
-    if fit_eps_posterior:
-        eps_posterior = fit_table_nuts(
-            short, batched_anisotropic_diffusion_model, dt_s, lambda xstd, ystd, _p=p: _p,
-            param_names=_EPS_PARAM_NAMES, min_track_length=min_track_length, hpdi_prob=hpdi_prob,
-            seed=seed, show_progress=show_progress,
-        ).rename(_EPS_RENAME)
-        geometry = short.group_by("track_id").agg(
-            x_mean_um=pl.col("x_um").mean(), y_mean_um=pl.col("y_um").mean()
-        )
-        per_track = (
-            per_track.join(eps_posterior, on=["track_id", "track_length", "n_disp"])
-            .join(geometry, on="track_id")
-            .sort("track_id")
-        )
-    else:
-        per_track = per_track.sort("track_id")
-
-    if label_col is not None:
-        ensemble = aggregate_log_bayes_factor(per_track, label_col)
-    else:
-        ensemble = aggregate_log_bayes_factor(
-            per_track.with_columns(all_tracks=pl.lit("all_tracks")), "all_tracks"
-        )
-
-    return AnisotropyResult(per_track=per_track, ensemble=ensemble)
-
-
-def null_calibration(
-    composition: dict[int, int],
-    dt_s: float,
-    prior: AnisotropicModelPrior,
-    n_null: int = 200,
-    n_mc: int = 20000,
-    seed: int = 0,
-) -> np.ndarray:
-    """Empirical null distribution of the ensemble `sum_log_bf10`, simulated
-    at the *exact* track-length composition given (not just a fixed track
-    count) -- lets an observed ensemble sum be turned into a p-value against
-    "what a matched-composition, genuinely isotropic population would give
-    by chance," rather than read off the generic Jeffreys-scale buckets
-    (which say nothing about a *specific* sample's sampling variance -- see
-    FINDINGS.md's "Real-data anisotropy check").
-
-    `composition`: `{track_length: n_tracks}`, e.g. from
-    `tracks.group_by("track_length").agg(...)`. D_mean/sigma_loc for the
-    simulation are taken from `prior`'s own central values (not fit from
-    real data), so this stays a generic, reusable calibration. Returns one
-    ensemble-sum value per of `n_null` replicate isotropic datasets.
-    """
-    D_mean = float(np.exp(prior.log_D_mean))
-    sigma_loc = float(np.exp(prior.log_sigma_mean))
-    rng = np.random.default_rng(seed)
-
-    null_sums = np.empty(n_null)
-    for rep in range(n_null):
-        total = 0.0
-        for track_length, n_tracks in composition.items():
-            n_disp = track_length - 1
-            sim = simulate_anisotropic_tracks(
-                params=[(D_mean, 0.0, 0.0)], n_replicates=n_tracks, track_length=track_length,
-                dt_s=dt_s, sigma_loc_um=sigma_loc, seed=int(rng.integers(0, 1_000_000)),
+    return (
+        per_track.join(geometry, on="track_id")
+        .with_columns(
+            evidence=pl.struct("log_bf10", "log_bf10_stderr").map_elements(
+                lambda r: evidence_label(r["log_bf10"], r["log_bf10_stderr"]),
+                return_dtype=pl.String,
             )
-            particles = sim["track_id"].unique().sort().to_list()
-            dx = np.stack([np.diff(sim.filter(pl.col("track_id") == pid).sort("frame")["x_um"].to_numpy())
-                            for pid in particles])
-            dy = np.stack([np.diff(sim.filter(pl.col("track_id") == pid).sort("frame")["y_um"].to_numpy())
-                            for pid in particles])
-            logbf = np.asarray(batched_log_bayes_factor_anisotropy(
-                jnp.asarray(dx), jnp.asarray(dy), dt_s, n_disp, prior, n_mc=n_mc, seed=0
-            ))
-            total += float(logbf.sum())
-        null_sums[rep] = total
-    return null_sums
+        )
+        .sort("track_id")
+    )

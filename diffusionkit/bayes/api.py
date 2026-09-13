@@ -24,6 +24,7 @@ Anisotropy is deliberately not a third `model=` option here -- see
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -195,6 +196,7 @@ def fit_population(
     max_batch_size: int = 20,
     seed: int = 0,
     show_progress: bool = True,
+    progress: Callable[[int, int], None] | None = None,
 ) -> pl.DataFrame:
     """Fit every eligible track in `tracks`, population regime.
 
@@ -210,6 +212,10 @@ def fit_population(
 
     Columns follow the project's unit-suffixed median/asymmetric-interval
     convention (`D_median_um2_s`/`D_lo_um2_s`/`D_hi_um2_s`/`log10_D`/...).
+
+    `progress(done, total)`, if given, reports tracks fitted so far (see
+    `inference._per_track_table`); with `model="both"` it counts through
+    each model's pass in turn.
     """
     if model == "both":
         if prior is not None:
@@ -221,10 +227,12 @@ def fit_population(
         normal = fit_population(
             tracks, dt_s, model="normal", min_track_length=min_track_length,
             max_batch_size=max_batch_size, seed=seed, show_progress=show_progress,
+            progress=progress,
         )
         anomalous = fit_population(
             tracks, dt_s, model="anomalous", min_track_length=min_track_length,
             max_batch_size=max_batch_size, seed=seed, show_progress=show_progress,
+            progress=progress,
         )
         return normal.join(anomalous, on=["track_id", "track_length", "n_disp"], how="inner")
 
@@ -240,6 +248,6 @@ def fit_population(
     table = fit_table_map(
         tracks, batched_model_fn, dt_s, prior_fn, param_names,
         min_track_length=min_track_length, max_batch_size=max_batch_size,
-        seed=seed, show_progress=show_progress,
+        seed=seed, show_progress=show_progress, progress=progress,
     )
     return table.rename(rename)

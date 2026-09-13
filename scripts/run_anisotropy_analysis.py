@@ -1,39 +1,33 @@
-"""Anisotropy-detection Bayes factor for the real mobile-bead SPT dataset,
-restricted to its short (track_length 5-10) tracks -- the regime
-`bayes.anisotropy` targets. See WORKFLOW.md for how this workflow relates to
-the low-data single-track and bulk-population workflows; this script is the
-one demonstrating `bayes.anisotropy.analyze`/`null_calibration`.
+"""Per-track anisotropy evidence for the real mobile-bead SPT dataset.
 
-These beads are freely diffusing (no known structure/channel to confine
-them), so this run doubles as a real-data negative control: FINDINGS.md's
-simulated null-calibration check (checks 3-4 of
-`validate_anisotropy_recovery.py`) predicts individual-track log BF10 should
-stay centered at/below 0 with ~0% of tracks reaching even "moderate"
-evidence. This script checks whether that holds on data the method was
-never fit to, and additionally calibrates the *ensemble* sum against its own
-null distribution (simulated at this exact track-length composition, not
-just compared to the generic Jeffreys-scale buckets, which say nothing about
-how much a *specific* M=185-track sample of a true null can fluctuate by
-chance) -- see FINDINGS.md ("Real-data anisotropy check") for the result and
-why the generic buckets alone would have been misleading here.
+One row per trajectory, computed from that trajectory's own displacements.
+Nothing here is pooled, grouped, or ensemble-averaged: the question this
+script answers is "is *this* track diffusing anisotropically", asked
+separately of every track. See WORKFLOW.md for how it relates to the other
+workflows, and `diffusionkit.bayes.anisotropy` for why the earlier Monte
+Carlo Bayes factor and its ensemble sum were removed.
 
-`bayes.anisotropy.analyze` also fits the per-track `eps`/`psi` posterior
-(NUTS) alongside the Bayes factor and joins both onto one
-`per_track_master.csv`, each quantity kept under its own explicit name
-(`log_bf10` vs. `eps_median`/`eps_lo`/`eps_hi` vs. `psi_median_rad`) -- see
-FINDINGS.md for why a per-track `eps` point/interval has limited power on
-its own at this N (it's included here as a secondary, honestly-wide
-per-track descriptive column, not as a second detector); `log_bf10` remains
-the only quantity this script's verdicts are based on. The master table also
-carries each track's mean field-of-view position, so every quantity can be
-mapped back onto the real trajectories and inspected visually
-(`plot_trajectory_gallery`, `plot_spatial_map`) rather than trusted as a
-bare number.
+These beads are freely diffusing (no known structure or channel to confine
+them), so this doubles as a real-data negative control: log BF10 should sit
+at or below zero, and the tracks long enough to actually resolve the
+question should say so decisively.
+
+There is no upper track-length cap. The old one (10) existed because the
+Monte Carlo estimator broke above it, and it had the side effect of
+restricting the analysis to exactly the tracks that hold too little
+information to answer anything. Nested sampling stays valid as tracks get
+long, which is where per-track anisotropy becomes answerable at all -- so
+this run is dominated, correctly, by the long tracks.
+
+Runtime is roughly 3-5 s per track (two nested-sampling runs each), so a
+full pass over this dataset takes ~25-40 minutes. `--limit N` runs the N
+longest tracks instead, for a quick look.
 """
 from __future__ import annotations
 
-import time
+import argparse
 import sys
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -41,11 +35,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # sys.path so `import diffusionkit` resolves. Harmless once pip-installed.
 sys.path.insert(0, str(REPO_ROOT))
 
-import numpy as np
 import polars as pl
 
-from diffusionkit.classic import AcquisitionParams, assert_contiguous_tracks, load_tracks
 from diffusionkit.bayes import anisotropy
+from diffusionkit.classic import AcquisitionParams, assert_contiguous_tracks, load_tracks
 
 DATA_CSV = REPO_ROOT / "mobile_beads_1to200.csv"
 WORKFLOW = "anisotropy"
@@ -53,133 +46,94 @@ FIG_DIR = REPO_ROOT / "results" / "figures" / WORKFLOW
 TABLE_DIR = REPO_ROOT / "results" / "tables" / WORKFLOW
 
 PARAMS = AcquisitionParams(pixel_size_um=0.1043, dt_s=0.033)
-MIN_TRACK_LENGTH, MAX_TRACK_LENGTH = 5, 10  # the N=5-10 regime this method targets
-N_MC = 20000
-N_NULL = 200  # matched-composition null-calibration replicates
-N_GALLERY = 9  # tracks shown per trajectory-gallery panel
+MIN_TRACK_LENGTH = 5
+N_GALLERY = 9
 
 
-def main() -> None:
+def main(limit: int | None = None) -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     TABLE_DIR.mkdir(parents=True, exist_ok=True)
 
     tracks = load_tracks(DATA_CSV, PARAMS)
     assert_contiguous_tracks(tracks)
-    short_tracks = tracks.filter(
-        (tracks["track_length"] >= MIN_TRACK_LENGTH) & (tracks["track_length"] <= MAX_TRACK_LENGTH)
+    tracks = tracks.filter(pl.col("track_length") >= MIN_TRACK_LENGTH)
+
+    if limit is not None:
+        keep = (
+            tracks.group_by("track_id").agg(n=pl.len())
+            .sort("n", descending=True).head(limit)["track_id"].to_list()
+        )
+        tracks = tracks.filter(pl.col("track_id").is_in(keep))
+
+    n_tracks = tracks["track_id"].n_unique()
+    print(f"{n_tracks} tracks with track_length >= {MIN_TRACK_LENGTH}")
+
+    prior = anisotropy.LogEuclideanAnisotropicPrior()
+    print(f"prior: tau_log_ratio={prior.tau_log_ratio} "
+          f"(prior sd of 0.5*log(D_par/D_perp)) -- report this with any Bayes factor")
+
+    t0 = time.perf_counter()
+    per_track = anisotropy.analyze(tracks, PARAMS.dt_s, prior)
+    print(f"fit {n_tracks} tracks in {time.perf_counter() - t0:.0f}s")
+
+    per_track.write_csv(TABLE_DIR / "per_track_anisotropy.csv")
+
+    # --- what the evidence actually says, per track ---
+    print("\nEvidence label counts (each row is one trajectory's own answer):")
+    counts = per_track.group_by("evidence").agg(n=pl.len()).sort("n", descending=True)
+    for row in counts.iter_rows(named=True):
+        print(f"   {row['n']:>4}  {row['evidence']}")
+
+    print("\nlog BF10 by track-length band -- longer tracks can resolve the question,")
+    print("short ones honestly cannot, and their evidence sits near zero:")
+    banded = (
+        per_track.with_columns(
+            band=pl.when(pl.col("track_length") < 10).then(pl.lit("5-9"))
+            .when(pl.col("track_length") < 20).then(pl.lit("10-19"))
+            .when(pl.col("track_length") < 50).then(pl.lit("20-49"))
+            .when(pl.col("track_length") < 100).then(pl.lit("50-99"))
+            .otherwise(pl.lit("100+"))
+        )
+        .group_by("band")
+        .agg(n=pl.len(), median_log_bf10=pl.col("log_bf10").median(),
+             n_strong=(pl.col("log_bf10") > 2.3).sum(),
+             median_stderr=pl.col("log_bf10_stderr").median())
+        .sort("median_log_bf10")
     )
-    print(f"Loaded {tracks['track_id'].n_unique()} tracks total; "
-          f"{short_tracks['track_id'].n_unique()} have track_length in "
-          f"[{MIN_TRACK_LENGTH}, {MAX_TRACK_LENGTH}]")
+    print(banded)
+    banded.write_csv(TABLE_DIR / "log_bf10_by_track_length_band.csv")
 
-    prior = anisotropy.AnisotropicModelPrior()
-    t0 = time.time()
-    result = anisotropy.analyze(
-        tracks, PARAMS.dt_s, prior=prior,
-        min_track_length=MIN_TRACK_LENGTH, max_track_length=MAX_TRACK_LENGTH,
-        n_mc=N_MC, seed=0,
-    )
-    per_track = result.per_track
-    print(f"Computed log BF10 + eps/psi posterior for {per_track.height} tracks in {time.time() - t0:.1f}s")
+    # --- figures ---
+    fig = anisotropy.plot_log_bf_distribution(per_track, "Mobile beads: per-track log BF10")
+    fig.savefig(FIG_DIR / "log_bf10_distribution.png", dpi=150, bbox_inches="tight")
 
-    # per_track_log_bf.csv / per_track_eps_posterior.csv: the two halves
-    # analyze() already joined into per_track_master.csv, kept as their own
-    # files too (README's documented schema) -- plain column selects, no
-    # recomputation.
-    per_track.select(["track_id", "track_length", "n_disp", "log_bf10"]).write_csv(
-        TABLE_DIR / "per_track_log_bf.csv"
-    )
-    eps_cols = [c for c in per_track.columns if c not in ("log_bf10", "x_mean_um", "y_mean_um")]
-    per_track.select(eps_cols).write_csv(TABLE_DIR / "per_track_eps_posterior.csv")
-    per_track.write_csv(TABLE_DIR / "per_track_master.csv")
-    print(f"Saved per-track master table ({per_track.height} tracks, {len(per_track.columns)} columns) "
-          f"to {TABLE_DIR / 'per_track_master.csv'}")
+    ranked = per_track.sort("log_bf10", descending=True)
+    for name, sub in (("most_anisotropic", ranked.head(N_GALLERY)),
+                      ("most_isotropic", ranked.tail(N_GALLERY))):
+        fig = anisotropy.plot_trajectory_gallery(
+            tracks, sub["track_id"].to_list(),
+            [f"N={n}  logBF10={v:+.2f}" for n, v in
+             zip(sub["track_length"], sub["log_bf10"])],
+            f"Mobile beads: {name.replace('_', ' ')} tracks",
+        )
+        fig.savefig(FIG_DIR / f"gallery_{name}.png", dpi=150, bbox_inches="tight")
 
-    logbf = per_track["log_bf10"].to_numpy()
-    frac_moderate = float(np.mean(logbf > 1.1))
-    frac_strong = float(np.mean(logbf > 2.3))
-    print(f"\n=== Per-track log BF10 (n={len(logbf)}) ===")
-    print(f"  median={np.median(logbf):+.4f}  mean={np.mean(logbf):+.4f}  "
-          f"IQR=[{np.percentile(logbf,25):+.4f}, {np.percentile(logbf,75):+.4f}]")
-    print(f"  fraction reaching 'moderate' evidence (>1.1): {100*frac_moderate:.1f}%")
-    print(f"  fraction reaching 'strong' evidence   (>2.3): {100*frac_strong:.1f}%")
+    fig = anisotropy.plot_spatial_map(per_track, "log_bf10",
+                                      "Mobile beads: log BF10 by track position")
+    fig.savefig(FIG_DIR / "spatial_map_log_bf10.png", dpi=150, bbox_inches="tight")
 
-    fig = anisotropy.plot_log_bf_distribution(
-        per_track, "Mobile beads, track_length 5-10: per-track log BF10 (anisotropy)"
-    )
-    fig.savefig(FIG_DIR / "per_track_log_bf_distribution.png", dpi=150, bbox_inches="tight")
-
-    # Ensemble-level verdict: (a) the whole short-track population as one
-    # group -- result.ensemble is already that sum, analyze()'s default
-    # grouping -- and (b) broken out by track_length, reusing the same
-    # per_track table (aggregate_log_bayes_factor is a plain group-by-sum,
-    # no extra Monte Carlo cost).
-    ensemble_all = result.ensemble
-    ensemble_by_length = anisotropy.aggregate_log_bayes_factor(per_track, "track_length")
-    observed_sum = float(ensemble_all["sum_log_bf10"][0])
-
-    print(f"\n=== Ensemble log BF10 (sum across tracks) ===")
-    print(ensemble_all)
-    print(ensemble_by_length)
-    ensemble_all.write_csv(TABLE_DIR / "ensemble_log_bf_all.csv")
-    ensemble_by_length.write_csv(TABLE_DIR / "ensemble_log_bf_by_track_length.csv")
-
-    # Trajectory gallery: the highest-log_bf10 tracks (the ones driving the
-    # ensemble result) vs. a random sample, so the log_bf10 number can be
-    # checked against what the track actually looks like.
-    top = per_track.sort("log_bf10", descending=True).head(N_GALLERY)
-    fig = anisotropy.plot_trajectory_gallery(
-        short_tracks, top["track_id"].to_list(),
-        [f"logBF10={v:+.2f}, eps={e:.2f}" for v, e in zip(top["log_bf10"], top["eps_median"])],
-        f"Highest log BF10 tracks (top {N_GALLERY} of {per_track.height})",
-    )
-    fig.savefig(FIG_DIR / "trajectory_gallery_top_logbf.png", dpi=150, bbox_inches="tight")
-
-    random_sample = per_track.sample(n=N_GALLERY, seed=0)
-    fig = anisotropy.plot_trajectory_gallery(
-        short_tracks, random_sample["track_id"].to_list(),
-        [f"logBF10={v:+.2f}, eps={e:.2f}" for v, e in
-         zip(random_sample["log_bf10"], random_sample["eps_median"])],
-        f"Random sample of tracks (n={N_GALLERY})",
-    )
-    fig.savefig(FIG_DIR / "trajectory_gallery_random.png", dpi=150, bbox_inches="tight")
-
-    # Spatial maps: does log_bf10 (or eps) cluster in the field of view?
-    fig = anisotropy.plot_spatial_map(per_track, "log_bf10", "Mobile beads: log BF10 by track position", diverging=True)
-    fig.savefig(FIG_DIR / "spatial_map_log_bf.png", dpi=150, bbox_inches="tight")
-    fig = anisotropy.plot_spatial_map(per_track, "eps_median", "Mobile beads: eps posterior median by track position",
-                                       diverging=False)
-    fig.savefig(FIG_DIR / "spatial_map_eps.png", dpi=150, bbox_inches="tight")
-
-    # Cross-method agreement + interval honesty for the tracks driving the result.
     fig = anisotropy.plot_eps_vs_log_bf(per_track, "Mobile beads: eps posterior vs. log BF10")
-    fig.savefig(FIG_DIR / "eps_vs_log_bf_scatter.png", dpi=150, bbox_inches="tight")
-    fig = anisotropy.plot_eps_forest(per_track, "Mobile beads: eps posterior intervals", top_n=30, sort_by="log_bf10")
-    fig.savefig(FIG_DIR / "eps_forest_top30.png", dpi=150, bbox_inches="tight")
+    fig.savefig(FIG_DIR / "eps_vs_log_bf10.png", dpi=150, bbox_inches="tight")
 
-    # The generic Jeffreys buckets say nothing about how much a *specific*
-    # M=185-track ensemble sum can fluctuate under a true null by chance --
-    # calibrate directly against a matched-composition null instead.
-    composition = {
-        int(tl): int(n) for tl, n in
-        short_tracks.group_by("track_length").agg(n=pl.col("track_id").n_unique()).sort("track_length").iter_rows()
-    }
-    print(f"\nRunning {N_NULL}-replicate matched-composition null calibration "
-          f"(composition={composition}) ...")
-    t0 = time.time()
-    null_sums = anisotropy.null_calibration(composition, PARAMS.dt_s, prior, n_null=N_NULL, n_mc=N_MC)
-    p_value = float(np.mean(null_sums >= observed_sum))
-    print(f"Null calibration done in {time.time() - t0:.1f}s")
-    print(f"  null ensemble-sum distribution: median={np.median(null_sums):+.2f}  "
-          f"p90={np.percentile(null_sums,90):+.2f}  p99={np.percentile(null_sums,99):+.2f}  "
-          f"max={null_sums.max():+.2f}")
-    print(f"  observed = {observed_sum:+.3f}  ->  empirical null p-value = {p_value:.4f} "
-          f"(fraction of {N_NULL} matched-null replicates >= observed)")
-    pl.DataFrame({"null_sum_log_bf10": null_sums}).write_csv(TABLE_DIR / "null_calibration_ensemble_sums.csv")
+    fig = anisotropy.plot_eps_forest(per_track, "Mobile beads: eps posterior intervals",
+                                     top_n=30, sort_by="log_bf10")
+    fig.savefig(FIG_DIR / "eps_forest.png", dpi=150, bbox_inches="tight")
 
-    verdict = "consistent with isotropic diffusion" if p_value > 0.05 else "unexpected excess vs. matched null -- see FINDINGS.md"
-    print(f"\nVerdict on the whole short-track population: {verdict}")
+    print(f"\nWrote tables to {TABLE_DIR} and figures to {FIG_DIR}")
 
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--limit", type=int, default=None,
+                    help="fit only the N longest tracks (quick look)")
+    main(**vars(ap.parse_args()))

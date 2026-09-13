@@ -292,26 +292,37 @@ def _per_track_table(
     min_track_length: int,
     max_batch_size: int | None = None,
     show_progress: bool = True,
+    progress: Callable[[int, int], None] | None = None,
 ) -> pl.DataFrame:
     """Run `fit_batch` over every eligible batch and stack the results.
 
     The one loop shared by every per-track table in this package
-    (`fit_table_map`/`_svi`/`_nuts` and `bayes_factor.per_track_log_bayes_factor`):
+    (`fit_table_map`/`_svi`/`_nuts` and `nested.per_track_nested`):
     they differ only in which engine `fit_batch` calls and which columns it
     returns, never in how tracks are selected, grouped, or concatenated.
+
+    `progress`, if given, is called as `progress(done, total)` in tracks --
+    once before the first batch and after every batch -- for a caller that
+    cannot read tqdm's terminal output (a GUI progress bar). It is called
+    from whatever thread runs this loop.
     """
     eligible = tracks.filter(pl.col("track_length") >= min_track_length)
     batches = _batches(eligible, max_batch_size)
 
     chunks = []
-    progress = tqdm(
-        total=eligible["track_id"].n_unique(), desc=desc, unit="track", disable=not show_progress
-    )
+    total = eligible["track_id"].n_unique()
+    bar = tqdm(total=total, desc=desc, unit="track", disable=not show_progress)
+    done = 0
+    if progress is not None:
+        progress(done, total)
     for batch in batches:
-        progress.set_postfix(track_length=batch.track_length, n_tracks=batch.n_tracks)
+        bar.set_postfix(track_length=batch.track_length, n_tracks=batch.n_tracks)
         chunks.append(fit_batch(batch))
-        progress.update(batch.n_tracks)
-    progress.close()
+        bar.update(batch.n_tracks)
+        done += batch.n_tracks
+        if progress is not None:
+            progress(done, total)
+    bar.close()
 
     return pl.concat(chunks).sort("track_id")
 
@@ -361,6 +372,7 @@ def fit_table_map(
     max_batch_size: int = 20,
     seed: int = 0,
     show_progress: bool = True,
+    progress: Callable[[int, int], None] | None = None,
 ) -> pl.DataFrame:
     """Batched exact MAP (L-BFGS-B) for every eligible track -- production.
 
@@ -389,7 +401,7 @@ def fit_table_map(
 
     return _per_track_table(
         tracks, fit_batch, "fit_table_map", min_track_length,
-        max_batch_size=max_batch_size, show_progress=show_progress,
+        max_batch_size=max_batch_size, show_progress=show_progress, progress=progress,
     )
 
 
