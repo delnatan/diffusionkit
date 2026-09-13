@@ -11,13 +11,13 @@ Brownian motion + static localization noise. `likelihood.py` generalizes
 that covariance to anomalous diffusion via fractional Gaussian noise, the
 same construction Kepten, Bronshtein & Garini (Phys. Rev. E 87, 052713,
 2013) use for anomalous-exponent estimation. **No MSD curve is computed
-anywhere in this package** -- D_alpha, alpha, and the localization precision
+anywhere in this package** -- K, alpha, and the localization precision
 sigma are fit directly from `dx = diff(x)`, `dy = diff(y)`.
 
 Two motion models:
   `normal_diffusion_model`     -- 2 params (D, sigma), alpha pinned to 1,
                                    shares `likelihood.displacement_covariance`.
-  `anomalous_diffusion_model`  -- 3 params (D_alpha, sigma, alpha), shares
+  `anomalous_diffusion_model`  -- 3 params (K, sigma, alpha), shares
                                    `likelihood.displacement_covariance`.
 Anisotropy is not a numpyro model here at all: it is a model *comparison*,
 run by nested sampling over a log-Euclidean tensor in `nested.py`, which
@@ -77,7 +77,7 @@ def normal_diffusion_model(
 def anomalous_diffusion_model(
     dx_um: jnp.ndarray, dy_um: jnp.ndarray, dt_s: float, n_disp: int, prior: AnomalousModelPrior
 ) -> None:
-    D_alpha = numpyro.sample("D_alpha", dist.LogNormal(prior.log_D_mean, prior.log_D_sd))
+    K = numpyro.sample("K", dist.LogNormal(prior.log_D_mean, prior.log_D_sd))
     sigma = numpyro.sample("sigma", dist.LogNormal(prior.log_sigma_mean, prior.log_sigma_sd))
     # Sampled on (0,1), where Beta's support is correctly reported and
     # numpyro's automatic unconstraining picks a proper SigmoidTransform;
@@ -90,7 +90,7 @@ def anomalous_diffusion_model(
     # avoids that bug entirely.
     alpha_unit = numpyro.sample("alpha_unit", dist.Beta(prior.alpha_conc, prior.alpha_conc))
     alpha = numpyro.deterministic("alpha", 2.0 * alpha_unit)
-    cov = displacement_covariance(n_disp, D_alpha, dt_s, alpha, sigma**2)
+    cov = displacement_covariance(n_disp, K, dt_s, alpha, sigma**2)
     mvn = dist.MultivariateNormal(jnp.zeros(n_disp), covariance_matrix=cov)
     numpyro.sample("dx_obs", mvn, obs=dx_um)
     numpyro.sample("dy_obs", mvn, obs=dy_um)
@@ -121,12 +121,12 @@ def batched_anomalous_diffusion_model(
     """`anomalous_diffusion_model` for `n_tracks` tracks of the same
     `n_disp` at once -- see `batched_normal_diffusion_model`."""
     with numpyro.plate("track", n_tracks):
-        D_alpha = numpyro.sample("D_alpha", dist.LogNormal(prior.log_D_mean, prior.log_D_sd))
+        K = numpyro.sample("K", dist.LogNormal(prior.log_D_mean, prior.log_D_sd))
         sigma = numpyro.sample("sigma", dist.LogNormal(prior.log_sigma_mean, prior.log_sigma_sd))
         alpha_unit = numpyro.sample("alpha_unit", dist.Beta(prior.alpha_conc, prior.alpha_conc))
         alpha = numpyro.deterministic("alpha", 2.0 * alpha_unit)
         cov = displacement_covariance(
-            n_disp, D_alpha[:, None, None], dt_s, alpha[:, None, None], (sigma**2)[:, None, None]
+            n_disp, K[:, None, None], dt_s, alpha[:, None, None], (sigma**2)[:, None, None]
         )
         mvn = dist.MultivariateNormal(jnp.zeros(n_disp), covariance_matrix=cov)
         numpyro.sample("dx_obs", mvn, obs=dx_um)

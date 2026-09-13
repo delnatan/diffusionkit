@@ -45,7 +45,7 @@ class NormalModelPrior:
 
 @dataclass(frozen=True)
 class AnomalousModelPrior:
-    """Prior for the 3-parameter (D_alpha, sigma, alpha) fGn model."""
+    """Prior for the 3-parameter (K, sigma, alpha) fGn model."""
 
     log_D_mean: float = float(np.log(0.05))
     log_D_sd: float = float(np.log(10) * 2)

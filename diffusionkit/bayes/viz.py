@@ -190,7 +190,7 @@ def plot_estimator_scatter(
     return fig
 
 
-def plot_D_alpha_joint(
+def plot_K_joint(
     df: pl.DataFrame,
     D_col: str,
     alpha_col: str,
@@ -200,7 +200,7 @@ def plot_D_alpha_joint(
     display_quantiles: tuple[float, float] = (0.01, 0.99),
 ) -> plt.Figure:
     """KDE + scatter + marginals of log10(D) vs alpha -- same diagnostic as
-    `analysis.viz.plot_D_alpha_jointplot`, generalized to any (D, alpha)
+    `analysis.viz.plot_K_jointplot`, generalized to any (D, alpha)
     column pair so it can be pointed at the classic MSD fit, a flat-prior
     fit, or an informative-prior Bayes MAP table for a direct visual check
     of D-alpha correlation across tracks.
@@ -311,8 +311,8 @@ def plot_classic_vs_bayes_joint(
     """Classic MSD-fit vs. exact-likelihood Bayes MAP, log10(D) vs. alpha,
     side by side on identical axis limits -- the direct visual counterpart to
     `run_bayes_analysis.py`'s printed r(D_classic, D_bayes)/r(alpha_classic,
-    alpha_bayes) agreement numbers, and to `plot_D_alpha_joint` /
-    `analysis.viz.plot_D_alpha_jointplot` run individually per-estimator
+    alpha_bayes) agreement numbers, and to `plot_K_joint` /
+    `analysis.viz.plot_K_jointplot` run individually per-estimator
     (each of which auto-scales its own axes, so those two are not
     visually comparable side by side without this).
 
@@ -326,7 +326,7 @@ def plot_classic_vs_bayes_joint(
     spread between the two is visible rather than hidden by independent
     autoscaling -- points outside that shared window still count toward each
     panel's own r/n, just clipped from the view (count reported in the
-    subtitle), same convention as `plot_D_alpha_joint`. Pass `xlim`/`ylim`
+    subtitle), same convention as `plot_K_joint`. Pass `xlim`/`ylim`
     explicitly (e.g. `ylim=(0, 2)` to match alpha's actual (0,2) prior
     support, `xlim=(-3, 1)` for a fixed log10(D) decade range) to override
     the data-driven quantile default with fixed physical bounds instead.

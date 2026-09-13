@@ -3,8 +3,8 @@
 Two models, both linear after a transform (so plain weighted least squares,
 no nonlinear optimizer needed):
 
-  Normal diffusion:    MSD(tau) = 4*D*tau + b            (fit in linear space)
-  Anomalous diffusion: MSD(tau) = 4*D_alpha * tau^alpha   (fit in log-log space)
+  Normal diffusion:    MSD(tau) = 4*D*tau + b        (fit in linear space)
+  Anomalous diffusion: MSD(tau) = 4*K*tau^alpha      (fit in log-log space)
 
 `b` in the normal-diffusion fit is the static-localization/motion-blur
 offset: b = 4*sigma_loc^2 - 4*D*R*dt_frame (Michalet & Berglund 2012), where
@@ -40,7 +40,7 @@ class NormalDiffusionFit:
 class AnomalousDiffusionFit:
     alpha: float
     alpha_stderr: float
-    D_alpha_um2_s_alpha: float
+    K_um2_s_alpha: float
     n_points: int
     r_squared: float
 
@@ -110,7 +110,7 @@ def fit_anomalous_diffusion(
     n_points: int,
     min_valid_points: int = 3,
 ) -> AnomalousDiffusionFit:
-    """OLS fit of log(MSD) = alpha*log(tau) + log(4*D_alpha) over the first n_points.
+    """OLS fit of log(MSD) = alpha*log(tau) + log(4*K) over the first n_points.
 
     Non-positive MSD values (e.g. after subtracting a localization-offset
     correction -- see `fit_all_tracks`) are dropped before the fit, since
@@ -128,7 +128,7 @@ def fit_anomalous_diffusion(
         return AnomalousDiffusionFit(
             alpha=float("nan"),
             alpha_stderr=float("nan"),
-            D_alpha_um2_s_alpha=float("nan"),
+            K_um2_s_alpha=float("nan"),
             n_points=len(tau),
             r_squared=float("nan"),
         )
@@ -153,7 +153,7 @@ def fit_anomalous_diffusion(
     return AnomalousDiffusionFit(
         alpha=float(alpha),
         alpha_stderr=float(se[0]),
-        D_alpha_um2_s_alpha=float(np.exp(log4D) / 4.0),
+        K_um2_s_alpha=float(np.exp(log4D) / 4.0),
         n_points=len(tau),
         r_squared=r2,
     )
@@ -273,7 +273,7 @@ def fit_all_tracks(
             "alpha": [anomalous.alpha],
             "alpha_stderr": [anomalous.alpha_stderr],
             "n_points_used_alpha": [anomalous.n_points],
-            "D_alpha_um2_s_alpha": [anomalous.D_alpha_um2_s_alpha],
+            "K_um2_s_alpha": [anomalous.K_um2_s_alpha],
             "r2_anomalous": [anomalous.r_squared],
         }
 
@@ -290,8 +290,8 @@ def fit_all_tracks(
                     "alpha_corrected": [anom_corr.alpha],
                     "alpha_corrected_stderr": [anom_corr.alpha_stderr],
                     "n_points_used_alpha_corrected": [anom_corr.n_points],
-                    "D_alpha_corrected_um2_s_alpha": [
-                        anom_corr.D_alpha_um2_s_alpha
+                    "K_corrected_um2_s_alpha": [
+                        anom_corr.K_um2_s_alpha
                     ],
                     "r2_anomalous_corrected": [anom_corr.r_squared],
                 }

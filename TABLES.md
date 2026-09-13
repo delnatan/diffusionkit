@@ -29,13 +29,13 @@ One row per track. `msd.py`'s TAMSD passed through `fitting.fit_all_tracks`.
 | `r2_normal` | R^2 of the linear (normal-diffusion) fit. |
 | `D_negative` | True if the fitted `D_um2_s` is negative (unphysical -- kept, not dropped). |
 | `intercept_negative` | True if the fitted intercept is negative (unphysical for R=0 static noise -- kept, not dropped). |
-| `alpha`, `alpha_stderr` | Anomalous exponent from the log-log `MSD=4*D_alpha*tau^alpha` fit (OLS), and its standard error. |
+| `alpha`, `alpha_stderr` | Anomalous exponent from the log-log `MSD=4*K*tau^alpha` fit (OLS), and its standard error. |
 | `n_points_used_alpha` | Lags actually used in that fit (may be fewer than `n_points_used` if some points were non-positive). |
-| `D_alpha_um2_s_alpha` | Generalized diffusion coefficient from the same log-log fit. |
+| `K_um2_s_alpha` | Generalized diffusion coefficient from the same log-log fit. |
 | `r2_anomalous` | R^2 of the log-log fit. |
 | `alpha_corrected`, `alpha_corrected_stderr` | Same anomalous fit after subtracting the track's estimated localization offset from MSD first (see `offset_um2`) -- isolates the tau^alpha signal from the localization-noise plateau. |
 | `n_points_used_alpha_corrected` | Lags surviving the offset subtraction (points driven non-positive are dropped). |
-| `D_alpha_corrected_um2_s_alpha`, `r2_anomalous_corrected` | Generalized D and R^2 of the offset-corrected fit. |
+| `K_corrected_um2_s_alpha`, `r2_anomalous_corrected` | Generalized K and R^2 of the offset-corrected fit. |
 | `offset_um2` | Per-track expected localization-noise MSD offset, `2*(mean(sigma_x_um^2)+mean(sigma_y_um^2))`, from the raw localization precision -- an independent check on `intercept_um2` and the value subtracted for `alpha_corrected`. |
 
 ### `classic/ensemble_msd.csv` (classic, `run_msd_analysis.py`)
@@ -68,7 +68,7 @@ Same columns as `classic/per_track_msd_fits.csv`, plus:
 
 One row per track: the Brownian-constrained normal model and the anomalous
 model, batched exact MAP (`inference.fit_table_map`) joined on
-`track_id`/`track_length`/`n_disp`. D, D_alpha and sigma are Laplace-fit in
+`track_id`/`track_length`/`n_disp`. D, K and sigma are Laplace-fit in
 log-space and back-transformed to an asymmetric `_median`/`_lo`/`_hi`
 interval (see method notes above); alpha keeps a symmetric physical-space
 interval.
@@ -84,8 +84,8 @@ interval.
 | `sigma_normal_median_um`, `sigma_normal_lo_um`, `sigma_normal_hi_um` | Localization precision sigma from the normal-model fit, same median/interval convention as D. |
 | `log10_sigma_normal`, `log10_sigma_normal_stderr` | That sigma in log10 space. |
 | `anomalous_converged` | L-BFGS-B convergence flag for the anomalous-model sub-batch containing this track. |
-| `D_alpha_median_um2_s_alpha`, `D_alpha_lo_um2_s_alpha`, `D_alpha_hi_um2_s_alpha` | Anomalous-model generalized diffusion coefficient, same median/interval convention. **Secondary/diagnostic** -- degrades faster than D on short tracks (FINDINGS.md). |
-| `log10_D_alpha`, `log10_D_alpha_stderr` | That D_alpha in log10 space. |
+| `K_median_um2_s_alpha`, `K_lo_um2_s_alpha`, `K_hi_um2_s_alpha` | Anomalous-model generalized diffusion coefficient, same median/interval convention. **Secondary/diagnostic** -- degrades faster than D on short tracks (FINDINGS.md). |
+| `log10_K`, `log10_K_stderr` | That K in log10 space. |
 | `sigma_anom_median_um`, `sigma_anom_lo_um`, `sigma_anom_hi_um` | Localization precision sigma from the anomalous-model fit. |
 | `log10_sigma_anom`, `log10_sigma_anom_stderr` | That sigma in log10 space. |
 | `alpha`, `alpha_stderr` | Anomalous exponent MAP and symmetric Laplace standard error (physical space -- not log-transformed). **Primary alpha estimate.** |
@@ -100,7 +100,7 @@ against the classic table, plus:
 | `D_classic_um2_s` | Classic pipeline's `D_um2_s` for the same track, carried over for direct comparison. |
 | `alpha_classic` | Classic pipeline's `alpha` for the same track. |
 
-### `validate_bayes_recovery/bayes_validate_null_D_alpha_bias.csv` (Bayesian validation, `validate_bayes_recovery.py`, check 1)
+### `validate_bayes_recovery/bayes_validate_null_K_bias.csv` (Bayesian validation, `validate_bayes_recovery.py`, check 1)
 
 One row per simulated track (true alpha=1, true D swept), flat-prior and
 informative-prior fits side by side.
@@ -110,9 +110,9 @@ informative-prior fits side by side.
 | `track_id`, `track_length`, `n_disp` | As above. |
 | `D_weak`, `D_stderr_weak`, `sigma_normal_weak`, `sigma_stderr_normal_weak` | Normal-model D/sigma, flat (`WEAK_NORMAL_PRIOR`) fit. |
 | `D_bayes`, `D_stderr_bayes`, `sigma_normal_bayes`, `sigma_stderr_normal_bayes` | Normal-model D/sigma, informative-prior fit. |
-| `D_alpha_weak`, `D_alpha_stderr_weak`, `sigma_weak`, `sigma_stderr_weak`, `alpha_weak`, `alpha_stderr_weak` | Anomalous-model fit, flat prior. |
-| `D_alpha_bayes`, `D_alpha_stderr_bayes`, `sigma_bayes`, `sigma_stderr_bayes`, `alpha_bayes`, `alpha_stderr_bayes` | Anomalous-model fit, informative prior. |
-| `true_D_um2_s_alpha` | Ground-truth D used to simulate this track. |
+| `K_weak`, `K_stderr_weak`, `sigma_weak`, `sigma_stderr_weak`, `alpha_weak`, `alpha_stderr_weak` | Anomalous-model fit, flat prior. |
+| `K_bayes`, `K_stderr_bayes`, `sigma_bayes`, `sigma_stderr_bayes`, `alpha_bayes`, `alpha_stderr_bayes` | Anomalous-model fit, informative prior. |
+| `true_K_um2_s_alpha` | Ground-truth K used to simulate this track. |
 
 (This check uses the SVI comparison path, `fit_table_svi`, not the
 production `fit_table_map` -- hence the un-suffixed `D`/`alpha` names rather
@@ -126,8 +126,8 @@ One row per simulated track (true alpha swept at fixed D, flat prior).
 | Column | Meaning |
 | --- | --- |
 | `track_id`, `track_length`, `n_disp` | As above. |
-| `D_alpha`, `D_alpha_stderr`, `sigma`, `sigma_stderr`, `alpha`, `alpha_stderr` | Anomalous-model fit (flat prior, SVI path). |
-| `true_D_um2_s_alpha`, `true_alpha` | Ground truth used to simulate this track. |
+| `K`, `K_stderr`, `sigma`, `sigma_stderr`, `alpha`, `alpha_stderr` | Anomalous-model fit (flat prior, SVI path). |
+| `true_K_um2_s_alpha`, `true_alpha` | Ground truth used to simulate this track. |
 
 ### `validate_bayes_recovery/bayes_validate_short_track_degeneracy.csv` (Bayesian validation, `validate_bayes_recovery.py`, check 3)
 
@@ -137,7 +137,7 @@ One row per simulated `track_length`, not per track.
 | --- | --- |
 | `track_length` | Simulated track length tested. |
 | `n_replicates` | Number of simulated tracks at this length. |
-| `degenerate_frac_weak` | Fraction of flat-prior fits landing on a parameter's support boundary (`D_alpha` below floor, or `alpha` within epsilon of 0 or 2). |
+| `degenerate_frac_weak` | Fraction of flat-prior fits landing on a parameter's support boundary (`K` below floor, or `alpha` within epsilon of 0 or 2). |
 | `degenerate_frac_bayes` | Same, informative-prior fit. |
 
 ### `anisotropy/per_track_anisotropy.csv` (anisotropy, `run_anisotropy_analysis.py`)

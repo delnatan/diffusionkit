@@ -11,15 +11,15 @@ Production inference is `bayes.fit_population(..., model="both")`: batched
 exact MAP (L-BFGS-B on numpyro's own unconstrained potential, per
 length-group sub-batches, `engine="map"` default) for both the
 Brownian-constrained normal model (D, sigma) and the anomalous model
-(D_alpha, sigma, alpha) at once -- see FINDINGS.md ("Inference-engine choice
-for production") for why MAP over SVI. D and D_alpha are reported via their
+(K, sigma, alpha) at once -- see FINDINGS.md ("Inference-engine choice
+for production") for why MAP over SVI. D and K are reported via their
 log-space Laplace fit with an asymmetric back-transformed interval, not a
 symmetric mean +/- stderr in linear units (FINDINGS.md, "D should be
 reported in log-space, with an asymmetric interval") -- alpha keeps a
 symmetric physical-space interval, which checks there found adequate. D
 (normal model) and alpha (anomalous model) are the primary per-particle
-diffusive-behavior metrics; D_alpha is kept as a secondary/diagnostic
-quantity (FINDINGS.md: D_alpha's posterior degrades much faster than D's on
+diffusive-behavior metrics; K is kept as a secondary/diagnostic
+quantity (FINDINGS.md: K's posterior degrades much faster than D's on
 short tracks). See WORKFLOW.md for the low-data (`bayes.fit_track`) and bulk
 (`bayes.fit_population`) API this script uses.
 
@@ -51,7 +51,7 @@ import polars as pl
 from diffusionkit.classic import AcquisitionParams, assert_contiguous_tracks, load_tracks
 from diffusionkit.bayes import WEAK_ANOMALOUS_PRIOR, fit_population, fit_track
 from diffusionkit.bayes.viz import (
-    plot_D_alpha_joint,
+    plot_K_joint,
     plot_classic_vs_bayes_joint,
     plot_estimator_scatter,
     plot_mcmc_trace,
@@ -140,7 +140,7 @@ def main() -> None:
     print(
         f"  anomalous model (primary alpha): alpha median={alpha.median():.4f}  "
         f"IQR=[{alpha.quantile(0.25):.4f}, {alpha.quantile(0.75):.4f}]  "
-        f"(D_alpha median={summary['D_alpha_median_um2_s_alpha'].median():.4g} um^2/s^a, secondary)"
+        f"(K median={summary['K_median_um2_s_alpha'].median():.4g} um^2/s^a, secondary)"
     )
 
     n_not_converged = int(
@@ -156,7 +156,7 @@ def main() -> None:
     # model.py's docstring and FINDINGS.md): pairing the *Brownian-
     # constrained* D (normal model) against alpha from the *separate*
     # anomalous fit is the metric comparable against the classic MSD
-    # pipeline's own D-vs-alpha check. D_alpha and alpha *within* the same
+    # pipeline's own D-vs-alpha check. K and alpha *within* the same
     # joint anomalous fit answer a different question -- they're jointly
     # estimated from one likelihood surface with an expected Fisher-
     # information trade-off, not the cross-model artifact metric.
@@ -166,10 +166,10 @@ def main() -> None:
         "classic MSD pipeline's D-vs-alpha check -- see validate_bayes_recovery.py and FINDINGS.md)"
     )
     r_joint = np.corrcoef(
-        summary["D_alpha_median_um2_s_alpha"].to_numpy(), alpha.to_numpy()
+        summary["K_median_um2_s_alpha"].to_numpy(), alpha.to_numpy()
     )[0, 1]
     print(
-        f"  pearson r(D_alpha, alpha) [same joint anomalous fit] = {r_joint:.3f}  "
+        f"  pearson r(K, alpha) [same joint anomalous fit] = {r_joint:.3f}  "
         "(within-fit parameter trade-off, not the cross-model artifact metric above)"
     )
 
@@ -186,13 +186,13 @@ def main() -> None:
         max_batch_size=MAX_BATCH_SIZE,
     )
     frac_weak = degenerate_fraction(
-        weak_fits["D_alpha_median_um2_s_alpha"], weak_fits["alpha"]
+        weak_fits["K_median_um2_s_alpha"], weak_fits["alpha"]
     )
     frac_bayes = degenerate_fraction(
-        summary["D_alpha_median_um2_s_alpha"], alpha
+        summary["K_median_um2_s_alpha"], alpha
     )
     print(
-        f"\n  boundary-degenerate anomalous fits (D_alpha<{D_FLOOR:g} or alpha within "
+        f"\n  boundary-degenerate anomalous fits (K<{D_FLOOR:g} or alpha within "
         f"{ALPHA_EPS:g} of the [0,2] edge): flat-prior={int(frac_weak * summary.height)}/{summary.height} "
         f"({100 * frac_weak:.1f}%), informative-prior={int(frac_bayes * summary.height)}/{summary.height} "
         f"({100 * frac_bayes:.1f}%) -- almost all on the shortest, most weakly-constrained tracks; see FINDINGS.md"
@@ -249,7 +249,7 @@ def main() -> None:
 
         fig = plot_classic_vs_bayes_joint(joined)
         fig.savefig(
-            FIG_DIR / "classic_vs_bayes_D_alpha_jointplot.png",
+            FIG_DIR / "classic_vs_bayes_K_jointplot.png",
             dpi=150,
             bbox_inches="tight",
         )
@@ -259,7 +259,7 @@ def main() -> None:
             "run scripts/run_msd_analysis.py first for a full comparison)"
         )
 
-    fig = plot_D_alpha_joint(
+    fig = plot_K_joint(
         summary,
         "D_median_um2_s",
         "alpha",
@@ -268,19 +268,19 @@ def main() -> None:
         "Per-track D vs. alpha, exact-likelihood Bayesian MAP (no MSD) -- classic-MSD-comparable pairing",
     )
     fig.savefig(
-        FIG_DIR / "bayes_D_alpha_jointplot.png", dpi=150, bbox_inches="tight"
+        FIG_DIR / "bayes_K_jointplot.png", dpi=150, bbox_inches="tight"
     )
 
-    fig = plot_D_alpha_joint(
+    fig = plot_K_joint(
         summary,
-        "D_alpha_median_um2_s_alpha",
+        "K_median_um2_s_alpha",
         "alpha",
-        r"$D_{\alpha}$ (same anomalous fit, $\mu m^2/s^\alpha$)",
+        r"$K$ (same anomalous fit, $\mu m^2/s^\alpha$)",
         r"$\alpha$ (same anomalous fit)",
-        "Per-track D_alpha vs. alpha WITHIN the same joint fit -- NOT the classic-comparable artifact metric",
+        "Per-track K vs. alpha WITHIN the same joint fit -- NOT the classic-comparable artifact metric",
     )
     fig.savefig(
-        FIG_DIR / "bayes_D_alpha_jointplot_within_fit.png",
+        FIG_DIR / "bayes_K_jointplot_within_fit.png",
         dpi=150,
         bbox_inches="tight",
     )
@@ -313,13 +313,13 @@ def main() -> None:
         dt = time.time() - t0
         samples, _mcmc = nuts_fit.raw
         flat, trace = samples_dict_to_arrays(
-            samples, ["D_alpha", "sigma", "alpha"]
+            samples, ["K", "sigma", "alpha"]
         )
         print(
             f"  track {pid} (track_length={n_frames}): {dt:.1f}s, "
-            f"posterior median D_alpha={nuts_fit.params['D_alpha']:.4g}, alpha={nuts_fit.params['alpha']:.3f}  "
-            f"[batch fit: D_alpha={row['D_alpha_median_um2_s_alpha']:.4g} "
-            f"({row['D_alpha_lo_um2_s_alpha']:.4g}, {row['D_alpha_hi_um2_s_alpha']:.4g}), alpha={row['alpha']:.3f}]"
+            f"posterior median K={nuts_fit.params['K']:.4g}, alpha={nuts_fit.params['alpha']:.3f}  "
+            f"[batch fit: K={row['K_median_um2_s_alpha']:.4g} "
+            f"({row['K_lo_um2_s_alpha']:.4g}, {row['K_hi_um2_s_alpha']:.4g}), alpha={row['alpha']:.3f}]"
         )
 
         # Single-track MAP (not the batched one above) purely for this
@@ -331,7 +331,7 @@ def main() -> None:
         map_fit = fit_track(grp, PARAMS.dt_s, model="anomalous", method="map")
         single_fit = map_fit.raw
         fit_mean = np.array(
-            [single_fit.params[k] for k in ["D_alpha", "sigma", "alpha"]]
+            [single_fit.params[k] for k in ["K", "sigma", "alpha"]]
         )
         fit_cov = None
         if single_fit.cov is not None:
@@ -339,15 +339,15 @@ def main() -> None:
                 [
                     [
                         single_fit.cov[a][b]
-                        for b in ["D_alpha", "sigma", "alpha"]
+                        for b in ["K", "sigma", "alpha"]
                     ]
-                    for a in ["D_alpha", "sigma", "alpha"]
+                    for a in ["K", "sigma", "alpha"]
                 ]
             )
 
         fig = plot_posterior_corner(
             flat,
-            ["D_alpha", "sigma_loc", "alpha"],
+            ["K", "sigma_loc", "alpha"],
             ["um2/s^a", "um", ""],
             laplace_mean=fit_mean,
             laplace_cov=fit_cov,
@@ -357,7 +357,7 @@ def main() -> None:
         )
 
         fig = plot_mcmc_trace(
-            trace, ["D_alpha", "sigma_loc", "alpha"], ["um2/s^a", "um", ""]
+            trace, ["K", "sigma_loc", "alpha"], ["um2/s^a", "um", ""]
         )
         fig.savefig(FIG_DIR / f"bayes_trace_particle{pid}.png", dpi=150)
 

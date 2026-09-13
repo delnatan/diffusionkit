@@ -60,9 +60,9 @@ _NORMAL_RENAME = {
 }
 _ANOM_RENAME = {
     "converged": "anomalous_converged",
-    "D_alpha_median": "D_alpha_median_um2_s_alpha",
-    "D_alpha_lo": "D_alpha_lo_um2_s_alpha",
-    "D_alpha_hi": "D_alpha_hi_um2_s_alpha",
+    "K_median": "K_median_um2_s_alpha",
+    "K_lo": "K_lo_um2_s_alpha",
+    "K_hi": "K_hi_um2_s_alpha",
     "sigma_median": "sigma_anom_median_um",
     "sigma_lo": "sigma_anom_lo_um",
     "sigma_hi": "sigma_anom_hi_um",
@@ -83,7 +83,7 @@ MODEL_REGISTRY: dict[str, tuple] = {
         anomalous_diffusion_model,
         batched_anomalous_diffusion_model,
         AnomalousModelPrior,
-        ["D_alpha", "sigma", "alpha"],
+        ["K", "sigma", "alpha"],
         _ANOM_RENAME,
     ),
 }
@@ -134,7 +134,7 @@ def fit_track(
     """Fit one track (rows for a single track_id, schema from `io.load_tracks`).
 
     `method="map"` (default) is `inference.fit_map` -- fast, and FINDINGS.md
-    ("D's posterior is much better-behaved than D_alpha on short tracks")
+    ("D's posterior is much better-behaved than K on short tracks")
     found it adequately calibrated for D specifically even at N=5. Reach for
     `method="nuts"` when the posterior's *shape* matters, not just its
     center -- e.g. a very short or weakly-identified track where a Gaussian

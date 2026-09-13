@@ -38,8 +38,8 @@ def main() -> None:
     fit = fit_track(track, PARAMS.dt_s, model="anomalous")
 
     print(f"track {fit.track_id} (track_length={fit.track_length}, n_disp={fit.n_disp})")
-    print(f"  D_alpha = {fit.params['D_alpha']:.4g} "
-          f"({fit.lo['D_alpha']:.4g}, {fit.hi['D_alpha']:.4g}) um^2/s^alpha")
+    print(f"  K = {fit.params['K']:.4g} "
+          f"({fit.lo['K']:.4g}, {fit.hi['K']:.4g}) um^2/s^alpha")
     print(f"  alpha   = {fit.params['alpha']:.3f} "
           f"({fit.lo['alpha']:.3f}, {fit.hi['alpha']:.3f})")
     print(f"  sigma   = {fit.params['sigma']:.4g} "
@@ -49,7 +49,7 @@ def main() -> None:
     # method="nuts" -- useful when the track is short/noisy enough that a
     # Gaussian approximation is suspect (FINDINGS.md).
     nuts_fit = fit_track(track, PARAMS.dt_s, model="anomalous", method="nuts")
-    print(f"\n  (NUTS check) D_alpha median = {nuts_fit.params['D_alpha']:.4g}, "
+    print(f"\n  (NUTS check) K median = {nuts_fit.params['K']:.4g}, "
           f"alpha median = {nuts_fit.params['alpha']:.3f}")
 
 

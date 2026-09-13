@@ -331,7 +331,7 @@ def _map_chunk(fit: MAPFit, batch: _Batch, param_names: list[str]) -> pl.DataFra
     """One `fit_map` result -> a table chunk.
 
     Any `name` that is itself a sample site with positive-real (LogNormal)
-    support -- true of D, D_alpha, sigma, identifiable because
+    support -- true of D, K, sigma, identifiable because
     `fit.unconstrained_params` has a matching key -- is reported from its
     log-space Laplace fit as an asymmetric back-transformed interval
     (`{name}_median`/`_lo`/`_hi` physical, `log10_{name}`/`_stderr`), per
@@ -420,7 +420,7 @@ def fit_table_svi(
 
     Faster in aggregate than `fit_table_map` but materially worse calibrated
     (FINDINGS.md: reported uncertainty 3-10x too narrow, because the
-    mean-field guide discards real posterior correlation between D_alpha,
+    mean-field guide discards real posterior correlation between K,
     alpha and sigma). Kept as the validation/comparison engine the recovery
     scripts run against, not as a production path.
 

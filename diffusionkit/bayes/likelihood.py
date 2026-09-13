@@ -8,11 +8,11 @@ references (Michalet & Berglund 2012, Vestergaard et al. 2014, Kepten et al.
 2013) and the full derivation.
 
 Model (per spatial dimension, isotropic 2D motion so x and y share the same
-D_alpha, alpha, sigma):
+K, alpha, sigma):
 
-  True motion:        fBm with MSD_1D(t) = 2*D_alpha*t^alpha
+  True motion:        fBm with MSD_1D(t) = 2*K*t^alpha
                        (alpha=1 reduces exactly to ordinary Brownian motion.
-                       Total 2D MSD = 4*D_alpha*tau^alpha, matching the
+                       Total 2D MSD = 4*K*tau^alpha, matching the
                        convention in analysis/fitting.py.)
   Observed position:  x_obs[n] = X_true[n] + eps[n],  eps[n] ~ iid N(0, sigma^2)
                        (static localization noise, no motion-blur/R term --
@@ -28,20 +28,20 @@ from __future__ import annotations
 import jax.numpy as jnp
 
 
-def fgn_gamma(lag: jnp.ndarray, D_alpha: float, dt_s: float, alpha: float) -> jnp.ndarray:
+def fgn_gamma(lag: jnp.ndarray, K: float, dt_s: float, alpha: float) -> jnp.ndarray:
     """Autocovariance of fractional Gaussian noise (fBm increments) at integer lag.
 
-    gamma(k) = D_alpha * dt^alpha * (|k+1|^alpha - 2|k|^alpha + |k-1|^alpha)
+    gamma(k) = K * dt^alpha * (|k+1|^alpha - 2|k|^alpha + |k-1|^alpha)
 
-    Sanity checks: gamma(0) = 2*D_alpha*dt^alpha = Var(single increment) =
+    Sanity checks: gamma(0) = 2*K*dt^alpha = Var(single increment) =
     MSD_1D(dt); at alpha=1, gamma(0) = 2*D*dt and gamma(k>=1) = 0, i.e.
     ordinary Brownian motion has independent increments.
     """
     k = jnp.abs(lag).astype(jnp.float64)
-    return D_alpha * dt_s**alpha * (jnp.abs(k + 1) ** alpha - 2 * k**alpha + jnp.abs(k - 1) ** alpha)
+    return K * dt_s**alpha * (jnp.abs(k + 1) ** alpha - 2 * k**alpha + jnp.abs(k - 1) ** alpha)
 
 
-def fgn_covariance(n_disp: int, D_alpha: float, dt_s: float, alpha: float) -> jnp.ndarray:
+def fgn_covariance(n_disp: int, K: float, dt_s: float, alpha: float) -> jnp.ndarray:
     """Dense (n_disp x n_disp) Toeplitz covariance matrix of fGn increments.
 
     n_disp is the number of displacements in a track (= track_length - 1).
@@ -52,7 +52,7 @@ def fgn_covariance(n_disp: int, D_alpha: float, dt_s: float, alpha: float) -> jn
     """
     idx = jnp.arange(n_disp)
     lag = jnp.abs(idx[:, None] - idx[None, :])
-    return fgn_gamma(lag, D_alpha, dt_s, alpha)
+    return fgn_gamma(lag, K, dt_s, alpha)
 
 
 def noise_covariance(n_disp: int, sigma2_um2: float) -> jnp.ndarray:
@@ -71,10 +71,10 @@ def noise_covariance(n_disp: int, sigma2_um2: float) -> jnp.ndarray:
 
 
 def displacement_covariance(
-    n_disp: int, D_alpha: float, dt_s: float, alpha: float, sigma2_um2: float
+    n_disp: int, K: float, dt_s: float, alpha: float, sigma2_um2: float
 ) -> jnp.ndarray:
     """Full covariance of observed displacements: true motion (fGn) + localization noise."""
-    return fgn_covariance(n_disp, D_alpha, dt_s, alpha) + noise_covariance(n_disp, sigma2_um2)
+    return fgn_covariance(n_disp, K, dt_s, alpha) + noise_covariance(n_disp, sigma2_um2)
 
 
 def anisotropic_step_covariance(

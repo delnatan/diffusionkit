@@ -84,7 +84,7 @@ def plot_ensemble_fit(
                  elinewidth=1, capsize=0)
     n2 = anomalous_fit.n_points
     tau_fit2 = tau[:n2]
-    pred2 = 4 * anomalous_fit.D_alpha_um2_s_alpha * tau_fit2 ** anomalous_fit.alpha
+    pred2 = 4 * anomalous_fit.K_um2_s_alpha * tau_fit2 ** anomalous_fit.alpha
     ax2.plot(tau_fit2, pred2, color="steelblue", lw=2,
              label=r"fit: $\alpha$=" f"{anomalous_fit.alpha:.3f}"
                    f"\n(n={n2} pts, "
@@ -134,7 +134,7 @@ def plot_parameter_distributions(summary: pl.DataFrame) -> plt.Figure:
     return fig
 
 
-def plot_D_alpha_jointplot(
+def plot_K_jointplot(
     summary: pl.DataFrame, alpha_col: str = "alpha"
 ) -> plt.Figure:
     """Joint distribution of log10(D) and alpha across real-data tracks.
@@ -144,11 +144,11 @@ def plot_D_alpha_jointplot(
     (n_points_used) as the alpha fit -- i.e. the short-time apparent D under
     a forced normal-diffusion assumption, deliberately paired against the
     independently-fit power-law exponent alpha from the *same* lag range.
-    This is NOT `D_alpha_um2_s_alpha` (units um^2/s^alpha, from
+    This is NOT `K_um2_s_alpha` (units um^2/s^alpha, from
     `fit_anomalous_diffusion`) -- the two only coincide numerically when
-    alpha=1, and plotting D_alpha against alpha would be circular (alpha
-    appears in D_alpha's own units) rather than a genuine two-parameter
-    comparison. Axis labels spell this out to avoid the D vs D_alpha mixup
+    alpha=1, and plotting K against alpha would be circular (alpha
+    appears in K's own units) rather than a genuine two-parameter
+    comparison. Axis labels spell this out to avoid the D vs K mixup
     that's an easy trap in the anomalous-diffusion literature.
 
     A 2D KDE sits *beneath* the scatter as a density guide, with marginal
@@ -199,7 +199,7 @@ def plot_D_alpha_jointplot(
     g.ax_marg_x.set_title(
         f"Per-track D vs. alpha (r={r:.2f}, n={df.height}"
         + (f", {n_dropped} dropped: D<=0" if n_dropped else "") + ")\n"
-        r"D is $D_{\mathrm{linear}}$ (MSD=$4D\tau$+b), NOT $D_\alpha$ (MSD=$4D_\alpha\tau^\alpha$, "
+        r"D is $D_{\mathrm{linear}}$ (MSD=$4D\tau$+b), NOT $K$ (MSD=$4K\tau^\alpha$, "
         r"units $\mu m^2/s^\alpha$) -- same short-lag window per track for both fits",
         fontsize=9.5, loc="left",
     )

@@ -111,7 +111,7 @@ Used consistently throughout the code, this README, `WORKFLOW.md`,
 | **displacement** | `dx[k] = x[k+1] - x[k]`. A track has `n_disp = track_length - 1` of them |
 | **lag** | A frame separation `n`; `tau = n * dt_s` is the corresponding time |
 | **D** | Brownian diffusion coefficient, um^2/s. From a model with `alpha` pinned to 1 |
-| **D_alpha** | Generalized diffusion coefficient, um^2/s^alpha. From a model with `alpha` free |
+| **K** | Generalized diffusion coefficient, um^2/s^alpha. From a model with `alpha` free |
 | **alpha** | Anomalous exponent. `<1` sub-diffusive, `1` Brownian, `>1` super-diffusive |
 | **sigma_loc** | Static localization precision, um. Per-frame position uncertainty. Named `sigma` as a model parameter (`fit.params["sigma"]`), `sigma_*_um` in output columns |
 | **eps** | Anisotropy fraction `(D_par - D_perp)/(D_par + D_perp)`, in `[0,1)`. `0` = isotropic |
@@ -119,8 +119,8 @@ Used consistently throughout the code, this README, `WORKFLOW.md`,
 | **single-track regime** | A handful of tracks, examined individually |
 | **population regime** | Hundreds to thousands of tracks, one row each |
 
-Two conventions that hold everywhere: 2D MSD is `4*D_alpha*tau^alpha` (so
-per-axis it is `2*D_alpha*tau^alpha`), and a `_um`/`_um2_s`/`_um2_s_alpha`
+Two conventions that hold everywhere: 2D MSD is `4*K*tau^alpha` (so
+per-axis it is `2*K*tau^alpha`), and a `_um`/`_um2_s`/`_um2_s_alpha`
 column suffix marks physical units while a bare name is dimensionless.
 
 ---
@@ -137,8 +137,8 @@ Compress the track into its time-averaged MSD curve, then fit a model to
 that curve.
 
 ```
-MSD(tau) = 4*D*tau + b                 normal      (weighted least squares)
-MSD(tau) = 4*D_alpha*tau^alpha         anomalous   (least squares in log-log space)
+MSD(tau) = 4*D*tau + b          normal      (weighted least squares)
+MSD(tau) = 4*K*tau^alpha        anomalous   (least squares in log-log space)
 ```
 
 `b` is the static-localization offset, `~4*sigma_loc^2`. Fits use only the
@@ -169,7 +169,7 @@ form:
 ```
 dx ~ Normal(0, Sigma)          Sigma = Sigma_motion + Sigma_noise
 
-Sigma_motion[i,j] = gamma(|i-j|),   gamma(k) = D_alpha * dt^alpha *
+Sigma_motion[i,j] = gamma(|i-j|),   gamma(k) = K * dt^alpha *
                                                (|k+1|^a - 2|k|^a + |k-1|^a)
 Sigma_noise[i,i]   =  2*sigma_loc^2
 Sigma_noise[i,i+-1] = -sigma_loc^2
@@ -201,7 +201,7 @@ Three things follow from this being *exact* rather than a summary:
 posterior(theta | data)  proportional to  Normal(dx; 0, Sigma(theta)) * prior(theta)
 ```
 
-`theta` is `(D_alpha, alpha, sigma_loc)`, or `(D, sigma_loc)` with alpha
+`theta` is `(K, alpha, sigma_loc)`, or `(D, sigma_loc)` with alpha
 pinned. There is no second estimator hiding anywhere: a near-flat prior
 (`WEAK_*_PRIOR`) turns the same code into a maximum-likelihood fit, and an
 informative prior turns it back. One model, one likelihood, one code path.
@@ -424,7 +424,7 @@ builders wrapping them, all sharing one grouping loop:
 | Calibration | alpha stderr within 1-4% of NUTS | **3-10x too narrow** | reference |
 
 Mean-field SVI assumes the parameters are independent in the posterior.
-They are not -- D_alpha, alpha, and `sigma_loc` are strongly correlated,
+They are not -- K, alpha, and `sigma_loc` are strongly correlated,
 and that correlation carries much of the real uncertainty. Throwing it away
 produces intervals that look great and are wrong.
 
@@ -552,9 +552,9 @@ Stated plainly; `FINDINGS.md` has the measurements behind each.
   fitted median is ~0.66. Anti-persistent fBm increments and localization
   noise are both negatively correlated at lag 1, so the two are hard to
   separate. Real limitation, not a validation artifact.
-- **D_alpha degrades faster than D on short tracks.** Treat D (normal
+- **K degrades faster than D on short tracks.** Treat D (normal
   model) and alpha (anomalous model) as the primary per-track quantities;
-  D_alpha is diagnostic.
+  K is diagnostic.
 - **Motion blur is not modeled.** Both pipelines assume `R = 0` (negligible
   exposure duty cycle), because camera exposure is not in the input schema.
 - **Per-track anisotropy needs track length, not track count.** Below

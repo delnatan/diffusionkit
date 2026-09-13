@@ -11,7 +11,7 @@ cross-check between the two simulators.
 
 Output uses the same core schema as `analysis.io.load_tracks` (track_id,
 frame, t_s, x_um, y_um, sigma_x_um, sigma_y_um, track_length), plus
-true_D_um2_s_alpha and true_alpha ground-truth columns, so it flows through
+true_K_um2_s_alpha and true_alpha ground-truth columns, so it flows through
 either `analysis`'s MSD pipeline or this package's likelihood-based one
 unmodified.
 
@@ -41,10 +41,10 @@ def simulate_fbm_tracks(
     sigma_loc_um: float,
     seed: int = 0,
 ) -> pl.DataFrame:
-    """Simulate 2D fBm tracks (+ iid localization noise) for each (D_alpha,
+    """Simulate 2D fBm tracks (+ iid localization noise) for each (K,
     alpha) pair in `params_um2_s_alpha`, `n_replicates` tracks each.
 
-    The Cholesky factor of the fGn covariance depends only on (D_alpha,
+    The Cholesky factor of the fGn covariance depends only on (K,
     alpha, track_length), not on the random draw, so it's built once per
     parameter pair and reused across all `n_replicates` tracks -- avoids
     n_replicates redundant O(track_length^3) factorizations.
@@ -56,12 +56,12 @@ def simulate_fbm_tracks(
     rows: dict[str, list] = {
         "track_id": [], "frame": [], "t_s": [], "x_um": [], "y_um": [],
         "sigma_x_um": [], "sigma_y_um": [], "track_length": [],
-        "true_D_um2_s_alpha": [], "true_alpha": [],
+        "true_K_um2_s_alpha": [], "true_alpha": [],
     }
 
     track_id = 0
-    for D_alpha, alpha in params_um2_s_alpha:
-        cov = np.asarray(fgn_covariance(n_disp, D_alpha, dt_s, alpha))
+    for K, alpha in params_um2_s_alpha:
+        cov = np.asarray(fgn_covariance(n_disp, K, dt_s, alpha))
         L = np.linalg.cholesky(cov)
         for _ in range(n_replicates):
             dx = L @ rng.standard_normal(n_disp)
@@ -79,7 +79,7 @@ def simulate_fbm_tracks(
             rows["sigma_x_um"].extend([sigma_loc_um] * track_length)
             rows["sigma_y_um"].extend([sigma_loc_um] * track_length)
             rows["track_length"].extend([track_length] * track_length)
-            rows["true_D_um2_s_alpha"].extend([D_alpha] * track_length)
+            rows["true_K_um2_s_alpha"].extend([K] * track_length)
             rows["true_alpha"].extend([alpha] * track_length)
             track_id += 1
 

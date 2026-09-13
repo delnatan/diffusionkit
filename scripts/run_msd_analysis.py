@@ -23,7 +23,7 @@ from diffusionkit.classic import (
     load_tracks,
 )
 from diffusionkit.classic.viz import (
-    plot_D_alpha_jointplot,
+    plot_K_jointplot,
     plot_D_vs_track_length,
     plot_ensemble_fit,
     plot_localization_diagnostic,
@@ -80,7 +80,7 @@ def main() -> None:
           f"(R^2={normal_fit.r_squared:.4f})")
     print(f"  Anomalous diffusion: alpha = {anomalous_fit.alpha:.4f} +/- "
           f"{anomalous_fit.alpha_stderr:.3g}   "
-          f"D_alpha = {anomalous_fit.D_alpha_um2_s_alpha:.4g} um^2/s^alpha  "
+          f"K = {anomalous_fit.K_um2_s_alpha:.4g} um^2/s^alpha  "
           f"(R^2={anomalous_fit.r_squared:.4f})")
     print(f"  Mean expected localization offset (from sigma_x/sigma_y): "
           f"{result.mean_localization_offset_um2:.4g} um^2  (fitted intercept: "
@@ -141,8 +141,8 @@ def main() -> None:
     fig5 = plot_D_vs_track_length(summary)
     fig5.savefig(FIG_DIR / "D_vs_track_length.png", dpi=150)
 
-    fig6 = plot_D_alpha_jointplot(summary)
-    fig6.savefig(FIG_DIR / "D_alpha_jointplot.png", dpi=150, bbox_inches="tight")
+    fig6 = plot_K_jointplot(summary)
+    fig6.savefig(FIG_DIR / "K_jointplot.png", dpi=150, bbox_inches="tight")
 
     print(f"Saved figures to {FIG_DIR}")
 

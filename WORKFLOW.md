@@ -42,7 +42,7 @@ from diffusionkit.bayes import fit_track
 track = tracks.filter(pl.col("track_id") == 42)
 fit = fit_track(track, params.dt_s, model="anomalous")  # model="normal" for D, alpha pinned to 1
 
-fit.params["D_alpha"], fit.lo["D_alpha"], fit.hi["D_alpha"]  # median + interval, physical units
+fit.params["K"], fit.lo["K"], fit.hi["K"]  # median + interval, physical units
 fit.params["alpha"]
 ```
 
@@ -75,7 +75,7 @@ classic = fit_population_classic(tracks, params.dt_s)
 
 bayes_fit = fit_population_bayes(tracks, params.dt_s, model="both")
 # one row per track: D (normal model, primary), alpha (anomalous model,
-# primary), D_alpha (anomalous model, secondary/diagnostic) -- see
+# primary), K (anomalous model, secondary/diagnostic) -- see
 # README's "Results tables" reference for every column.
 ```
 

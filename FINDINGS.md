@@ -141,20 +141,20 @@ and they give different numbers:
   pinned to 1) against alpha from the **separate** anomalous fit -- a
   short-time D under a forced normal-diffusion assumption, paired against an
   independently-fit power-law exponent. This is what the classic pipeline's
-  r=0.73 measures (see `diffusionkit.classic.viz.plot_D_alpha_jointplot`), so it's the
+  r=0.73 measures (see `diffusionkit.classic.viz.plot_K_jointplot`), so it's the
   metric comparable across pipelines.
-- Correlating D_alpha and alpha **from the same joint 3-parameter fit**.
+- Correlating K and alpha **from the same joint 3-parameter fit**.
   These two are jointly estimated from one likelihood surface with a real,
   expected Fisher-information trade-off (verified separately: r~0.85-0.9 at
   *fixed* true D in simulation, since overestimating alpha and
-  underestimating D_alpha both raise the predicted MSD's late-time slope
+  underestimating K both raise the predicted MSD's late-time slope
   similarly). This is not the MSD-curve-fitting artifact the cross-pipeline
   comparison targets, and conflating the two during the numpyro port is what
   produced the spurious r=0.73.
 
 Both scripts now report both, clearly labeled
-(`bayes_D_alpha_jointplot.png` = cross-model / classic-comparable,
-`bayes_D_alpha_jointplot_within_fit.png` = within-fit).
+(`bayes_K_jointplot.png` = cross-model / classic-comparable,
+`bayes_K_jointplot_within_fit.png` = within-fit).
 
 ### Batched inference performance
 
@@ -189,14 +189,14 @@ default.
   with no monotonic trend against D, and pooled r(D_normal, alpha_anomalous)
   stays well under 0.3 for both priors (-0.09 flat, -0.22 informative) --
   see `results/figures/bayes_validate_null_bias_weak.png` vs.
-  `results/figures/simulation_alpha_bias.png`. The *within-fit* r(D_alpha,
+  `results/figures/simulation_alpha_bias.png`. The *within-fit* r(K,
   alpha) [not the artifact metric] is smaller here than on the real dataset
   (0.31 flat / 0.16 informative vs. 0.73 real-data) -- consistent with the
   Fisher-information trade-off being real but its magnitude depending on the
   spread of true D actually present in a given batch of tracks.
   
 - **Negative D / negative intercept (classic pitfalls #2-3) can't happen by
-  construction.** D (or D_alpha) and sigma have LogNormal priors/support
+  construction.** D (or K) and sigma have LogNormal priors/support
   (always positive) and alpha has Beta-rescaled support in (0, 2).
   
   **A short-track boundary-degeneracy pathology was found with the exact single-track MAP engine (`inference.fit_map`) under a flat prior, and an informative prior fixed it -- but the batched mean-field SVI engine now used for the full per-track table (`inference.fit_table_svi`) doesn't reproduce the same pathology even under a flat prior**, on the same
@@ -215,7 +215,7 @@ default.
 - **Alpha recovery across genuine sub-/super-diffusive ground truth** (not
   tested by the classic pipeline's validation, which only ever simulated
   pure Brownian motion): sweeping true alpha from 0.5 to 1.8 at fixed true
-  D_alpha=0.05, flat prior, batched SVI: median fitted alpha tracks true
+  K=0.05, flat prior, batched SVI: median fitted alpha tracks true
   alpha reasonably well near 1 (e.g. 0.997 at true 0.9, 1.078 at true 1.0)
   but with a real, systematic bias that grows toward the sub-diffusive end
   -- 0.66 at true 0.5 (+0.16), 0.83 at true 0.7 (+0.13) -- and a smaller
@@ -231,7 +231,7 @@ default.
   estimate + stderr misses.** On a 200-frame track (particle 88 in this
   run) the batch fit matches the NUTS posterior median closely. On a
   43-frame track (particle 2948), the NUTS posterior has a genuine heavy
-  right tail toward large D_alpha as alpha approaches its upper bound of 2
+  right tail toward large K as alpha approaches its upper bound of 2
   -- a real weak-identifiability ridge for short/noisy tracks (near-ballistic
   motion is hard to distinguish from a large diffusion coefficient over few
   points), not a sampler artifact: the chain traces are stationary and
@@ -271,14 +271,14 @@ advantages for L-BFGS-B, motivating a switch for production:
   full-covariance (`AutoMultivariateNormal`), measuring each method's
   posterior mean bias (in units of NUTS's own std) and stderr ratio
   (method/NUTS): **SVI mean-field's reported uncertainty was 3-10x too
-  narrow** (alpha stderr ratio 0.30-0.36x true; D_alpha stderr ratio as low
+  narrow** (alpha stderr ratio 0.30-0.36x true; K stderr ratio as low
   as 0.10x) on all three tracks, because the mean-field independence
-  assumption throws away real posterior correlation between D_alpha, sigma,
+  assumption throws away real posterior correlation between K, sigma,
   and alpha that carries much of the actual uncertainty. SVI full-covariance
   fixed most of this (alpha stderr ratio 0.87-0.95x) at comparable cost.
   Laplace/L-BFGS-B was the best-calibrated for alpha specifically (stderr
   ratio 0.99-1.04x on all three tracks) and had the lowest mean bias in most
-  rows, though it underestimates D_alpha's spread on the shortest track (see
+  rows, though it underestimates K's spread on the shortest track (see
   next section for why).
 
   Full numeric table and setup: `/tmp/posterior_study.log` from this
@@ -303,13 +303,13 @@ advantages for L-BFGS-B, motivating a switch for production:
 `diffusionkit.bayes.inference.fit_table_map` implements the production decision from the
 sections above: batched exact MAP via L-BFGS-B, sub-batched at
 `max_batch_size` (default 20) tracks per `fit_map` call to stay within the
-dense-Hessian memory limit, with each track's D (or D_alpha, sigma) reported
+dense-Hessian memory limit, with each track's D (or K, sigma) reported
 via its log-space Laplace fit as an asymmetric interval
 (`{name}_median`/`_lo`/`_hi` in physical units from `exp(logD_mean -+ logD_stderr)`,
 `log10_{name}`/`_stderr` alongside) rather than a symmetric mean +/- stderr
 in linear units. alpha keeps a symmetric physical-space interval. D (normal
 model) and alpha (anomalous model) are the primary per-particle metrics;
-D_alpha (anomalous model) is retained as a secondary/diagnostic column.
+K (anomalous model) is retained as a secondary/diagnostic column.
 `scripts/run_bayes_analysis.py` runs this in production; `fit_table_svi`
 (SVI/Adam) remains for comparison/validation use.
 
@@ -323,11 +323,11 @@ fit, `max_batch_size=20`):
   have `D_lo <= D_median <= D_hi` and strictly positive D; zero L-BFGS-B
   non-convergence flags across all sub-batches.
 - **Headline numbers**: log10(D) median -1.34 (D median 0.045 um^2/s, IQR
-  [0.040, 0.051]); alpha median 1.115 (IQR [1.007, 1.199]); D_alpha median
+  [0.040, 0.051]); alpha median 1.115 (IQR [1.007, 1.199]); K median
   0.065 um^2/s^a (secondary). r(D_normal, alpha_anomalous) [classic-
   comparable] = **-0.16** (vs. classic MSD's 0.73), consistent with the
   earlier SVI-based production run's -0.22 and the null-simulation result.
-  r(D_alpha, alpha) [within-fit, not the artifact metric] = 0.76, matching
+  r(K, alpha) [within-fit, not the artifact metric] = 0.76, matching
   the earlier real-data value.
 - **Timing tradeoff, stated plainly**: this run took ~800s (normal model) +
   ~484s (anomalous model) = **~21.4 minutes** for the two batched fits
@@ -350,30 +350,30 @@ fit, `max_batch_size=20`):
   live per-track progress rather than fully-buffered output that only
   appears at the end (relevant for backgrounded/redirected runs).
 
-### D's posterior is much better-behaved than D_alpha on short tracks
+### D's posterior is much better-behaved than K on short tracks
 
 Repeating the NUTS-vs-Laplace comparison on real `track_length=5` tracks
 (n_disp=4, the shortest in the dataset; particles 107, 112, 143), for both
-the normal (D, sigma) and anomalous (D_alpha, sigma, alpha) models:
+the normal (D, sigma) and anomalous (K, sigma, alpha) models:
 
 - **Normal model (D):** Laplace's D estimate is biased low by roughly 25%
   and its stderr is roughly 40-45% too narrow vs. NUTS across all three
   particles -- real degradation, but the posterior stays close to unimodal.
-- **Anomalous model (D_alpha):** far worse. Laplace's mean is **2-3x too
+- **Anomalous model (K):** far worse. Laplace's mean is **2-3x too
   low** and its stderr **4-6x too narrow** on all three particles (e.g.
-  particle 107: NUTS D_alpha = 0.170 +/- 0.686, Laplace says 0.073 +/- 0.113
+  particle 107: NUTS K = 0.170 +/- 0.686, Laplace says 0.073 +/- 0.113
   -- the true 1-sigma NUTS interval is wider than Laplace's entire reported
   range). Cause, visible directly in the corner plot: with only 4
-  displacements and 3 free parameters, large D_alpha paired with alpha near
-  its upper boundary (2) explains the data almost as well as small D_alpha
-  with moderate alpha, producing a long, heavy right tail in D_alpha that a
+  displacements and 3 free parameters, large K paired with alpha near
+  its upper boundary (2) explains the data almost as well as small K
+  with moderate alpha, producing a long, heavy right tail in K that a
   Gaussian approximation cannot represent. Alpha's own marginal is *still*
-  reasonably matched by Laplace even here -- it's specifically D_alpha (and
+  reasonably matched by Laplace even here -- it's specifically K (and
   its coupling to alpha) that breaks down.
 
   This is on top of the classic pipeline's own well-known difficulty
   estimating anything from very short tracks, and directly motivates
-  reporting D (not D_alpha) as the primary diffusivity metric, with D_alpha
+  reporting D (not K) as the primary diffusivity metric, with K
   kept as a secondary/diagnostic quantity rather than a headline number.
   Figures: `results/figures/laplace_vs_nuts_n5_particle{107,112,143}_{normal,anomalous}.png`.
 
@@ -420,7 +420,7 @@ step and then discarded), back-transformed to an **asymmetric** interval in
 physical units (`exp(logD_mean - logD_stderr)`, `exp(logD_mean)`,
 `exp(logD_mean + logD_stderr)`) rather than a symmetric `D +/- stderr(D)`,
 which the skewness numbers above show is not a meaningful description of
-the uncertainty for short tracks. Same treatment applies to D_alpha and to
+the uncertainty for short tracks. Same treatment applies to K and to
 sigma (also `LogNormal`-supported), for whatever secondary/diagnostic value
 they retain per the previous section.
 

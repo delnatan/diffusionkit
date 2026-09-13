@@ -23,7 +23,7 @@ generative and inference models):
      prior. The classic-comparable pairing is D from the
      *Brownian-constrained* normal model against alpha from the *separate*
      anomalous fit (matching how the classic pipeline defines its own D-vs-
-     alpha check -- see `analysis.viz.plot_D_alpha_jointplot`) -- D_alpha
+     alpha check -- see `analysis.viz.plot_K_jointplot`) -- K
      and alpha *within* the same joint anomalous fit are reported too,
      separately, since that's a different (and not artifact-comparable)
      quantity: jointly-estimated parameters with an expected Fisher-
@@ -80,7 +80,7 @@ TABLE_DIR = REPO_ROOT / "results" / "tables" / EXPERIMENT
 DT_S = 0.033
 SIGMA_LOC_UM = 0.025  # matches validate_localization_bias.py's representative value
 D_FLOOR, ALPHA_EPS = 1e-6, 1e-3
-PARAM_NAMES = ["D_alpha", "sigma", "alpha"]
+PARAM_NAMES = ["K", "sigma", "alpha"]
 
 
 def informative_prior(sigma_x_um: np.ndarray, sigma_y_um: np.ndarray) -> AnomalousModelPrior:
@@ -129,7 +129,7 @@ def degenerate_fraction(D: pl.Series, alpha: pl.Series) -> float:
     return float(bad.mean())
 
 
-def check_1_null_D_alpha_bias() -> None:
+def check_1_null_K_bias() -> None:
     print("\n" + "=" * 70)
     print("1. Null D-alpha bias (true alpha=1, true D swept) -- vs. classic MSD")
     print("=" * 70)
@@ -141,13 +141,13 @@ def check_1_null_D_alpha_bias() -> None:
         n_replicates=N_REP, track_length=TRACK_LENGTH, dt_s=DT_S,
         sigma_loc_um=SIGMA_LOC_UM, seed=100,
     )
-    truth = sim.select(["track_id", "true_D_um2_s_alpha"]).unique()
+    truth = sim.select(["track_id", "true_K_um2_s_alpha"]).unique()
 
     # The classic-MSD-comparable metric pairs the *Brownian-constrained* D
     # (normal model, alpha pinned to 1) against alpha from the *separate*
     # anomalous fit -- exactly how the classic pipeline defines its own
-    # D-vs-alpha check (analysis.viz.plot_D_alpha_jointplot,
-    # validate_localization_bias.py). D_alpha and alpha *within* the same
+    # D-vs-alpha check (analysis.viz.plot_K_jointplot,
+    # validate_localization_bias.py). K and alpha *within* the same
     # joint anomalous fit are a different question (an expected Fisher-
     # information trade-off between two jointly-estimated parameters), not
     # the cross-model artifact metric -- both reported below, separated.
@@ -163,13 +163,13 @@ def check_1_null_D_alpha_bias() -> None:
     )
 
     report = (
-        combined.group_by("true_D_um2_s_alpha")
+        combined.group_by("true_K_um2_s_alpha")
         .agg(
             n=pl.len(),
             median_alpha_weak=pl.col("alpha_weak").median(),
             median_alpha_bayes=pl.col("alpha_bayes").median(),
         )
-        .sort("true_D_um2_s_alpha")
+        .sort("true_K_um2_s_alpha")
     )
     print(f"Simulated {sim['track_id'].n_unique()} Brownian tracks "
           f"(true alpha=1, sigma_loc={SIGMA_LOC_UM} um, track_length={TRACK_LENGTH})")
@@ -181,9 +181,9 @@ def check_1_null_D_alpha_bias() -> None:
           f"flat-prior={r_weak:.3f}, informative-prior={r_bayes:.3f}  "
           "(compare against the classic MSD pipeline's own result on the same simulation design, "
           "see analysis/ and FINDINGS.md)")
-    r_weak_joint = np.corrcoef(combined["D_alpha_weak"], combined["alpha_weak"])[0, 1]
-    r_bayes_joint = np.corrcoef(combined["D_alpha_bayes"], combined["alpha_bayes"])[0, 1]
-    print(f"pooled pearson r(D_alpha, alpha) [same joint anomalous fit, NOT the artifact metric]: "
+    r_weak_joint = np.corrcoef(combined["K_weak"], combined["alpha_weak"])[0, 1]
+    r_bayes_joint = np.corrcoef(combined["K_bayes"], combined["alpha_bayes"])[0, 1]
+    print(f"pooled pearson r(K, alpha) [same joint anomalous fit, NOT the artifact metric]: "
           f"flat-prior={r_weak_joint:.3f}, informative-prior={r_bayes_joint:.3f}")
     print("median alpha range across the D sweep: "
           f"flat-prior=[{report['median_alpha_weak'].min():.3f}, {report['median_alpha_weak'].max():.3f}], "
@@ -191,16 +191,16 @@ def check_1_null_D_alpha_bias() -> None:
           "(flat here means no D-dependent bias in fitted alpha; compare against the classic MSD "
           "pipeline's own range from validate_localization_bias.py)")
 
-    combined.write_csv(TABLE_DIR / "bayes_validate_null_D_alpha_bias.csv")
+    combined.write_csv(TABLE_DIR / "bayes_validate_null_K_bias.csv")
 
     fig = plot_bias_vs_D_null(
-        combined, "alpha_weak", "true_D_um2_s_alpha",
+        combined, "alpha_weak", "true_K_um2_s_alpha",
         "Exact-likelihood, flat prior: alpha vs. true D (null test)",
     )
     fig.savefig(FIG_DIR / "bayes_validate_null_bias_weak.png", dpi=150, bbox_inches="tight")
 
     fig = plot_bias_vs_D_null(
-        combined, "alpha_bayes", "true_D_um2_s_alpha",
+        combined, "alpha_bayes", "true_K_um2_s_alpha",
         "Bayesian MAP (informative prior): alpha vs. true D (null test)",
     )
     fig.savefig(FIG_DIR / "bayes_validate_null_bias_bayes.png", dpi=150, bbox_inches="tight")
@@ -218,7 +218,7 @@ def check_2_alpha_recovery() -> None:
         n_replicates=N_REP, track_length=TRACK_LENGTH, dt_s=DT_S,
         sigma_loc_um=SIGMA_LOC_UM, seed=200,
     )
-    truth = sim.select(["track_id", "true_D_um2_s_alpha", "true_alpha"]).unique()
+    truth = sim.select(["track_id", "true_K_um2_s_alpha", "true_alpha"]).unique()
     fit = fit_table_svi(
         sim, batched_anomalous_diffusion_model, dt_s=DT_S, prior_fn=weak_prior,
         param_names=PARAM_NAMES, min_track_length=10,
@@ -226,7 +226,7 @@ def check_2_alpha_recovery() -> None:
 
     report = (
         fit.group_by("true_alpha")
-        .agg(n=pl.len(), median_alpha_fit=pl.col("alpha").median(), median_D_fit=pl.col("D_alpha").median())
+        .agg(n=pl.len(), median_alpha_fit=pl.col("alpha").median(), median_D_fit=pl.col("K").median())
         .sort("true_alpha")
     )
     print(f"Simulated {sim['track_id'].n_unique()} fBm tracks "
@@ -245,10 +245,10 @@ def check_2_alpha_recovery() -> None:
     fig.savefig(FIG_DIR / "bayes_validate_alpha_recovery.png", dpi=150, bbox_inches="tight")
 
     fig = plot_D_recovery(
-        fit, "D_alpha", "true_D_um2_s_alpha",
-        "Exact-likelihood, flat prior: D_alpha recovery (fixed true D, alpha varies)",
+        fit, "K", "true_K_um2_s_alpha",
+        "Exact-likelihood, flat prior: K recovery (fixed true D, alpha varies)",
     )
-    fig.savefig(FIG_DIR / "bayes_validate_D_alpha_recovery.png", dpi=150, bbox_inches="tight")
+    fig.savefig(FIG_DIR / "bayes_validate_K_recovery.png", dpi=150, bbox_inches="tight")
 
 
 def check_3_short_track_degeneracy() -> None:
@@ -269,8 +269,8 @@ def check_3_short_track_degeneracy() -> None:
                                param_names=PARAM_NAMES, min_track_length=track_length)
         bay = fit_table_svi(sim, batched_anomalous_diffusion_model, dt_s=DT_S, prior_fn=informative_prior,
                               param_names=PARAM_NAMES, min_track_length=track_length)
-        frac_weak = degenerate_fraction(weak["D_alpha"], weak["alpha"])
-        frac_bayes = degenerate_fraction(bay["D_alpha"], bay["alpha"])
+        frac_weak = degenerate_fraction(weak["K"], weak["alpha"])
+        frac_bayes = degenerate_fraction(bay["K"], bay["alpha"])
         rows.append((track_length, N_REP, frac_weak, frac_bayes))
         print(f"  track_length={track_length:3d} (n_disp={track_length - 1:2d}): "
               f"boundary-degenerate rate flat-prior={100 * frac_weak:5.1f}%  "
@@ -288,7 +288,7 @@ def main() -> None:
     TABLE_DIR.mkdir(parents=True, exist_ok=True)
 
     t0 = time.time()
-    check_1_null_D_alpha_bias()
+    check_1_null_K_bias()
     check_2_alpha_recovery()
     check_3_short_track_degeneracy()
     print(f"\nDone in {time.time() - t0:.1f}s. Saved tables to {TABLE_DIR}, figures to {FIG_DIR}")
