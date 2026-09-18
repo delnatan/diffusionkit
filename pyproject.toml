@@ -5,28 +5,20 @@ build-backend = "hatchling.build"
 [project]
 name = "diffusionkit"
 version = "0.1.0"
-description = "MSD and Bayesian diffusion-coefficient/anisotropy analysis for single-particle-tracking data"
+description = "Classical single-particle track analysis with explicit localization errors"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "numpy",
-    "pandas",
     "polars",
     "scipy",
-    "matplotlib",
-    "seaborn",
-    "jax",
-    "numpyro",
-    "tqdm",
 ]
 
 [project.optional-dependencies]
-# Nested sampling, for the validation/oracle scripts only -- an independent
-# evidence estimate that stays reliable on long, informative tracks, where the
-# prior-predictive Monte Carlo in bayes/bayes_factor.py does not (see
-# FINDINGS.md). The production estimators never import it, so it stays out of
-# the core dependency set.
-nested = ["jaxns>2.5"]
+bayes = ["jax", "numpyro", "tqdm"]
+plots = ["matplotlib", "seaborn", "pandas"]
+# Historical anisotropy workflow; not part of the rebuilt classical core.
+nested = ["jaxns>2.5", "jax", "numpyro", "tqdm", "matplotlib", "seaborn", "pandas"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["diffusionkit"]

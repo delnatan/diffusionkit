@@ -1,0 +1,371 @@
+{
+  "seed": 20260918,
+  "dt_s": 0.033,
+  "options": {
+    "max_lag": 3,
+    "min_frames": 5,
+    "localization": "provided",
+    "max_nfev": 200
+  },
+  "localization": "Known SDs vary by frame and axis; independent position noise",
+  "summary_policy": "All returned non-null estimates, including boundary/failed fits; counts by status are retained",
+  "intervals": "Not estimated; no coverage claim",
+  "elapsed_s": 2.38643470799434,
+  "cells": [
+    {
+      "n_frames": 5,
+      "K": 0.01,
+      "alpha": 0.5,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 98,
+        "status_counts": {
+          "boundary": 37,
+          "ok": 61,
+          "unidentified": 2
+        },
+        "mean": 0.7569215236995801,
+        "bias": 0.2569215236995801,
+        "rmse": 0.765926781042762
+      }
+    },
+    {
+      "n_frames": 5,
+      "K": 0.01,
+      "alpha": 1.0,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 82,
+        "status_counts": {
+          "ok": 44,
+          "boundary": 38,
+          "unidentified": 18
+        },
+        "mean": 1.0279525798012026,
+        "bias": 0.02795257980120258,
+        "rmse": 0.80192599249553
+      },
+      "D_fit": {
+        "n_estimated": 100,
+        "status_counts": {
+          "ok": 82,
+          "nonphysical": 18
+        },
+        "mean": 0.010157383474514177,
+        "bias": 0.00015738347451417674,
+        "rmse": 0.011590590659105103
+      }
+    },
+    {
+      "n_frames": 5,
+      "K": 0.01,
+      "alpha": 1.5,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 58,
+        "status_counts": {
+          "unidentified": 42,
+          "boundary": 35,
+          "ok": 23
+        },
+        "mean": 1.0127100342200284,
+        "bias": -0.48728996577997163,
+        "rmse": 0.9761858006008032
+      }
+    },
+    {
+      "n_frames": 5,
+      "K": 0.05,
+      "alpha": 0.5,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 100,
+        "status_counts": {
+          "ok": 77,
+          "boundary": 23
+        },
+        "mean": 0.5928679329369658,
+        "bias": 0.09286793293696582,
+        "rmse": 0.5878424652078252
+      }
+    },
+    {
+      "n_frames": 5,
+      "K": 0.05,
+      "alpha": 1.0,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 98,
+        "status_counts": {
+          "ok": 75,
+          "boundary": 23,
+          "unidentified": 2
+        },
+        "mean": 0.9540929429061654,
+        "bias": -0.04590705709383458,
+        "rmse": 0.6740721906677375
+      },
+      "D_fit": {
+        "n_estimated": 100,
+        "status_counts": {
+          "ok": 98,
+          "nonphysical": 2
+        },
+        "mean": 0.048547626910074124,
+        "bias": -0.001452373089925879,
+        "rmse": 0.038420662649000174
+      }
+    },
+    {
+      "n_frames": 5,
+      "K": 0.05,
+      "alpha": 1.5,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 85,
+        "status_counts": {
+          "boundary": 49,
+          "ok": 36,
+          "unidentified": 15
+        },
+        "mean": 1.4504886652308426,
+        "bias": -0.04951133476915737,
+        "rmse": 0.7144365445181524
+      }
+    },
+    {
+      "n_frames": 10,
+      "K": 0.01,
+      "alpha": 0.5,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 100,
+        "status_counts": {
+          "ok": 90,
+          "boundary": 10
+        },
+        "mean": 0.5058574671642255,
+        "bias": 0.005857467164225527,
+        "rmse": 0.4142378131237936
+      }
+    },
+    {
+      "n_frames": 10,
+      "K": 0.01,
+      "alpha": 1.0,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 98,
+        "status_counts": {
+          "boundary": 44,
+          "ok": 54,
+          "unidentified": 2
+        },
+        "mean": 1.0743838647139403,
+        "bias": 0.07438386471394032,
+        "rmse": 0.7538200840910206
+      },
+      "D_fit": {
+        "n_estimated": 100,
+        "status_counts": {
+          "ok": 97,
+          "nonphysical": 3
+        },
+        "mean": 0.01047328224692558,
+        "bias": 0.00047328224692557916,
+        "rmse": 0.006939823213378378
+      }
+    },
+    {
+      "n_frames": 10,
+      "K": 0.01,
+      "alpha": 1.5,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 80,
+        "status_counts": {
+          "ok": 26,
+          "boundary": 54,
+          "unidentified": 20
+        },
+        "mean": 1.1290566642753916,
+        "bias": -0.37094333572460836,
+        "rmse": 0.9539807406419586
+      }
+    },
+    {
+      "n_frames": 10,
+      "K": 0.05,
+      "alpha": 0.5,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 100,
+        "status_counts": {
+          "ok": 92,
+          "boundary": 8
+        },
+        "mean": 0.5073422675231782,
+        "bias": 0.007342267523178236,
+        "rmse": 0.3435502019769331
+      }
+    },
+    {
+      "n_frames": 10,
+      "K": 0.05,
+      "alpha": 1.0,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 100,
+        "status_counts": {
+          "ok": 93,
+          "boundary": 7
+        },
+        "mean": 0.9434496477574257,
+        "bias": -0.05655035224257432,
+        "rmse": 0.514970614067458
+      },
+      "D_fit": {
+        "n_estimated": 100,
+        "status_counts": {
+          "ok": 100
+        },
+        "mean": 0.04813705428302344,
+        "bias": -0.0018629457169765662,
+        "rmse": 0.025014921464547358
+      }
+    },
+    {
+      "n_frames": 10,
+      "K": 0.05,
+      "alpha": 1.5,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 99,
+        "status_counts": {
+          "boundary": 33,
+          "ok": 66,
+          "unidentified": 1
+        },
+        "mean": 1.3619299847912378,
+        "bias": -0.13807001520876216,
+        "rmse": 0.6403097076855419
+      }
+    },
+    {
+      "n_frames": 20,
+      "K": 0.01,
+      "alpha": 0.5,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 100,
+        "status_counts": {
+          "ok": 95,
+          "boundary": 5
+        },
+        "mean": 0.4878714716346844,
+        "bias": -0.012128528365315583,
+        "rmse": 0.3026354126049198
+      }
+    },
+    {
+      "n_frames": 20,
+      "K": 0.01,
+      "alpha": 1.0,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 99,
+        "status_counts": {
+          "ok": 84,
+          "boundary": 15,
+          "unidentified": 1
+        },
+        "mean": 1.0968910594935577,
+        "bias": 0.0968910594935577,
+        "rmse": 0.5800785311785189
+      },
+      "D_fit": {
+        "n_estimated": 100,
+        "status_counts": {
+          "ok": 99,
+          "nonphysical": 1
+        },
+        "mean": 0.010774053812048667,
+        "bias": 0.0007740538120486664,
+        "rmse": 0.00557716708180697
+      }
+    },
+    {
+      "n_frames": 20,
+      "K": 0.01,
+      "alpha": 1.5,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 90,
+        "status_counts": {
+          "boundary": 49,
+          "ok": 41,
+          "unidentified": 10
+        },
+        "mean": 1.1687979213220168,
+        "bias": -0.33120207867798324,
+        "rmse": 0.8805485243064967
+      }
+    },
+    {
+      "n_frames": 20,
+      "K": 0.05,
+      "alpha": 0.5,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 100,
+        "status_counts": {
+          "ok": 96,
+          "boundary": 4
+        },
+        "mean": 0.44717030331085234,
+        "bias": -0.052829696689147665,
+        "rmse": 0.24482671968043118
+      }
+    },
+    {
+      "n_frames": 20,
+      "K": 0.05,
+      "alpha": 1.0,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 100,
+        "status_counts": {
+          "ok": 100
+        },
+        "mean": 0.9870997070679506,
+        "bias": -0.012900292932049418,
+        "rmse": 0.31798174535441637
+      },
+      "D_fit": {
+        "n_estimated": 100,
+        "status_counts": {
+          "ok": 100
+        },
+        "mean": 0.053133242426035114,
+        "bias": 0.0031332424260351113,
+        "rmse": 0.02024296938135527
+      }
+    },
+    {
+      "n_frames": 20,
+      "K": 0.05,
+      "alpha": 1.5,
+      "n_tracks": 100,
+      "alpha_fit": {
+        "n_estimated": 100,
+        "status_counts": {
+          "ok": 79,
+          "boundary": 21
+        },
+        "mean": 1.4484644982637778,
+        "bias": -0.05153550173622223,
+        "rmse": 0.5141907519829735
+      }
+    }
+  ]
+}

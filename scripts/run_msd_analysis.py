@@ -121,6 +121,17 @@ def main() -> None:
     print(f"  pearson r(D, alpha_corrected) = {r_corrected:.3f}  "
           "(compare to r(D, alpha) above -- correction is only as good as the per-track offset estimate)")
 
+    alpha_nlgls_corr = summary["alpha_nlgls_corrected"]
+    n_failed_nlgls = alpha_nlgls_corr.is_nan().sum()
+    valid_nlgls = ~alpha_nlgls_corr.is_nan().to_numpy()
+    r_nlgls_corrected = np.corrcoef(D_arr[valid_nlgls], alpha_nlgls_corr.to_numpy()[valid_nlgls])[0, 1]
+    print(f"  nonlinear-GLS offset-corrected alpha: median={alpha_nlgls_corr.median():.4f}  "
+          f"IQR=[{alpha_nlgls_corr.quantile(0.25):.4f}, {alpha_nlgls_corr.quantile(0.75):.4f}]  "
+          f"({n_failed_nlgls}/{summary.height} tracks flagged singular)")
+    print(f"  pearson r(D, alpha_nlgls_corrected) = {r_nlgls_corrected:.3f}  "
+          "(see FINDINGS.md: this is the recommended classic alpha estimate -- covariance-weighted, "
+          "offset-corrected, no log-transform delta-method approximation)")
+
     summary.write_csv(TABLE_DIR / "per_track_msd_fits.csv")
     ensemble.write_csv(TABLE_DIR / "ensemble_msd.csv")
     tamsd.write_parquet(TABLE_DIR / "per_track_tamsd.parquet")
@@ -143,6 +154,9 @@ def main() -> None:
 
     fig6 = plot_K_jointplot(summary)
     fig6.savefig(FIG_DIR / "K_jointplot.png", dpi=150, bbox_inches="tight")
+
+    fig7 = plot_K_jointplot(summary, alpha_col="alpha_nlgls_corrected")
+    fig7.savefig(FIG_DIR / "K_jointplot_nlgls_corrected.png", dpi=150, bbox_inches="tight")
 
     print(f"Saved figures to {FIG_DIR}")
 

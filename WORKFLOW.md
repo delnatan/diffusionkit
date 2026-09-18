@@ -1,155 +1,109 @@
-# How to use this repo
+# Classical workflow
 
-Task-oriented companion to `README.md` (layout, reproduction, full column
-reference) and `FINDINGS.md` (empirical results and the reasoning behind
-every default below). This file is just: which call do I make, for what I
-have.
+Use `diffusionkit.classic.analyze_track` or `analyze_tracks` for the rebuilt
+core. `classic.fit_population` and the old fitting modules remain legacy
+compatibility paths. The Bayesian workflow is unchanged and awaits revision.
 
-## Which workflow do I want?
-
-| You have | Call | Why |
-| --- | --- | --- |
-| A handful of tracks, interactive/exploratory use | `diffusionkit.bayes.fit_track` | Bayesian is the more honest estimator with little data (no MSD-curve summary-statistic loss, priors do real work) -- see FINDINGS.md's "D should be reported in log-space" and short-track sections. |
-| Hundreds-to-thousands of tracks, a full-dataset table | `diffusionkit.classic.fit_population` + `diffusionkit.bayes.fit_population` | Classic MSD is fast and a useful cross-check; the Bayesian fit costs more at this scale but is worth it for the same honesty reasons, and is now itself a one-liner. |
-| "Is *this* track diffusing anisotropically?" | `diffusionkit.bayes.anisotropy.analyze` | A model-*comparison* question, not a point estimate -- see below. Its own module, not a third `model=` option: it compares two models by nested sampling rather than fitting one, and importing it pulls in matplotlib. |
-
-The first two sit on the same validated primitives (`diffusionkit.bayes.fit_map`,
-`fit_table_map`, `sample_posterior`) -- nothing below changes what those
-compute, only how many lines it takes to call them. The anisotropy workflow
-runs a different engine (`bayes.nested`, nested sampling) because it answers
-a different kind of question.
-
-## Load data (every workflow starts here)
+## One track, arrays
 
 ```python
-from diffusionkit.classic import AcquisitionParams, load_tracks, assert_contiguous_tracks
+import numpy as np
+from diffusionkit import Acquisition, Track
+from diffusionkit.classic import MSDOptions, analyze_track
 
-params = AcquisitionParams(pixel_size_um=0.1043, dt_s=0.033)
-tracks = load_tracks("mobile_beads_1to200.csv", params)
-assert_contiguous_tracks(tracks)  # both pipelines assume a gapless, uniform frame grid
+track = Track(
+    track_id=42,
+    frames=np.arange(5),
+    positions_um=np.array([[0, 0], [.02, .01], [.01, .04], [.04, .03], [.03, .06]]),
+    localization_sd_um=np.full((5, 2), .01),
+)
+result = analyze_track(track, Acquisition(dt_s=.033), MSDOptions(max_lag=3))
+print(result.brownian.parameters, result.brownian.status)
+print(result.anomalous.parameters, result.anomalous.status)
 ```
 
-`tracks` is a tidy polars DataFrame, one row per (track_id, frame), physical
-units (`x_um`, `y_um`, `sigma_x_um`, `sigma_y_um`, ...). Every function below
-takes a `tracks`-shaped DataFrame (or a single-track slice of one).
+`Track` contains data only. Functions validate it and return new data.
+Single-track invalid inputs raise `ValueError`; a valid but too-short track
+returns `excluded` fits. A result does not imply statistical identifiability
+just because the optimizer converged.
 
-## Low-data workflow: `diffusionkit.bayes.fit_track`
+## An existing physical-unit table
 
 ```python
 import polars as pl
-from diffusionkit.bayes import fit_track
+from diffusionkit import Acquisition, track_from_table
+from diffusionkit.classic import analyze_track, analyze_tracks
 
-track = tracks.filter(pl.col("track_id") == 42)
-fit = fit_track(track, params.dt_s, model="anomalous")  # model="normal" for D, alpha pinned to 1
-
-fit.params["K"], fit.lo["K"], fit.hi["K"]  # median + interval, physical units
-fit.params["alpha"]
+acquisition = Acquisition(dt_s=.033)
+# `tracks` is a Polars table, already in micrometers.
+one = track_from_table(tracks.filter(pl.col("track_id") == 42), acquisition)
+selected = analyze_track(one, acquisition)
+all_results = analyze_tracks(tracks, acquisition)
 ```
 
-`prior=None` (the default) builds an informative prior from *this track's
-own* measured localization precision (`sigma_prior_from_localization`) --
-the honest default for low-N data, not a flat/MLE-equivalent fit. Pass a
-`NormalModelPrior`/`AnomalousModelPrior` instance (e.g. `WEAK_ANOMALOUS_PRIOR`)
-to override it.
+Required columns are
+`track_id`, `frame`, `x_um`, `y_um`; `sigma_x_um` and `sigma_y_um` are also
+required by the default correction. Their units are micrometers, not pixels.
+If `t_s` or `track_length` is present, it must agree with `frame * dt_s` or
+the actual row count. Those columns are not otherwise required.
 
-`method="map"` (default) is fast MAP + a Laplace interval, adequate for D
-even at N=5 (FINDINGS.md). Reach for `method="nuts"` when the posterior's
-*shape* matters, not just its center -- e.g. a very short track where a
-Gaussian approximation is suspect:
+Batch analysis keeps three fit rows per track, including invalid or excluded
+tracks. A malformed table schema raises before fitting. An empty input with
+valid column types returns typed empty result tables. There is no minimum
+population size and no ensemble calculation.
+
+## Brownian MLE and the non-Brownian axis
 
 ```python
-nuts_fit = fit_track(track, params.dt_s, model="anomalous", method="nuts")
-samples, mcmc = nuts_fit.raw  # full posterior draws, for bayes.plot_posterior_corner etc.
+from diffusionkit.classic import MLEOptions, fit_brownian_mle
+
+fit = fit_brownian_mle(one, Acquisition(dt_s=.033, exposure_s=.03), MLEOptions(n_boot=500))
+fit.status                        # 'ok', 'unresolved' (D_hat = 0), 'failed'
+fit.parameters["D_um2_s"], fit.parameters["z_nonbrownian"]
 ```
 
-Full runnable example: `scripts/quickstart_single_track.py`.
-
-## Bulk workflow: thousands of tracks
+Set `exposure_s` to the camera exposure. The MLE models blur; the MSD
+fits then report `excluded`. A 2D histogram for a population:
 
 ```python
-from diffusionkit.classic import fit_population as fit_population_classic
-from diffusionkit.bayes import fit_population as fit_population_bayes
-
-classic = fit_population_classic(tracks, params.dt_s)
-# classic.per_track, classic.ensemble, classic.ensemble_normal_fit, ...
-
-bayes_fit = fit_population_bayes(tracks, params.dt_s, model="both")
-# one row per track: D (normal model, primary), alpha (anomalous model,
-# primary), K (anomalous model, secondary/diagnostic) -- see
-# README's "Results tables" reference for every column.
+import numpy as np
+mle = all_results.fits.filter(pl.col("model") == "brownian_mle")
+resolved = mle.filter(pl.col("z_nonbrownian").is_not_null())
+n_unresolved = mle.filter(pl.col("status") == "unresolved").height   # report separately
+H, D_edges, z_edges = np.histogram2d(np.log10(resolved["D_um2_s"]), resolved["z_nonbrownian"],
+                                     bins=(30, np.linspace(-4, 4, 33)))
 ```
 
-Both run the same production path the two pipelines have always used
-(`compute_all_tamsd`/`fit_all_tracks` for classic; batched exact MAP for
-Bayes) -- this is a repackaging, not a different estimator.
+Under the Brownian model every D column is ~N(0,1). Compare each column's
+mean z with 0, using a standard error of about 1/sqrt(tracks in column).
+Stratify by `n_frames` when comparing conditions. A shift indicates
+non-Brownian behavior or miscalibrated localization SDs; it does not
+classify individual short tracks.
 
-`diffusionkit.bayes.fit_population` runs `inference.fit_table_map` (batched
-exact MAP), FINDINGS.md's production choice: more accurate and much better
-calibrated, and worth its extra cost per track. The faster SVI path
-(~9 vs. ~21 minutes on 365 real tracks) reports uncertainty 3-10x too
-narrow, so it is not offered as a keyword here -- call
-`inference.fit_table_svi` directly if you want the comparison the recovery
-scripts make.
-
-Full runnable examples: `scripts/run_msd_analysis.py`,
-`scripts/run_bayes_analysis.py`.
-
-## Anisotropy workflow: is *this* track anisotropic?
+## Inspect or change the analysis
 
 ```python
-from diffusionkit.bayes import anisotropy
+from diffusionkit.classic import compute_msd, fit_brownian_msd, fit_anomalous_msd
 
-per_track = anisotropy.analyze(tracks, params.dt_s)   # one row per trajectory
-per_track.select("track_id", "track_length", "log_bf10", "log_bf10_stderr", "evidence")
+curve = compute_msd(one, acquisition)
+D_fit = fit_brownian_msd(curve)
+alpha_fit = fit_anomalous_msd(curve)
 ```
 
-`log_bf10` is the answer: positive favours anisotropy, negative favours
-isotropy, near zero means this track does not say. It is self-calibrating --
-a proper Bayes factor already accounts for how much apparent elongation
-sampling noise produces at this track length, so there is no null reference
-distribution to simulate and none is shipped. `eps_median`/`eps_lo`/`eps_hi`
-come from the same run and describe *how much*, once `log_bf10` has
-established *whether*.
+Change `MSDOptions(max_lag=...)` to inspect dependence on lag selection.
+Changing the window changes the estimator; it is recorded in the result.
+To deliberately omit localization correction, use
+`MSDOptions(localization="ignore")`. There is no fallback from missing
+measurement errors to uncorrected fitting.
 
-Read `log_bf10_stderr` alongside it. Nested sampling returns a stochastic
-evidence, and on a short track that uncertainty exceeds the evidence itself.
-The `evidence` column does this for you and says `inconclusive (below
-sampler noise)` when it happens.
+For a GUI, pass `progress(done, total)` to `analyze_tracks`. It is invoked
+in the calling thread. Start a GUI-managed worker outside this library.
+Join fit rows on both `track_id` and `model`, and keep `status`/`message`
+visible. `status="ok"` is a numerical result status, not a motion class.
+Persist `result.acquisition` and `result.options` alongside exported tables
+(e.g. `dataclasses.asdict`); the tables alone are not a complete run record.
 
-### How long a track do you need?
-
-Anisotropy is answerable per track only when the track is long enough to
-carry the information. Measured fraction of single tracks reaching strong
-evidence (`log_bf10 > 3`) on their own, at D=0.05 um^2/s, dt=0.033 s:
-
-| track_length | true eps=0 (false positives) | true eps=0.5 | true eps=0.8 |
-| --- | --- | --- | --- |
-| 5 | 0% | 0% | 0% |
-| 20 | 0% | 3% | 33% |
-| 50 | 0% | 35% | 97% |
-| 200 | 2% | 98% | 100% |
-
-Short tracks are not excluded -- `analyze` has no track-length cap, and it
-is worth running them precisely to see the honest near-zero answer. Just do
-not read structure into it.
-
-### What this workflow deliberately will not do
-
-It will not pool tracks. Summing `log_bf10` across trajectories is a form of
-ensemble averaging, which is the thing this package exists to avoid; worse,
-the sum answers "does each track have its own independent anisotropy",
-not "do these tracks share an axis". A pooled fit with one shared `D` also
-manufactures anisotropy out of ordinary `D`-heterogeneity once the spread
-reaches ~0.5 decades (FINDINGS.md). Per-track inference is immune to that,
-because every track carries its own `D`.
-
-Full runnable example: `scripts/run_anisotropy_analysis.py`
-(`--limit N` for a quick look at the N longest tracks).
-
-## Where to go next
-
-- **README.md** -- repo layout, exact reproduction steps, full results-table
-  column reference.
-- **FINDINGS.md** -- why every default above is what it is: empirical
-  results, known pitfalls, and the checks that motivated each production
-  decision.
+The old spt-pipeline `PopulationFit` consumer requires an explicit migration:
+replace the ensemble view with per-track measured/corrected MSD, consume
+`fits` by model, and surface statuses. Its existing imports continue to use
+legacy results until that migration is made.

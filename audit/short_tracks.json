@@ -1,0 +1,140 @@
+{
+  "covariance_checks": {
+    "max_relative_window_cov_error": 1.4056452907008315e-15,
+    "max_absolute_numpy_jax_error": 0.0
+  },
+  "anisotropy_dense_vs_dst_loglik_error": 3.552713678800501e-15,
+  "transformed_mode": {
+    "lognormal_returned": 1.0000000000000002,
+    "lognormal_physical_mode": 0.36787944117144233,
+    "uniform_alpha_returned": 0.45125607894501535,
+    "uniform_alpha_physical_mode_and_mle": 0.2
+  },
+  "map_ignores_interval_probability": {
+    "identical": true,
+    "interval_68": [
+      0.031719938962733195,
+      0.10308279754120682
+    ],
+    "interval_95": [
+      0.031719938962733195,
+      0.10308279754120682
+    ]
+  },
+  "gapped_track_silently_accepted": {
+    "bayes_identical_params": true,
+    "classic_identical_msd": true
+  },
+  "multiple_ids_accepted_by_fit_track": {
+    "returned": "{'track_id': 0, 'track_length': 5, 'n_disp': 9}"
+  },
+  "default_five_frame_population_bayes": {
+    "error": "ValueError",
+    "message": "cannot concat empty list"
+  },
+  "small_population_classic": {
+    "error": "ZeroDivisionError",
+    "message": "Weights sum to zero, can't be normalized"
+  },
+  "brownian_laplace_vs_quadrature": [
+    {
+      "track_id": 0,
+      "N": 5,
+      "posterior_mass_in_nominal_68pct_laplace_interval": 0.6199382239107878,
+      "grid_refinement_mass_change": 8.580523784118554e-05
+    },
+    {
+      "track_id": 1,
+      "N": 5,
+      "posterior_mass_in_nominal_68pct_laplace_interval": 0.5172558852820701,
+      "grid_refinement_mass_change": 0.0001534114418773047
+    },
+    {
+      "track_id": 2,
+      "N": 5,
+      "posterior_mass_in_nominal_68pct_laplace_interval": 0.524858790149709,
+      "grid_refinement_mass_change": 0.00015264507178247566
+    },
+    {
+      "track_id": 3,
+      "N": 5,
+      "posterior_mass_in_nominal_68pct_laplace_interval": 0.5079860197105794,
+      "grid_refinement_mass_change": 0.000145581171118625
+    }
+  ],
+  "nonlinear_negative_signal": null,
+  "short_track_classic": [
+    {
+      "N": 5,
+      "D": 0.01,
+      "n": 100,
+      "median_alpha": 1.1646084432285873,
+      "alpha_outside_0_2": 39,
+      "outside_support_unflagged": 39,
+      "nonfinite_alpha": 5,
+      "singular_flag": 5,
+      "nonfinite_se_unflagged": 0,
+      "nominal_1sigma_coverage": 0.85
+    },
+    {
+      "N": 5,
+      "D": 0.05,
+      "n": 100,
+      "median_alpha": 0.8738298560576422,
+      "alpha_outside_0_2": 26,
+      "outside_support_unflagged": 26,
+      "nonfinite_alpha": 2,
+      "singular_flag": 2,
+      "nonfinite_se_unflagged": 2,
+      "nominal_1sigma_coverage": 0.63
+    },
+    {
+      "N": 10,
+      "D": 0.01,
+      "n": 100,
+      "median_alpha": 1.1112428258950564,
+      "alpha_outside_0_2": 24,
+      "outside_support_unflagged": 24,
+      "nonfinite_alpha": 1,
+      "singular_flag": 1,
+      "nonfinite_se_unflagged": 2,
+      "nominal_1sigma_coverage": 0.77
+    },
+    {
+      "N": 10,
+      "D": 0.05,
+      "n": 100,
+      "median_alpha": 0.8537549913644713,
+      "alpha_outside_0_2": 6,
+      "outside_support_unflagged": 6,
+      "nonfinite_alpha": 0,
+      "singular_flag": 0,
+      "nonfinite_se_unflagged": 0,
+      "nominal_1sigma_coverage": 0.62
+    },
+    {
+      "N": 20,
+      "D": 0.01,
+      "n": 100,
+      "median_alpha": 0.9646947821801215,
+      "alpha_outside_0_2": 4,
+      "outside_support_unflagged": 4,
+      "nonfinite_alpha": 0,
+      "singular_flag": 0,
+      "nonfinite_se_unflagged": 0,
+      "nominal_1sigma_coverage": 0.78
+    },
+    {
+      "N": 20,
+      "D": 0.05,
+      "n": 100,
+      "median_alpha": 0.933304409448767,
+      "alpha_outside_0_2": 0,
+      "outside_support_unflagged": 0,
+      "nonfinite_alpha": 0,
+      "singular_flag": 0,
+      "nonfinite_se_unflagged": 0,
+      "nominal_1sigma_coverage": 0.71
+    }
+  ]
+}

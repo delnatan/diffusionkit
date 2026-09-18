@@ -1,168 +1,70 @@
-# Results tables -- column reference
+# Classical result data
 
-Companion to `README.md`. Every column written by every script in
-`scripts/`, and what it means. Terminology follows the README glossary.
+This reference covers the new `analyze_track`/`analyze_tracks` API only.
+Old schemas are preserved in [docs/archive/TABLES.md](docs/archive/TABLES.md).
 
-Both pipelines write `track_id` and `track_length` with the same meaning
-(track ID from the input CSV; number of localizations in the track), so
-their per-track tables always join cleanly on `track_id`. Column names
-otherwise follow one convention throughout: a `_um`/`_um2_s`/`_um2_s_alpha`
-suffix marks physical units; no suffix means dimensionless (`alpha`) or
-log10 units (`log10_*`). Quantities that only exist in one framework (e.g.
-the Bayesian posterior/Laplace interval columns, `r2_*` goodness-of-fit from
-the MSD fit) are kept under their own names rather than forced into a shared
-column -- see the method notes above for why they aren't directly
-comparable.
+`ClassicAnalysis` contains `fits`, `msd`, `acquisition`, `options`, and `mle_options`.
+The settings must accompany saved tables to reproduce the analysis.
 
-### `classic/per_track_msd_fits.csv` (classic, `run_msd_analysis.py`)
-
-One row per track. `msd.py`'s TAMSD passed through `fitting.fit_all_tracks`.
+## fits — one row per track and model
 
 | Column | Meaning |
 | --- | --- |
-| `track_id` | Track ID. |
-| `track_length` | Number of localizations in the track. |
-| `n_points_used` | Number of lags used in the normal-diffusion (and uncorrected anomalous) fit. |
-| `at_min_points` | True if `n_points_used` hit the `min_points` floor rather than the fractional rule. |
-| `D_um2_s`, `D_stderr_um2_s` | Diffusion coefficient from the linear `MSD=4*D*tau+b` fit, weighted-least-squares standard error. |
-| `intercept_um2`, `intercept_stderr_um2` | Fitted offset `b` of the same linear fit and its standard error. |
-| `r2_normal` | R^2 of the linear (normal-diffusion) fit. |
-| `D_negative` | True if the fitted `D_um2_s` is negative (unphysical -- kept, not dropped). |
-| `intercept_negative` | True if the fitted intercept is negative (unphysical for R=0 static noise -- kept, not dropped). |
-| `alpha`, `alpha_stderr` | Anomalous exponent from the log-log `MSD=4*K*tau^alpha` fit (OLS), and its standard error. |
-| `n_points_used_alpha` | Lags actually used in that fit (may be fewer than `n_points_used` if some points were non-positive). |
-| `K_um2_s_alpha` | Generalized diffusion coefficient from the same log-log fit. |
-| `r2_anomalous` | R^2 of the log-log fit. |
-| `alpha_corrected`, `alpha_corrected_stderr` | Same anomalous fit after subtracting the track's estimated localization offset from MSD first (see `offset_um2`) -- isolates the tau^alpha signal from the localization-noise plateau. |
-| `n_points_used_alpha_corrected` | Lags surviving the offset subtraction (points driven non-positive are dropped). |
-| `K_corrected_um2_s_alpha`, `r2_anomalous_corrected` | Generalized K and R^2 of the offset-corrected fit. |
-| `offset_um2` | Per-track expected localization-noise MSD offset, `2*(mean(sigma_x_um^2)+mean(sigma_y_um^2))`, from the raw localization precision -- an independent check on `intercept_um2` and the value subtracted for `alpha_corrected`. |
+| `track_id`, `n_frames` | Track identity and actual observation count |
+| `model` | `brownian`, `power_law`, or `brownian_mle` |
+| `method` | `msd_ols`, `msd_nls`, or `displacement_mle` |
+| `status`, `message` | Numerical/input status and an explanation |
+| `D_um2_s` | Brownian D (MSD fit or MLE); null on power-law rows |
+| `K_um2_s_alpha`, `alpha` | Generalized coefficient and exponent; null on Brownian rows |
+| `n_lags` | Number of lag points actually included |
+| `residual_sum_squares_um4` | Unweighted SSE in linear, corrected MSD space; not a goodness-of-model probability |
+| `optimizer_status` | SciPy least_squares termination code, or null if not applicable |
+| `nfev` | Total nonlinear residual evaluations over three starting points; excludes analytic endpoint checks |
+| `localization` | `provided` or explicitly `ignore` |
+| `uncertainty_method` | `not_estimated` for MSD rows; `profile_likelihood_asymptotic` for `brownian_mle` |
 
-### `classic/ensemble_msd.csv` (classic, `run_msd_analysis.py`)
-
-One row per lag of the n_pairs-weighted ensemble MSD curve.
+Columns only filled on `brownian_mle` rows (see [docs/classical.md](docs/classical.md)):
 
 | Column | Meaning |
 | --- | --- |
-| `lag` | Lag index (in frames). |
-| `tau_s` | Lag time in seconds (`lag * dt_s`). |
-| `n_tracks` | Number of tracks contributing to this lag (lags below `min_tracks` are dropped upstream). |
-| `n_pairs_total` | Total displacement pairs behind this lag's MSD estimate, summed across contributing tracks -- the ensemble-fit weight. |
-| `msd_um2` | n_pairs-weighted ensemble-averaged MSD at this lag. |
-| `msd_sem` | Standard error of the ensemble MSD at this lag. |
+| `D_upper_um2_s` | One-sided profile-likelihood upper limit on D (`MLEOptions.upper_level`), asymptotic |
+| `log_likelihood` | Maximized Gaussian log-likelihood of both axes' displacements |
+| `lr_motion`, `p_motion` | 2[l(D_hat) - l(0)] and its asymptotic ½χ²₀ + ½χ²₁ p-value |
+| `z_nonbrownian`, `p_nonbrownian` | Bootstrap-calibrated signed deviation from the Brownian + noise model; ~N(0,1) under it |
+| `z_nonbrownian_asymptotic` | The same score with the uncalibrated normal reference |
+| `alpha_1step`, `alpha_1step_se` | One-step linearized alpha, 1 + U/I_eff, and 1/sqrt(I_eff) |
+| `n_boot`, `n_boot_valid` | Replicates drawn and replicates that also resolved motion |
 
-`classic/per_track_tamsd.parquet` holds the per-track, per-lag TAMSD this
-table is averaged from (`track_id`, `track_length`, `lag`, `tau_s`,
-`msd_um2`, `n_pairs`) -- intermediate data, not a fit result, kept for
-re-plotting without recomputing TAMSD from raw localizations.
+Uncomputable parameters are null. Failed fits can retain numerical estimates
+for inspection; check `status` before interpretation. No row is removed for
+a negative D, a boundary alpha, or a short track.
 
-### `validate_localization_bias/simulation_recovery.csv` (classic validation, `validate_localization_bias.py`)
+| Status | Meaning |
+| --- | --- |
+| `ok` | Finite numerical estimate passed the implemented checks; precision and model adequacy are not established |
+| `nonphysical` | Negative Brownian D, retained without clipping |
+| `boundary` | Zero Brownian D or alpha at/near 0 or 2 |
+| `unresolved` | `brownian_mle`: D_hat = 0, localization noise explains the motion; no z |
+| `unidentified` | Power-law amplitude is zero/negligible or its numerical Jacobian cannot identify alpha |
+| `optimizer_failed` | Optimization did not converge or a coefficient was nonfinite |
+| `insufficient_data` | Too few lags for the requested fit |
+| `excluded` | Fewer frames than `min_frames`; MSD rows when `exposure_s > 0`; MLE rows with `localization="ignore"` |
+| `invalid_input` | A batch track failed validation, or (MLE row only) a localization SD is zero |
+| `failed` | `brownian_mle`: likelihood maximum not bracketed |
 
-Same columns as `classic/per_track_msd_fits.csv`, plus:
+`unidentified` is a numerical check, not a complete statistical identifiability
+test. Even `ok` alpha fits on short tracks can have large uncertainty and bias.
+
+## msd — one row per track and selected lag
 
 | Column | Meaning |
 | --- | --- |
-| `true_D_um2_s` | Ground-truth D used to simulate this track (true alpha is always 1 here -- see the script's docstring). |
+| `track_id` | Joins to fits; filter fits by model before joining |
+| `lag`, `tau_s` | Frame separation and `lag * dt_s` |
+| `n_pairs` | Number of overlapping displacement pairs; not an independent sample count |
+| `msd_um2` | Mean squared 2D displacement before correction |
+| `localization_offset_um2` | Average sum of position-error variances at both endpoints, over both axes |
+| `corrected_msd_um2` | Measured MSD minus the offset; negative values are retained |
 
-### `bayes/per_track_bayes_fits.csv` (Bayesian, `run_bayes_analysis.py`)
-
-One row per track: the Brownian-constrained normal model and the anomalous
-model, batched exact MAP (`inference.fit_table_map`) joined on
-`track_id`/`track_length`/`n_disp`. D, K and sigma are Laplace-fit in
-log-space and back-transformed to an asymmetric `_median`/`_lo`/`_hi`
-interval (see method notes above); alpha keeps a symmetric physical-space
-interval.
-
-| Column | Meaning |
-| --- | --- |
-| `track_id` | Track ID. |
-| `track_length` | Number of localizations in the track. |
-| `n_disp` | Number of per-frame displacements fit (`track_length - 1`). |
-| `normal_converged` | L-BFGS-B convergence flag for the normal-model sub-batch containing this track (per sub-batch, not per track -- see `fit_table_map`'s docstring). |
-| `D_median_um2_s`, `D_lo_um2_s`, `D_hi_um2_s` | Normal-model (Brownian-constrained) D: back-transformed posterior/Laplace median and asymmetric 1-sigma interval. **Primary D estimate.** |
-| `log10_D`, `log10_D_stderr` | The same normal-model D fit in log10 space (symmetric there by construction). |
-| `sigma_normal_median_um`, `sigma_normal_lo_um`, `sigma_normal_hi_um` | Localization precision sigma from the normal-model fit, same median/interval convention as D. |
-| `log10_sigma_normal`, `log10_sigma_normal_stderr` | That sigma in log10 space. |
-| `anomalous_converged` | L-BFGS-B convergence flag for the anomalous-model sub-batch containing this track. |
-| `K_median_um2_s_alpha`, `K_lo_um2_s_alpha`, `K_hi_um2_s_alpha` | Anomalous-model generalized diffusion coefficient, same median/interval convention. **Secondary/diagnostic** -- degrades faster than D on short tracks (FINDINGS.md). |
-| `log10_K`, `log10_K_stderr` | That K in log10 space. |
-| `sigma_anom_median_um`, `sigma_anom_lo_um`, `sigma_anom_hi_um` | Localization precision sigma from the anomalous-model fit. |
-| `log10_sigma_anom`, `log10_sigma_anom_stderr` | That sigma in log10 space. |
-| `alpha`, `alpha_stderr` | Anomalous exponent MAP and symmetric Laplace standard error (physical space -- not log-transformed). **Primary alpha estimate.** |
-
-### `bayes/bayes_vs_classic_comparison.csv` (`run_bayes_analysis.py`)
-
-`bayes/per_track_bayes_fits.csv`'s columns, inner-joined on `track_id`
-against the classic table, plus:
-
-| Column | Meaning |
-| --- | --- |
-| `D_classic_um2_s` | Classic pipeline's `D_um2_s` for the same track, carried over for direct comparison. |
-| `alpha_classic` | Classic pipeline's `alpha` for the same track. |
-
-### `validate_bayes_recovery/bayes_validate_null_K_bias.csv` (Bayesian validation, `validate_bayes_recovery.py`, check 1)
-
-One row per simulated track (true alpha=1, true D swept), flat-prior and
-informative-prior fits side by side.
-
-| Column | Meaning |
-| --- | --- |
-| `track_id`, `track_length`, `n_disp` | As above. |
-| `D_weak`, `D_stderr_weak`, `sigma_normal_weak`, `sigma_stderr_normal_weak` | Normal-model D/sigma, flat (`WEAK_NORMAL_PRIOR`) fit. |
-| `D_bayes`, `D_stderr_bayes`, `sigma_normal_bayes`, `sigma_stderr_normal_bayes` | Normal-model D/sigma, informative-prior fit. |
-| `K_weak`, `K_stderr_weak`, `sigma_weak`, `sigma_stderr_weak`, `alpha_weak`, `alpha_stderr_weak` | Anomalous-model fit, flat prior. |
-| `K_bayes`, `K_stderr_bayes`, `sigma_bayes`, `sigma_stderr_bayes`, `alpha_bayes`, `alpha_stderr_bayes` | Anomalous-model fit, informative prior. |
-| `true_K_um2_s_alpha` | Ground-truth K used to simulate this track. |
-
-(This check uses the SVI comparison path, `fit_table_svi`, not the
-production `fit_table_map` -- hence the un-suffixed `D`/`alpha` names rather
-than `_median`/`_lo`/`_hi`, and the `_weak`/`_bayes` prior-comparison suffix
-in place of `_um2_s`.)
-
-### `validate_bayes_recovery/bayes_validate_alpha_recovery.csv` (Bayesian validation, `validate_bayes_recovery.py`, check 2)
-
-One row per simulated track (true alpha swept at fixed D, flat prior).
-
-| Column | Meaning |
-| --- | --- |
-| `track_id`, `track_length`, `n_disp` | As above. |
-| `K`, `K_stderr`, `sigma`, `sigma_stderr`, `alpha`, `alpha_stderr` | Anomalous-model fit (flat prior, SVI path). |
-| `true_K_um2_s_alpha`, `true_alpha` | Ground truth used to simulate this track. |
-
-### `validate_bayes_recovery/bayes_validate_short_track_degeneracy.csv` (Bayesian validation, `validate_bayes_recovery.py`, check 3)
-
-One row per simulated `track_length`, not per track.
-
-| Column | Meaning |
-| --- | --- |
-| `track_length` | Simulated track length tested. |
-| `n_replicates` | Number of simulated tracks at this length. |
-| `degenerate_frac_weak` | Fraction of flat-prior fits landing on a parameter's support boundary (`K` below floor, or `alpha` within epsilon of 0 or 2). |
-| `degenerate_frac_bayes` | Same, informative-prior fit. |
-
-### `anisotropy/per_track_anisotropy.csv` (anisotropy, `run_anisotropy_analysis.py`)
-
-One row per track, from a single pair of nested-sampling runs each
-(`bayes.nested.per_track_nested`): the evidence, the posterior it came from,
-and the track's mean field-of-view position. There is no track-length cap
-and nothing is pooled -- each row is one trajectory's own answer.
-
-| Column | Meaning |
-| --- | --- |
-| `track_id`, `track_length`, `n_disp` | As above. |
-| `log_bf10` | Log Bayes factor for anisotropy vs. isotropy. Positive favours anisotropy, negative favours isotropy, near zero means this track does not say. Self-calibrating -- it already accounts for the apparent elongation sampling noise produces at this track length, so there is no null reference table to compare against. |
-| `log_bf10_stderr` | The nested sampler's own uncertainty on `log_bf10` (both runs' evidence errors in quadrature). **Read this before `log_bf10`**: on short tracks it is larger than the evidence itself, which is the honest statement that the track holds too little information. |
-| `evidence` | Jeffreys-scale label derived from the two columns above, e.g. `strong evidence for isotropic`, or `inconclusive (below sampler noise)` when \|`log_bf10`\| does not exceed `log_bf10_stderr`. |
-| `eps_median`, `eps_lo`, `eps_hi` | Anisotropy-fraction posterior median and 90% HPDI, from the same run that produced the evidence. Descriptive, not a second detector: read `log_bf10` for whether, `eps` for how much. |
-| `psi_median_rad` | Orientation posterior, radians in [0, pi). Summarised as a **circular** mean on the doubled angle -- psi is an axis direction, so an ordinary mean would break across the 0/pi wrap. |
-| `psi_circular_sd_rad` | Circular sd of psi. Expect it near its maximum whenever `eps_hi` is small: with little anisotropy there is no axis to orient. |
-| `D_arith_mean_median_um2_s` | **The diffusion coefficient in the usual sense**: `(D_par+D_perp)/2 = tr(D)/2`. This is what reproduces the 2D MSD, since `MSD_2D(tau) = 2*(D_par+D_perp)*tau`, and what an isotropic fit of the same track recovers. Use this one unless you specifically want a single axis. |
-| `D_geom_mean_median_um2_s` | `sqrt(D_par*D_perp)` -- the natural scale in log-Euclidean coordinates (`exp(u)`), reported because it is the quantity the sampler actually estimates. **Not** the MSD-equivalent D: at `D_par/D_perp = 9` it is 40% low. |
-| `D_par_median_um2_s`, `D_perp_median_um2_s` | Diffusivity along and across the inferred axis, `D_par/D_perp = exp(2|h|)`. Each is a *single-axis* quantity -- `D_par` alone overstates overall mobility (by 80% at a 9x axis ratio) and is not "the" D. |
-| `x_mean_um`, `y_mean_um` | Track's mean position in the field of view -- used by `plot_spatial_map`. |
-
-`anisotropy/log_bf10_by_track_length_band.csv` summarises the same table by
-track-length band (median `log_bf10`, count reaching strong evidence, median
-sampler uncertainty), which is where the length dependence is easiest to
-see. It is a descriptive breakdown of independent per-track answers, not a
-pooled statistic.
+Only validated, included tracks have MSD rows. Fit rows still record why
+other tracks were not analyzed. The maximum lag is capped at `n_frames-1`.
