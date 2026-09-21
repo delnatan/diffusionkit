@@ -112,6 +112,17 @@ See [WORKFLOW.md](WORKFLOW.md) for arrays and table examples,
 [TABLES.md](TABLES.md) for output semantics, and
 [docs/classical.md](docs/classical.md) for equations and scope.
 
+## Short-track posterior prototype
+
+`prototypes/` holds a standalone prototype (it imports nothing from
+`diffusionkit`) for per-track posteriors of `D` on a ln `D` grid with known
+per-frame localization errors, plus two population-level comparators to an
+ensemble MSD fit: a shared-`D` posterior and a deconvolved distribution of `D`
+across tracks. It is not wired into the classical workflow, and the same caution
+applies: its interval checks are simulation checks under the model, not a
+calibration claim on experimental tracks. See
+[prototypes/README.md](prototypes/README.md).
+
 ## Validation and migration
 
 ```bash
