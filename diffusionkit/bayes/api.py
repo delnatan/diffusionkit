@@ -13,7 +13,7 @@ measured localization precision" (`priors.sigma_prior_from_localization`)
 `NormalModelPrior`/`AnomalousModelPrior` instance (e.g. `WEAK_ANOMALOUS_PRIOR`)
 opts out and fits against that fixed prior instead.
 
-Bulk per-track diffusivity estimation is `diffusionkit.classic.posterior`'s
+Bulk per-track diffusivity estimation is `diffusionkit.gridpost.posterior`'s
 job (the grid posterior over D), not this module's -- NUTS here is a
 per-track diagnostic tool, not a production population pipeline.
 """

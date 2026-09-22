@@ -42,9 +42,8 @@ the correct expectation, even though its MSD points are correlated. It is
 not claimed to minimize variance. Negative estimates are possible and
 retained; they do not demonstrate negative physical diffusivity.
 
-The historical free-intercept fit is still available under legacy imports
-for reproducing previous comparisons, not as an implicit fallback when
-localization errors are missing.
+The historical free-intercept fit is not part of this module; there is no
+implicit fallback to it when localization errors are missing.
 
 ## Alpha: constrained least squares in linear MSD space
 
@@ -88,48 +87,6 @@ Model-based covariance or bootstrap intervals can be added after their
 assumptions and short-track coverage are established, using these data and
 estimator functions rather than another parallel workflow.
 
-## D: grid posterior over the displacement likelihood (no lag window)
-
-`diffusionkit.classic.posterior` uses every consecutive displacement once,
-with each frame's localization SD -- the same exact Gaussian displacement
-likelihood a maximum-likelihood point estimate would maximize, but reported
-as a posterior rather than collapsed to a point. Per axis, the m = n-1
-displacements are Gaussian:
-
-```
-Sigma(D) = D A + B
-A_ii = 2 dt (1 - 2R),  A_(i,i+1) = 2 dt R,  R = exposure_s / (6 dt)
-B_ii = s_i² + s_(i+1)², B_(i,i+1) = -s_(i+1)²
-```
-
-A describes Brownian motion averaged over a continuous exposure (Berglund
-2010, closed form); with `exposure_s=0` it is `2 dt I`. B describes
-independent localization errors, which make neighboring displacements
-negatively correlated.
-
-Implementation: with B = L Lᵀ and L⁻¹AL⁻ᵀ = Q diag(λ) Qᵀ, the whitened data
-y = QᵀL⁻¹Δ are independent with variances 1 + Dλ_k. This makes the
-likelihood a cheap one-dimensional function of D, evaluated exactly on a
-fixed grid in u = ln D (`posterior.U`) rather than maximized: a prior flat
-in u is log-uniform in D (scale-invariant), and the posterior weights are
-`exp(ln L + ln prior)`, normalized. The production default is a flat prior
-over the whole grid -- the least-informative choice, no empirical-Bayes
-fitting across tracks.
-
-`posterior.summary` reports the median and an equal-tailed credible
-interval (`D_post_median_um2_s`, `D_post_lo_um2_s`, `D_post_hi_um2_s`).
-Localization SDs must be strictly positive and are treated as known. Unlike
-a point estimate, a short or noise-dominated track does not report a
-falsely confident number: its posterior stays wide, which is the honest
-answer, not a defect. Calibration is a simulation check under the model
-(see `prototypes/README.md`), not a claim about experimental tracks.
-
-This module started as, and is adapted from, `prototypes/posterior_1d.py`
-(a standalone reference implementation with its own extensive calibration
-checks). A previous production estimator here (`fit_brownian_mle`, a
-maximum-likelihood D with a bootstrap-calibrated non-Brownian z-score
-testing deviation from alpha=1) has been retired now that the posterior
-supersedes its point-estimate role; `prototypes/posterior_alpha.py` is an
-active-research replacement for the z-score's role, reporting a full
-(honest, possibly wide) posterior over alpha instead of a calibrated
-hypothesis-test statistic. It is not yet wired into this module.
+The exact-likelihood grid posteriors over D and alpha are a separate,
+independent measurement of the same tracks -- see
+[docs/gridpost.md](gridpost.md), not this module.

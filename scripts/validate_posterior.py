@@ -1,4 +1,4 @@
-"""Coverage/calibration study for the production D-posterior (classic.posterior).
+"""Coverage/calibration study for the production D-posterior (gridpost.posterior).
 
 Independent position-space Gaussian simulator; no production likelihood code
 generates the ground truth. This is a simulation-based coverage check under
@@ -18,7 +18,7 @@ import numpy as np
 import polars as pl
 
 from diffusionkit import Acquisition
-from diffusionkit.classic import MSDOptions, analyze_tracks
+from diffusionkit.gridpost import GridPostOptions, analyze_tracks
 
 
 def simulate(n, D, count, rng, dt=.033):
@@ -59,8 +59,8 @@ def main():
             post = fitted.fits.filter(pl.col("model") == "posterior_D")
             results.append({"n_frames": n, "D_um2_s": D, "n_tracks": args.replicates,
                             **summarize(post, D)})
-    report = {"seed": args.seed, "dt_s": .033, "options": vars(MSDOptions()),
-              "prior": "flat in ln D over classic.posterior.U (1e-4 to 10 um^2/s)",
+    report = {"seed": args.seed, "dt_s": .033, "options": vars(GridPostOptions()),
+              "prior": "flat in ln D over gridpost.posterior.U (1e-4 to 10 um^2/s)",
               "credible_level": .9, "elapsed_s": time.perf_counter()-start, "cells": results}
     output = json.dumps(report, indent=2)
     if args.output:

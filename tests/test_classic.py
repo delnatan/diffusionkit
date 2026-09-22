@@ -1,16 +1,14 @@
-"""Independent numerical checks and contracts for the rebuilt classical core."""
-from dataclasses import replace
+"""Independent numerical checks and contracts for the classical MSD core."""
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
-import warnings
 
 import numpy as np
 import polars as pl
 
-from diffusionkit import Acquisition, AcquisitionParams, Track, load_tracks, track_from_table
+from diffusionkit import Acquisition, AcquisitionParams, load_tracks, validated_track_frame
 from diffusionkit.classic import (
     MSDCurve, MSDOptions, analyze_track, analyze_tracks, compute_msd,
     fit_anomalous_msd, fit_brownian_msd,
@@ -18,19 +16,21 @@ from diffusionkit.classic import (
 from diffusionkit.classic.workflow import FIT_SCHEMA, MSD_SCHEMA
 
 
-def track(n=5):
+def table(n=5, track_id=7):
     rng = np.random.default_rng(12)
-    return Track(7, np.arange(n), rng.normal(size=(n, 2)) * .05,
-                 np.linspace(.005, .04, 2*n).reshape(n, 2))
+    positions = rng.normal(size=(n, 2)) * .05
+    sd = np.linspace(.005, .04, 2*n).reshape(n, 2)
+    return pl.DataFrame({
+        "track_id": [track_id] * n, "frame": np.arange(n),
+        "x_um": positions[:, 0], "y_um": positions[:, 1],
+        "sigma_x_um": sd[:, 0], "sigma_y_um": sd[:, 1],
+    })
 
 
-def table(t=None):
-    t = track() if t is None else t
-    data = {"track_id": [t.track_id] * len(t.frames), "frame": t.frames,
-            "x_um": t.positions_um[:, 0], "y_um": t.positions_um[:, 1]}
-    if t.localization_sd_um is not None:
-        data.update(sigma_x_um=t.localization_sd_um[:, 0], sigma_y_um=t.localization_sd_um[:, 1])
-    return pl.DataFrame(data)
+def _with_value(df, col, idx, value):
+    arr = df[col].to_numpy().copy()
+    arr[idx] = value
+    return df.with_columns(pl.Series(col, arr))
 
 
 def curve(y, offset=None, dt=.033):
@@ -44,64 +44,66 @@ class InputTests(unittest.TestCase):
     def test_invalid_acquisition_and_options(self):
         for dt in (0., -1., np.nan, np.inf):
             with self.subTest(dt=dt), self.assertRaises(ValueError):
-                analyze_track(track(), Acquisition(dt))
+                analyze_track(table(), Acquisition(dt))
         with self.assertRaisesRegex(ValueError, "Motion blur"):
-            compute_msd(track(), Acquisition(.03, .02))
+            compute_msd(table(), Acquisition(.03, .02))
         with self.assertRaisesRegex(ValueError, "exceed"):
-            analyze_track(track(), Acquisition(.03, .04))
-        blurred = analyze_track(track(), Acquisition(.03, .02))
+            analyze_track(table(), Acquisition(.03, .04))
+        blurred = analyze_track(table(), Acquisition(.03, .02))
         self.assertEqual((blurred.brownian.status, blurred.anomalous.status), ("excluded", "excluded"))
         self.assertIsNone(blurred.msd)
-        self.assertNotEqual(blurred.posterior_D.status, "excluded")
         for opts in (MSDOptions(max_lag=0), MSDOptions(max_lag=1.5),
                      MSDOptions(min_frames=1), MSDOptions(localization="unknown"),
                      MSDOptions(max_nfev=0)):
             with self.subTest(opts=opts), self.assertRaises(ValueError):
-                analyze_track(track(), Acquisition(.03), opts)
+                analyze_track(table(), Acquisition(.03), opts)
 
     def test_gaps_duplicates_and_fractional_frames_rejected(self):
         for frames in (np.array([0, 1, 3, 4, 5]), np.array([0, 1, 1, 2, 3]),
-                       np.arange(5)+.1, np.array([-1, 0, 1, 2, 3])):
+                       np.array([-1, 0, 1, 2, 3])):
             with self.subTest(frames=frames), self.assertRaises(ValueError):
-                analyze_track(replace(track(), frames=frames), Acquisition(.03))
+                analyze_track(table().with_columns(pl.Series("frame", frames)), Acquisition(.03))
+        with self.assertRaises(ValueError):
+            analyze_track(table().with_columns((pl.col("frame")+.1).alias("frame")), Acquisition(.03))
 
     def test_nonfinite_positions_and_errors_rejected(self):
-        for field in ("positions_um", "localization_sd_um"):
+        for field in ("x_um", "sigma_x_um"):
             for bad in (np.nan, np.inf):
-                values = getattr(track(), field).copy()
-                values[0, 0] = bad
                 with self.subTest(field=field, bad=bad), self.assertRaises(ValueError):
-                    analyze_track(replace(track(), **{field: values}), Acquisition(.03))
+                    analyze_track(_with_value(table(), field, 0, bad), Acquisition(.03))
+        negative = table().with_columns((-pl.col("sigma_x_um")).alias("sigma_x_um"),
+                                        (-pl.col("sigma_y_um")).alias("sigma_y_um"))
         with self.assertRaises(ValueError):
-            analyze_track(replace(track(), localization_sd_um=-np.ones((5, 2))), Acquisition(.03))
+            analyze_track(negative, Acquisition(.03))
 
     def test_missing_errors_requires_explicit_opt_out(self):
-        t = replace(track(), localization_sd_um=None)
+        t = table().drop("sigma_x_um", "sigma_y_um")
         with self.assertRaisesRegex(ValueError, "Localization SDs"):
             analyze_track(t, Acquisition(.03))
         out = analyze_track(t, Acquisition(.03), MSDOptions(localization="ignore"))
         np.testing.assert_array_equal(out.msd.localization_offset_um2, 0.)
-        np.testing.assert_array_equal(analyze_track(track(), Acquisition(.03),
+        np.testing.assert_array_equal(analyze_track(table(), Acquisition(.03),
                                                    MSDOptions(localization="ignore")).msd.localization_offset_um2, 0.)
 
     def test_sorting_copies_preserves_error_alignment(self):
-        t = track()
+        t = table()
         order = [2, 4, 0, 1, 3]
-        shuffled = table(t)[order]
-        restored = track_from_table(shuffled, Acquisition(.03))
-        np.testing.assert_array_equal(restored.positions_um, t.positions_um)
-        np.testing.assert_array_equal(restored.localization_sd_um, t.localization_sd_um)
-        self.assertFalse(restored.frames.flags.writeable)
+        shuffled = t[order]
+        restored = validated_track_frame(shuffled, Acquisition(.03))
+        np.testing.assert_array_equal(restored.select("x_um", "y_um").to_numpy(),
+                                      t.select("x_um", "y_um").to_numpy())
+        np.testing.assert_array_equal(restored.select("sigma_x_um", "sigma_y_um").to_numpy(),
+                                      t.select("sigma_x_um", "sigma_y_um").to_numpy())
         np.testing.assert_allclose(compute_msd(restored, Acquisition(.03)).msd_um2,
                                    compute_msd(t, Acquisition(.03)).msd_um2)
 
     def test_single_table_requires_one_id_and_consistent_metadata(self):
         with self.assertRaisesRegex(ValueError, "exactly one"):
-            track_from_table(pl.concat([table(), table(replace(track(), track_id=8))]), Acquisition(.03))
+            validated_track_frame(pl.concat([table(), table(track_id=8)]), Acquisition(.03))
         for bad in (table().with_columns(pl.lit(99).alias("track_length")),
                     table().with_columns((pl.col("frame")*.06).alias("t_s"))):
             with self.assertRaises(ValueError):
-                track_from_table(bad, Acquisition(.03))
+                validated_track_frame(bad, Acquisition(.03))
 
     def test_bad_schema_rejected(self):
         for bad in (table().drop("x_um"), table().drop("sigma_x_um"),
@@ -126,45 +128,55 @@ class InputTests(unittest.TestCase):
 
 class MSDTests(unittest.TestCase):
     def test_heteroscedastic_pair_sum_oracle(self):
-        t = track(8)
+        t = table(8)
+        positions = t.select("x_um", "y_um").to_numpy()
+        sd = t.select("sigma_x_um", "sigma_y_um").to_numpy()
         observed = compute_msd(t, Acquisition(.03), MSDOptions(max_lag=7))
         for j, lag in enumerate(observed.lag):
             pairs = [(i, i+lag) for i in range(8-lag)]
-            expected_msd = np.mean([sum((t.positions_um[b, d]-t.positions_um[a, d])**2
+            expected_msd = np.mean([sum((positions[b, d]-positions[a, d])**2
                                         for d in (0, 1)) for a, b in pairs])
-            expected_offset = np.mean([sum(t.localization_sd_um[a, d]**2+t.localization_sd_um[b, d]**2
+            expected_offset = np.mean([sum(sd[a, d]**2+sd[b, d]**2
                                            for d in (0, 1)) for a, b in pairs])
             self.assertAlmostEqual(observed.msd_um2[j], expected_msd)
             self.assertAlmostEqual(observed.localization_offset_um2[j], expected_offset)
         self.assertGreater(np.ptp(observed.localization_offset_um2), 0.)
 
     def test_constant_noise_reduces_to_four_sigma_squared(self):
-        t = replace(track(), localization_sd_um=np.full((5, 2), .02))
+        t = table().with_columns(pl.lit(.02).alias("sigma_x_um"), pl.lit(.02).alias("sigma_y_um"))
         np.testing.assert_allclose(compute_msd(t, Acquisition(.03)).localization_offset_um2, 4*.02**2)
 
     def test_error_placement_matters(self):
-        t = track()
-        moved = replace(t, localization_sd_um=np.roll(t.localization_sd_um, 1, axis=0))
+        t = table()
+        sd = t.select("sigma_x_um", "sigma_y_um").to_numpy()
+        moved = t.with_columns(pl.Series("sigma_x_um", np.roll(sd[:, 0], 1)),
+                               pl.Series("sigma_y_um", np.roll(sd[:, 1], 1)))
         a, b = (compute_msd(x, Acquisition(.03)) for x in (t, moved))
         self.assertFalse(np.allclose(a.localization_offset_um2, b.localization_offset_um2))
         np.testing.assert_array_equal(a.msd_um2, b.msd_um2)
 
     def test_units_translation_and_axis_permutation(self):
-        t, acq = track(), Acquisition(.03)
+        t, acq = table(), Acquisition(.03)
         a = analyze_track(t, acq)
-        b = analyze_track(replace(t, positions_um=t.positions_um+100), acq)
+        b = analyze_track(t.with_columns((pl.col("x_um")+100).alias("x_um"),
+                                         (pl.col("y_um")+100).alias("y_um")), acq)
         self.assertAlmostEqual(a.brownian.parameters["D_um2_s"], b.brownian.parameters["D_um2_s"])
-        swapped = replace(t, positions_um=t.positions_um[:, ::-1], localization_sd_um=t.localization_sd_um[:, ::-1])
+        positions = t.select("x_um", "y_um").to_numpy()
+        sd = t.select("sigma_x_um", "sigma_y_um").to_numpy()
+        swapped = t.with_columns(pl.Series("x_um", positions[:, 1]), pl.Series("y_um", positions[:, 0]),
+                                 pl.Series("sigma_x_um", sd[:, 1]), pl.Series("sigma_y_um", sd[:, 0]))
         np.testing.assert_allclose(compute_msd(t, acq).msd_um2, compute_msd(swapped, acq).msd_um2)
-        scaled = replace(t, positions_um=10*t.positions_um, localization_sd_um=10*t.localization_sd_um)
+        scaled = t.with_columns((pl.col("x_um")*10).alias("x_um"), (pl.col("y_um")*10).alias("y_um"),
+                                (pl.col("sigma_x_um")*10).alias("sigma_x_um"),
+                                (pl.col("sigma_y_um")*10).alias("sigma_y_um"))
         c = analyze_track(scaled, acq)
         self.assertAlmostEqual(c.brownian.parameters["D_um2_s"], 100*a.brownian.parameters["D_um2_s"])
 
     def test_window_and_short_track(self):
-        c = compute_msd(track(), Acquisition(.03), MSDOptions(max_lag=100))
+        c = compute_msd(table(), Acquisition(.03), MSDOptions(max_lag=100))
         self.assertEqual(c.lag.tolist(), [1, 2, 3, 4])
         self.assertEqual(c.n_pairs.tolist(), [4, 3, 2, 1])
-        out = analyze_track(track(3), Acquisition(.03))
+        out = analyze_track(table(3), Acquisition(.03))
         self.assertEqual(out.brownian.status, "excluded")
         self.assertIsNone(out.msd)
 
@@ -248,15 +260,12 @@ class EstimatorTests(unittest.TestCase):
 
 class WorkflowTests(unittest.TestCase):
     def test_one_track_matches_direct_call(self):
-        t = track()
+        t = table()
         direct = analyze_track(t, Acquisition(.03))
-        result = analyze_tracks(table(t), Acquisition(.03))
+        result = analyze_tracks(t, Acquisition(.03))
         normal = result.fits.filter(pl.col("model") == "brownian").row(0, named=True)
-        post = result.fits.filter(pl.col("model") == "posterior_D").row(0, named=True)
-        self.assertEqual(result.fits.height, 3)
+        self.assertEqual(result.fits.height, 2)
         self.assertEqual(normal["D_um2_s"], direct.brownian.parameters["D_um2_s"])
-        for name, value in direct.posterior_D.parameters.items():
-            self.assertEqual(post[name], value)
         self.assertEqual(result.msd.height, 3)
 
     def test_empty_output_retains_schema_and_reports_progress(self):
@@ -269,29 +278,19 @@ class WorkflowTests(unittest.TestCase):
 
     def test_invalid_and_short_tracks_do_not_drop_valid_tracks(self):
         good = table()
-        gap = table(replace(track(), track_id=8, frames=np.arange(5)*2))
-        short = table(replace(track(2), track_id=9))
+        gap = table(track_id=8).with_columns((pl.col("frame")*2).alias("frame"))
+        short = table(2, track_id=9)
         calls = []
         result = analyze_tracks(pl.concat([good, gap, short]), Acquisition(.03), progress=lambda *x: calls.append(x))
-        self.assertEqual(result.fits.height, 9)
-        self.assertEqual(result.fits.filter(pl.col("track_id") == 8)["status"].to_list(), ["invalid_input"]*3)
-        self.assertEqual(result.fits.filter(pl.col("track_id") == 9)["status"].to_list(), ["excluded"]*3)
+        self.assertEqual(result.fits.height, 6)
+        self.assertEqual(result.fits.filter(pl.col("track_id") == 8)["status"].to_list(), ["invalid_input"]*2)
+        self.assertEqual(result.fits.filter(pl.col("track_id") == 9)["status"].to_list(), ["excluded"]*2)
         self.assertEqual(result.msd["track_id"].unique().to_list(), [7])
         self.assertEqual(calls, [(0, 3), (1, 3), (2, 3), (3, 3)])
 
-    def test_import_does_not_load_bayes_plotting_or_legacy(self):
-        code = "import diffusionkit.classic, sys; assert not any(x in sys.modules for x in ('jax','numpyro','matplotlib','diffusionkit.legacy.classic'))"
+    def test_import_does_not_load_bayes_or_plotting(self):
+        code = "import diffusionkit.classic, sys; assert not any(x in sys.modules for x in ('jax','numpyro','matplotlib'))"
         subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
-
-    def test_legacy_paths_preserve_saved_implementation(self):
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            from diffusionkit.classic import fit_population
-        self.assertIn("legacy.classic", fit_population.__module__)
-        self.assertTrue(any(issubclass(w.category, DeprecationWarning) for w in caught))
-        from diffusionkit.classic.fitting import fit_normal_diffusion
-        from diffusionkit.legacy.classic.fitting import fit_normal_diffusion as original
-        self.assertIs(fit_normal_diffusion, original)
 
 
 if __name__ == "__main__":

@@ -17,15 +17,16 @@ defect (see prototypes/posterior_1d.py, prototypes/README.md).
 from __future__ import annotations
 
 import numpy as np
+import polars as pl
 
-from ..data import Acquisition, Track
+from ..data import Acquisition
 from .likelihood import _loglik, _prepared, _whiten
 
 # ln D grid, D in um^2/s: 1e-4 to 10 in ~2.3% steps.
 U = np.linspace(np.log(1e-4), np.log(10.0), 501)
 
 
-def track_loglik(track: Track, acquisition: Acquisition, u: np.ndarray = U) -> np.ndarray:
+def track_loglik(track: pl.DataFrame, acquisition: Acquisition, u: np.ndarray = U) -> np.ndarray:
     """(len(u),) log-likelihood of one track's displacements at D = exp(u)."""
     w = _whiten(_prepared(track, acquisition), acquisition)
     return _loglik(np.exp(u), w["lam"], w["y"][None], w["const"])
@@ -57,16 +58,34 @@ def log_normal(D_lo: float, D_hi: float, u: np.ndarray = U) -> np.ndarray:
 # --------------------------------------------------------------------------
 
 
+def _normalize(log_weights: np.ndarray) -> np.ndarray:
+    """Grid weights (sum to 1) from log un-normalized weights.
+
+    Shared with `gridpost.posterior_alpha`, whose alpha grid is linear rather
+    than log-scale -- this step (exp, shift for stability, sum to 1) doesn't
+    care which quantity the grid represents.
+    """
+    p = np.exp(log_weights - log_weights.max())
+    return p / p.sum()
+
+
+def _grid_quantile(p: np.ndarray, grid: np.ndarray, q: float) -> float:
+    """q-quantile of `grid`'s distribution `p`, interpolating the CDF at cell midpoints.
+
+    Also shared with `gridpost.posterior_alpha`; this module's own `quantile`
+    below is the D-specific (log-scale grid, exponentiated result) wrapper.
+    """
+    return float(np.interp(q, np.cumsum(p) - p / 2, grid))
+
+
 def posterior(ll: np.ndarray, log_prior: np.ndarray) -> np.ndarray:
     """Grid weights (sum to 1) proportional to likelihood x prior."""
-    lp = ll + log_prior
-    p = np.exp(lp - lp.max())
-    return p / p.sum()
+    return _normalize(ll + log_prior)
 
 
 def quantile(p: np.ndarray, q: float, u: np.ndarray = U) -> float:
     """Posterior q-quantile of D, interpolating the CDF at cell midpoints."""
-    return float(np.exp(np.interp(q, np.cumsum(p) - p / 2, u)))
+    return float(np.exp(_grid_quantile(p, u, q)))
 
 
 def summary(p: np.ndarray, u: np.ndarray = U, level: float = .9) -> dict[str, float]:
@@ -78,7 +97,7 @@ def summary(p: np.ndarray, u: np.ndarray = U, level: float = .9) -> dict[str, fl
     }
 
 
-def track_posterior(track: Track, acquisition: Acquisition, log_prior: np.ndarray | None = None,
+def track_posterior(track: pl.DataFrame, acquisition: Acquisition, log_prior: np.ndarray | None = None,
                     u: np.ndarray = U, level: float = .9) -> dict[str, float]:
     """Posterior median and `level` credible interval of D for one track.
 

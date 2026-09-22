@@ -8,7 +8,7 @@ track's posterior over alpha as one row of a heat map, sorted by its
 median -- the same "a track's information is visible as how narrow and
 bright its row is" view demo_ensemble.py gives D, here for the question
 "is this motion Brownian?" instead of the calibrated z-score
-diffusionkit.classic.likelihood's non-Brownian score answers with a single
+diffusionkit.gridpost.likelihood's non-Brownian score answers with a single
 number per track.
 """
 import sys

@@ -1,13 +1,22 @@
-"""Grid posterior over D (diffusionkit.classic.posterior) against simulation."""
+"""Grid posterior over D (diffusionkit.gridpost.posterior) against simulation."""
 import unittest
 
 import numpy as np
+import polars as pl
 
-from diffusionkit import Acquisition, Track
-from diffusionkit.classic import posterior as P
+from diffusionkit import Acquisition
+from diffusionkit.gridpost import posterior as P
 
 
 DT = .033
+
+
+def track_table(track_id, frames, positions, sd):
+    return pl.DataFrame({
+        "track_id": [track_id] * len(frames), "frame": frames,
+        "x_um": positions[:, 0], "y_um": positions[:, 1],
+        "sigma_x_um": sd[:, 0], "sigma_y_um": sd[:, 1],
+    })
 
 
 def simulate(D, sd, dt, rng, exposure=0., n_frames=None):
@@ -30,9 +39,9 @@ class PosteriorTests(unittest.TestCase):
         n = 7
         sd = rng.uniform(.02, .05, (n, 2))
         pos = simulate(.05, sd[:, 0], DT, rng, n_frames=n)
-        t = Track(1, np.arange(n), pos, sd)
+        t = track_table(1, np.arange(n), pos, sd)
         ll = P.track_loglik(t, Acquisition(DT))
-        from diffusionkit.classic.likelihood import brownian_log_likelihood
+        from diffusionkit.gridpost.likelihood import brownian_log_likelihood
         direct = np.array([brownian_log_likelihood(t, Acquisition(DT), D) for D in np.exp(P.U)])
         np.testing.assert_allclose(ll, direct, atol=1e-8)
 
@@ -49,7 +58,7 @@ class PosteriorTests(unittest.TestCase):
                 D_true = np.exp(u_true)
                 sd = rng.uniform(.025, .045, (n_frames, 2))
                 pos = simulate(D_true, sd[:, 0], DT, rng, n_frames=n_frames)
-                t = Track(1, np.arange(n_frames), pos, sd)
+                t = track_table(1, np.arange(n_frames), pos, sd)
                 s = P.track_posterior(t, Acquisition(DT), prior, level=.9)
                 hits += s["lo"] <= D_true <= s["hi"]
             self.assertLess(abs(hits/n_tracks - .9), .06)
@@ -60,7 +69,7 @@ class PosteriorTests(unittest.TestCase):
         n = 5
         sd = rng.uniform(.03, .045, (n, 2))
         pos = simulate(.05, sd[:, 0], DT, rng, n_frames=n)
-        t = Track(1, np.arange(n), pos, sd)
+        t = track_table(1, np.arange(n), pos, sd)
         s = P.track_posterior(t, Acquisition(DT), P.log_uniform(1e-3, 1.))
         self.assertGreater(s["hi"]/s["lo"], 3.)
 

@@ -184,10 +184,11 @@ blur down.
 ## Companion: posterior over alpha
 
 `posterior_alpha.py` generalizes the same idea to the fBm exponent `alpha`,
-as an honest alternative to `classic.likelihood`'s calibrated non-Brownian
-z-score: instead of a single calibrated statistic testing "is this
-Brownian?", it reports a full posterior over `alpha` that stays wide when a
-short track genuinely can't resolve it.
+as an honest alternative to a single calibrated statistic testing "is this
+Brownian?" (this project's retired non-Brownian z-score): it reports a full
+posterior over `alpha` that stays wide when a short track genuinely can't
+resolve it. `diffusionkit.gridpost.posterior_alpha` is the production version
+of this module -- see [docs/classical.md](../docs/classical.md).
 
 For a *fixed* `alpha`, the fGn displacement covariance is linear in the
 generalized diffusion coefficient `K` exactly as the Brownian covariance is
@@ -211,9 +212,10 @@ uv run --with pytest pytest prototypes/test_posterior_alpha.py
 Same story as the `D` ensemble view: summing per-track posteriors (or
 histogramming their medians) badly overstates the width of each `alpha`
 subpopulation, while each row's own brightness/width still shows that
-track's real information. This is a standalone research prototype, not
-wired into `diffusionkit.classic` or a replacement for the production
-non-Brownian score yet.
+track's real information. This file itself remains a standalone research
+prototype (population-level views, no dependency on `diffusionkit`); the
+per-track posterior it explores is production in
+`diffusionkit.gridpost.posterior_alpha`.
 
 ## Related literature (via PubMed)
 

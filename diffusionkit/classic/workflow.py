@@ -1,14 +1,13 @@
-"""Functional single-track and table workflows; no ensemble or plotting side effects."""
+"""Functional single-track and table MSD workflows; no ensemble or plotting side effects."""
 from collections.abc import Callable
 
 import polars as pl
 
-from ..data import Acquisition, Track
-from ..io import track_from_table, validate_table_schema
-from ..validation import validate_acquisition, validated_track
-from . import posterior as posterior_mod
+from ..data import Acquisition
+from ..io import validate_table_schema, validated_track_frame
+from ..validation import validate_acquisition
 from .analysis import compute_msd, validate_options
-from .data import ClassicAnalysis, MSDOptions, PosteriorD, TrackAnalysis
+from .data import ClassicAnalysis, MSDOptions, TrackAnalysis
 from .estimators import empty_fit, fit_anomalous_msd, fit_brownian_msd
 
 
@@ -19,7 +18,6 @@ FIT_SCHEMA = {
     "n_lags": pl.Int64, "residual_sum_squares_um4": pl.Float64,
     "optimizer_status": pl.Int64, "nfev": pl.Int64,
     "localization": pl.String, "uncertainty_method": pl.String,
-    **{name: pl.Float64 for name in PosteriorD.PARAMETERS},
 }
 MSD_SCHEMA = {
     "track_id": pl.Int64, "lag": pl.Int64, "tau_s": pl.Float64,
@@ -28,49 +26,37 @@ MSD_SCHEMA = {
 }
 
 
-def _posterior_or_excluded(track: Track, acquisition: Acquisition, options: MSDOptions) -> PosteriorD:
-    if options.localization != "provided":
-        return PosteriorD(dict.fromkeys(PosteriorD.PARAMETERS), "excluded",
-                          "The D posterior requires localization SDs")
-    try:
-        s = posterior_mod.track_posterior(track, acquisition)
-        return PosteriorD({"D_post_median_um2_s": s["median"], "D_post_lo_um2_s": s["lo"],
-                           "D_post_hi_um2_s": s["hi"]}, "ok", "")
-    except ValueError as exc:  # e.g. a zero localization SD; the MSD fits may still apply
-        return PosteriorD(dict.fromkeys(PosteriorD.PARAMETERS), "invalid_input", str(exc))
-
-
-def analyze_track(track: Track, acquisition: Acquisition,
+def analyze_track(track: pl.DataFrame, acquisition: Acquisition,
                   options: MSDOptions = MSDOptions()) -> TrackAnalysis:
-    """Fit MSD D and alpha, and the grid posterior over D, for one track.
+    """Fit MSD D and alpha for one track's rows.
 
-    Invalid input raises; short tracks are explicit results. With exposure_s > 0
-    only the posterior (which models blur) is computed; the MSD fits are excluded.
+    Invalid input raises; short tracks are explicit results. `status="excluded"`
+    when `exposure_s > 0`: the MSD estimators assume instantaneous positions,
+    no motion-blur model.
     """
     validate_acquisition(acquisition, allow_exposure=True)
     validate_options(options)
-    track = validated_track(track, require_localization=options.localization == "provided")
-    n = len(track.frames)
+    track = validated_track_frame(track, acquisition, require_localization=options.localization == "provided")
+    track_id = int(track["track_id"][0])
+    n = track.height
     if n < options.min_frames:
         message = f"{n} frames; min_frames={options.min_frames}"
-        return TrackAnalysis(track.track_id, n, None,
+        return TrackAnalysis(track_id, n, None,
                              empty_fit("brownian", "excluded", message),
-                             empty_fit("power_law", "excluded", message), acquisition, options,
-                             PosteriorD(dict.fromkeys(PosteriorD.PARAMETERS), "excluded", message))
-    post = _posterior_or_excluded(track, acquisition, options)
+                             empty_fit("power_law", "excluded", message), acquisition, options)
     if acquisition.exposure_s > 0:
         message = "MSD estimators assume exposure_s=0 (no motion-blur model)"
-        return TrackAnalysis(track.track_id, n, None, empty_fit("brownian", "excluded", message),
-                             empty_fit("power_law", "excluded", message), acquisition, options, post)
+        return TrackAnalysis(track_id, n, None, empty_fit("brownian", "excluded", message),
+                             empty_fit("power_law", "excluded", message), acquisition, options)
     msd = compute_msd(track, acquisition, options)
-    return TrackAnalysis(track.track_id, n, msd, fit_brownian_msd(msd),
-                         fit_anomalous_msd(msd, max_nfev=options.max_nfev), acquisition, options, post)
+    return TrackAnalysis(track_id, n, msd, fit_brownian_msd(msd),
+                         fit_anomalous_msd(msd, max_nfev=options.max_nfev), acquisition, options)
 
 
 def analyze_tracks(table: pl.DataFrame, acquisition: Acquisition,
                    options: MSDOptions = MSDOptions(), *,
                    progress: Callable[[int, int], None] | None = None) -> ClassicAnalysis:
-    """Three fit rows per input track, including exclusions and invalid tracks.
+    """Two fit rows per input track, including exclusions and invalid tracks.
 
     Schema/configuration errors raise before work starts. Invalid individual
     tracks get status='invalid_input' and do not prevent other tracks fitting.
@@ -86,18 +72,11 @@ def analyze_tracks(table: pl.DataFrame, acquisition: Acquisition,
     for done, group in enumerate(groups, 1):
         track_id = int(group["track_id"][0])
         try:
-            track = track_from_table(group, acquisition, require_localization=options.localization == "provided")
-            result = analyze_track(track, acquisition, options)
+            result = analyze_track(group, acquisition, options)
         except ValueError as exc:
             result = TrackAnalysis(track_id, group.height, None,
                                    empty_fit("brownian", "invalid_input", str(exc)),
-                                   empty_fit("power_law", "invalid_input", str(exc)), acquisition, options,
-                                   PosteriorD(dict.fromkeys(PosteriorD.PARAMETERS), "invalid_input", str(exc)))
-        post = result.posterior_D
-        fit_rows.append({"track_id": track_id, "n_frames": result.n_frames, "model": post.model,
-                         "method": post.method, "status": post.status, "message": post.message,
-                         "localization": options.localization, "uncertainty_method": post.uncertainty_method,
-                         **post.parameters})
+                                   empty_fit("power_law", "invalid_input", str(exc)), acquisition, options)
         for fit in (result.brownian, result.anomalous):
             fit_rows.append({"track_id": track_id, "n_frames": result.n_frames,
                              "model": fit.model, "method": fit.method, "status": fit.status,

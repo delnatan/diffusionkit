@@ -5,8 +5,8 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from .data import Acquisition, Track
-from .validation import validate_acquisition, validated_track
+from .data import Acquisition
+from .validation import validate_acquisition
 
 
 @dataclass(frozen=True)
@@ -33,9 +33,15 @@ def validate_table_schema(table: pl.DataFrame) -> None:
         raise ValueError("Provide both sigma_x_um and sigma_y_um, or neither")
 
 
-def track_from_table(table: pl.DataFrame, acquisition: Acquisition, *,
-                     require_localization: bool = True) -> Track:
-    """Convert exactly one track; validate any redundant time/length metadata."""
+def validated_track_frame(table: pl.DataFrame, acquisition: Acquisition, *,
+                          require_localization: bool = True) -> pl.DataFrame:
+    """One track's rows: schema-checked, sorted by frame, contiguous, finite.
+
+    Validates any redundant time/length metadata and, if `require_localization`,
+    that `sigma_x_um`/`sigma_y_um` are present, finite, and nonnegative. This is
+    the single validation boundary every per-track algorithm (`classic.analysis`,
+    `gridpost.likelihood`) calls before touching the data.
+    """
     validate_acquisition(acquisition, allow_exposure=True)
     validate_table_schema(table)
     if table.height == 0 or table["track_id"].n_unique() != 1:
@@ -49,12 +55,22 @@ def track_from_table(table: pl.DataFrame, acquisition: Acquisition, *,
         expected = table["frame"].to_numpy() * acquisition.dt_s
         if not np.all(np.isfinite(times)) or not np.allclose(times, expected, rtol=1e-9, atol=1e-12):
             raise ValueError("t_s must equal frame * dt_s")
-    errors = None
-    if "sigma_x_um" in table.columns:
+    table = table.sort("frame")
+    frames = table["frame"].to_numpy()
+    if np.any(frames < 0):
+        raise ValueError("frame must be nonnegative")
+    if np.any(np.diff(frames.astype(np.int64)) != 1):
+        raise ValueError("frames must be consecutive and unique; gaps are not supported")
+    positions = table.select("x_um", "y_um").to_numpy()
+    if not np.all(np.isfinite(positions)):
+        raise ValueError("x_um/y_um must be finite")
+    if require_localization:
+        if "sigma_x_um" not in table.columns:
+            raise ValueError("Localization SDs are required; choose localization='ignore' explicitly to omit the correction")
         errors = table.select("sigma_x_um", "sigma_y_um").to_numpy()
-    return validated_track(Track(int(table["track_id"][0]), table["frame"].to_numpy(),
-                                 table.select("x_um", "y_um").to_numpy(), errors),
-                           require_localization=require_localization)
+        if not np.all(np.isfinite(errors)) or np.any(errors < 0):
+            raise ValueError("sigma_x_um/sigma_y_um must be finite and nonnegative")
+    return table
 
 
 def load_tracks(csv_path: str | Path, params: AcquisitionParams) -> pl.DataFrame:

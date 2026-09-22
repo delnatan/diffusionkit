@@ -1,33 +1,42 @@
 """Shared whitening plumbing against independent dense calculations."""
-from dataclasses import replace
 import unittest
 
 import numpy as np
+import polars as pl
 from scipy.stats import multivariate_normal
 
-from diffusionkit import Acquisition, Track
-from diffusionkit.classic import brownian_log_likelihood
-from diffusionkit.classic.likelihood import motion_covariance
+from diffusionkit import Acquisition
+from diffusionkit.gridpost import brownian_log_likelihood
+from diffusionkit.gridpost.likelihood import motion_covariance
 
 
 DT = .033
+
+
+def track_table(track_id, frames, positions, sd):
+    return pl.DataFrame({
+        "track_id": [track_id] * len(frames), "frame": frames,
+        "x_um": positions[:, 0], "y_um": positions[:, 1],
+        "sigma_x_um": sd[:, 0], "sigma_y_um": sd[:, 1],
+    })
 
 
 def brownian(n=8, D=.05, seed=1, sd=None, track_id=3):
     rng = np.random.default_rng(seed)
     sd = rng.uniform(.01, .04, (n, 2)) if sd is None else sd
     pos = np.cumsum(rng.normal(size=(n, 2))*np.sqrt(2*D*DT), axis=0) + rng.normal(size=(n, 2))*sd
-    return Track(track_id, np.arange(n), pos, sd)
+    return track_table(track_id, np.arange(n), pos, sd)
 
 
 def dense_brownian_ll(t, D):
     # Independent oracle: dense Brownian + localization covariance, SciPy density.
-    m = len(t.frames) - 1
+    m = t.height - 1
     A = D*2*DT*np.eye(m)
-    d = np.diff(t.positions_um, axis=0)
+    d = np.diff(t.select("x_um", "y_um").to_numpy(), axis=0)
+    sd = t.select("sigma_x_um", "sigma_y_um").to_numpy()
     total = 0.
     for a in (0, 1):
-        v = t.localization_sd_um[:, a]**2
+        v = sd[:, a]**2
         B = np.diag(v[:-1] + v[1:]) - np.diag(v[1:-1], 1) - np.diag(v[1:-1], -1)
         total += multivariate_normal(np.zeros(m), A + B).logpdf(d[:, a])
     return total
@@ -41,16 +50,19 @@ class LikelihoodTests(unittest.TestCase):
 
     def test_error_placement_matters(self):
         t = brownian()
-        moved = replace(t, localization_sd_um=np.roll(t.localization_sd_um, 1, axis=0))
+        sd = t.select("sigma_x_um", "sigma_y_um").to_numpy()
+        moved = t.with_columns(pl.Series("sigma_x_um", np.roll(sd[:, 0], 1)),
+                               pl.Series("sigma_y_um", np.roll(sd[:, 1], 1)))
         self.assertNotAlmostEqual(brownian_log_likelihood(t, Acquisition(DT), .05),
                                   brownian_log_likelihood(moved, Acquisition(DT), .05))
 
     def test_zero_localization_sd_rejected(self):
         t = brownian()
-        zero = t.localization_sd_um.copy()
-        zero[2, 0] = 0.
+        sd = t.select("sigma_x_um", "sigma_y_um").to_numpy()
+        sd[2, 0] = 0.
+        zero = t.with_columns(pl.Series("sigma_x_um", sd[:, 0]))
         with self.assertRaisesRegex(ValueError, "positive"):
-            brownian_log_likelihood(replace(t, localization_sd_um=zero), Acquisition(DT), .05)
+            brownian_log_likelihood(zero, Acquisition(DT), .05)
 
     def test_motion_covariance_berglund_closed_form(self):
         exposure, m = .02, 4

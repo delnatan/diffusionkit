@@ -7,7 +7,7 @@ displacement sequence via the exact Gaussian likelihood in `bayes.likelihood`
 via fractional Gaussian noise), through numpyro models in `bayes.model`.
 
 This is a per-track diagnostic tool, not a bulk production pipeline: bulk
-per-track diffusivity estimation is `diffusionkit.classic.posterior`'s job
+per-track diffusivity estimation is `diffusionkit.gridpost.posterior`'s job
 (the grid posterior over D). Here, `bayes.fit_track` (always full NUTS) runs
 on a handful of representative tracks (by track_length percentile) to
 inspect posterior shape directly -- corner plots and chain traces -- where a

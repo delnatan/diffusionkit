@@ -1,6 +1,6 @@
-"""Classical-analysis inputs and outputs. Algorithms live in other modules."""
+"""Classical MSD-analysis inputs and outputs. Algorithms live in other modules."""
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import Literal
 
 import numpy as np
 import polars as pl
@@ -40,18 +40,6 @@ class MSDFit:
 
 
 @dataclass(frozen=True)
-class PosteriorD:
-    PARAMETERS: ClassVar[tuple[str, ...]] = (
-        "D_post_median_um2_s", "D_post_lo_um2_s", "D_post_hi_um2_s")
-    parameters: dict[str, float | None]
-    status: str
-    message: str
-    model: str = "posterior_D"
-    method: str = "grid_posterior"
-    uncertainty_method: str = "credible_interval"
-
-
-@dataclass(frozen=True)
 class TrackAnalysis:
     track_id: int
     n_frames: int
@@ -60,7 +48,6 @@ class TrackAnalysis:
     anomalous: MSDFit
     acquisition: Acquisition
     options: MSDOptions
-    posterior_D: PosteriorD
 
 
 @dataclass(frozen=True)

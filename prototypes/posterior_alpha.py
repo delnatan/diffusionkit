@@ -8,7 +8,7 @@ as a nuisance parameter marginalized out -- the same honesty posterior_1d
 gives D (a short, uninformative track reports a wide posterior, not a
 falsely confident point), applied to the question "is this motion
 Brownian?" instead of the calibrated-z-score hypothesis test
-diffusionkit.classic.likelihood's non-Brownian score answers.
+diffusionkit.gridpost.likelihood's non-Brownian score answers.
 
 Model, per axis. A track of n frames gives m = n - 1 displacements d, and
 
@@ -25,7 +25,7 @@ No exposure-blur model: posterior_1d.py's closed-form Berglund R average is
 specific to alpha=1 Brownian motion (the double integral of a *linear*
 motion variance has a simple closed form); no comparably simple closed form
 exists for exposure-averaged fBm at a general alpha (it would need the same
-kind of numerical quadrature diffusionkit.classic used to drop). This
+kind of numerical quadrature diffusionkit.gridpost used to drop). This
 prototype therefore assumes exposure_s=0, matching the existing NumPyro
 anomalous model (diffusionkit.bayes.model), which makes the same
 simplification for the same reason.
