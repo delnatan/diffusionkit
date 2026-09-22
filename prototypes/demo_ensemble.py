@@ -5,8 +5,9 @@ Usage: uv run python prototypes/demo_ensemble.py [out.png]
 1000 simulated tracks (5-20 frames) from two subpopulations of D a decade
 apart. Left: every track's posterior as one row of a heat map, sorted by its
 median, so a track's information is visible as how narrow and bright its row
-is. Right: what you get by summing the posteriors, and by histogramming the
-per-track medians, next to the true distribution of D.
+is. Right: what you get by summing the posteriors, by histogramming the
+per-track medians, and by deconvolving (posterior_1d.deconvolve, the
+Gaussian-smoothed EM nonparametric MLE), next to the true distribution of D.
 """
 import sys
 from pathlib import Path
@@ -22,7 +23,7 @@ D_MODES, SPREAD = (0.02, 0.2), 0.15  # um^2/s, equal weights; SD of ln D within 
 SPLIT = np.sqrt(D_MODES[0] * D_MODES[1])  # geometric midpoint, to count "fast" tracks
 
 INK, INK2, GRID, SURFACE = "#0b0b0b", "#52514e", "#e6e5e0", "#fcfcfb"
-BLUE, ORANGE = "#2a78d6", "#eb6834"
+BLUE, ORANGE, GREEN = "#2a78d6", "#eb6834", "#1baf7a"
 SEQ = LinearSegmentedColormap.from_list("seq", ["#f4f7fc", "#a9c9f0", "#2a78d6", "#0f3d80"])
 
 
@@ -30,11 +31,13 @@ def simulate_ensemble(rng):
     D = np.exp(np.log(rng.choice(D_MODES, N_TRACKS)) + SPREAD * rng.standard_normal(N_TRACKS))
     frames = rng.integers(5, 21, N_TRACKS)
     prior = P.log_uniform(1e-3, 1.)
+    lls = np.empty((N_TRACKS, len(P.U)))
     post = np.empty((N_TRACKS, len(P.U)))
     for i in range(N_TRACKS):
         sd = rng.uniform(.030, .045, frames[i])
-        post[i] = P.posterior(P.track_loglik(P.simulate(D[i], sd, DT, ON_TIME, rng), sd, DT, ON_TIME), prior)
-    return D, frames, post
+        lls[i] = P.track_loglik(P.simulate(D[i], sd, DT, ON_TIME, rng), sd, DT, ON_TIME)
+        post[i] = P.posterior(lls[i], prior)
+    return D, frames, lls, post
 
 
 def style(ax):
@@ -48,8 +51,10 @@ def style(ax):
 
 def main(out: Path) -> None:
     rng = np.random.default_rng(3)
-    D, frames, post = simulate_ensemble(rng)
+    D, frames, lls, post = simulate_ensemble(rng)
     du = P.U[1] - P.U[0]
+    prior = P.log_uniform(1e-3, 1.)
+    g_deconv = P.deconvolve(lls, prior)
     med = np.array([P.quantile(p, .5) for p in post])
     q16 = np.array([P.quantile(p, .1587) for p in post])
     q84 = np.array([P.quantile(p, .8413) for p in post])
@@ -92,19 +97,20 @@ def main(out: Path) -> None:
     cb.ax.tick_params(colors=INK2)
     cb.outline.set_edgecolor(GRID)
 
-    # Right: summed posteriors, histogram of medians, and the truth, as densities in ln D.
+    # Right: summed posteriors, histogram of medians, deconvolved distribution, and the truth.
     truth = sum(np.exp(-.5 * ((P.U - np.log(d)) / SPREAD)**2) / (SPREAD * np.sqrt(2 * np.pi)) for d in D_MODES) / 2
     ax2.plot(np.exp(P.U), post.mean(0) / du, color=BLUE, lw=2, label="sum of posteriors")
     edges = np.arange(np.log(1e-3), np.log(1.) + .01, .3)
     h, _ = np.histogram(np.log(med), bins=edges, density=True)
     ax2.stairs(h * np.mean((med >= 1e-3) & (med <= 1.)), np.exp(edges), color=ORANGE, lw=2, label="histogram of medians")
+    ax2.plot(np.exp(P.U), g_deconv / du, color=GREEN, lw=2, label="deconvolved distribution")
     ax2.plot(np.exp(P.U), truth, color=INK, lw=1.6, ls=(0, (4, 3)), label="true distribution")
     ax2.set_xscale("log")
     ax2.set_xlim(3e-4, 3)
     ax2.grid(True, color=GRID, lw=.8)
     ax2.set_xlabel("D (µm²/s)", color=INK2)
     ax2.set_ylabel("density per ln D", color=INK2)
-    ax2.set_title("Summing vs the truth", loc="left", color=INK, fontsize=12)
+    ax2.set_title("Summing and deconvolving vs the truth", loc="left", color=INK, fontsize=12)
     ax2.legend(frameon=False, labelcolor=INK, loc="upper left")
 
     fig.savefig(out, dpi=150, facecolor=SURFACE)

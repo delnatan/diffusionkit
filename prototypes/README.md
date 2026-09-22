@@ -65,6 +65,7 @@ posterior after `k` displacements is the posterior of the track truncated to
 uv run python prototypes/demo_sharpening.py   # one track, posterior sharpening
 uv run python prototypes/demo_ensemble.py     # 1000 tracks: views of many posteriors
 uv run python prototypes/demo_population.py   # shared-D and distribution vs MSD
+uv run python prototypes/demo_maxent.py       # deconvolve: NPMLE vs smoothed EM vs MaxEnt+evidence
 uv run --with pytest pytest prototypes        # tests
 ```
 
@@ -120,6 +121,53 @@ recovers the two modes and their masses (0.499 / 0.501 vs 0.5 / 0.5). Peak
 widths depend on the `smooth` regularizer (default 0.5 grid cells, chosen
 against the truth here): read a deconvolved width as resolution-limited, not
 measured. Bands come from resampling tracks and re-running it.
+
+### MaxEnt deconvolution, alpha chosen by evidence
+
+![maxent comparison](maxent_view.png)
+
+`deconvolve`'s objective, `sum_i log sum_D L_i(D) g(D)`, is only concave, not
+strictly concave, so its unregularized optimum (`smooth=0`) can put mass on a
+handful of grid cells -- `smooth` guards against this with a fixed Gaussian
+blur per EM step, chosen by eye against a known truth, which is not available
+on real data. `maxent_deconvolve.py` (companion module, same
+numpy/scipy-only, no `diffusionkit` import) regularizes properly instead:
+maximize `log L(w) + alpha * S(w)` over the grid simplex, where
+`S(w) = -sum_k w_k log(w_k / m_k)` is the cross-entropy against a default
+measure `m` (flat by default). For any `alpha > 0` this is *strictly*
+concave (`S`'s Hessian is `-diag(1/w)`), so its maximizer is unique and
+cannot be a spike, by construction rather than by tuning.
+
+`alpha` is chosen the way Gull & Skilling (1989, "Developments in Maximum
+Entropy Data Analysis") choose it for MaxEnt image reconstruction: maximize
+the Laplace-approximated evidence
+`P(data | alpha) ~= alpha*S(w_alpha) + log L(w_alpha) - 1/2 sum_k log(1 +
+lambda_k/alpha)`, where `lambda_k` are the generalized eigenvalues of the
+data's curvature against the entropy metric, restricted to the simplex's
+tangent hyperplane -- one dense `~500x500` eigendecomposition per trial
+`alpha`, since `w` here is a 1D `~500`-point grid, not a multi-megapixel
+image, so the full Skilling-Bryan control-subspace search isn't needed. `w`
+is parametrized as `softmax(theta)` to turn the constrained simplex problem
+into an unconstrained one solved with L-BFGS-B; this is safe (doesn't distort
+the eigenvalues the evidence formula depends on) because the softmax
+Jacobian's correction to the Hessian vanishes exactly at the constrained
+optimum. v1 picks `alpha` as the argmax of a `log`-spaced scan (`alpha_grid`
+built from the data's own curvature scale), not a continuous refinement.
+
+On the same 1000-track datasets used above: for the homogeneous dataset the
+evidence prefers *less* regularization than `deconvolve`'s default `smooth`
+(and, with this many highly informative tracks, sits at the edge of the
+default `alpha_grid` -- widen it if that warning fires); for the two-mode
+dataset both true modes are recovered with masses matching `deconvolve`'s,
+without hand-tuning a width. `n_good = sum lambda_k/(alpha+lambda_k)` (Gull's
+"number of good measurements") is a data-driven complexity readout: about 2
+for the homogeneous dataset, about 7 for the two-mode one. See the module
+docstring in `maxent_deconvolve.py` for the exact formulas and derivation.
+
+Scope: `D` only for now. `posterior_alpha.py`'s per-track curve is already a
+`K`-marginalized approximation, not a clean likelihood the way `track_loglik`
+is for `D`; feeding it through the same evidence machinery would conflate two
+different approximations, so it's left for a later extension.
 
 ## Design decisions and the evidence
 
