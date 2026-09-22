@@ -1,11 +1,10 @@
 # Current validation status
 
-The old production recommendations and comparative accuracy claims are
-withdrawn. They are preserved as historical records in
-[docs/archive/FINDINGS.md](docs/archive/FINDINGS.md), not as support for the
-rebuilt API. [AUDIT.md](AUDIT.md) describes the problems motivating the reset.
+The old production recommendations and comparative accuracy claims from
+before the classical rebuild are withdrawn; they are not support for the
+current API.
 
-The new classical workflow has tests for input validation, exact pair-specific
+The classical workflow has tests for input validation, exact pair-specific
 localization correction, known mean-curve recovery, nonlinear fitting against
 an independent profile-grid calculation, and Brownian recovery under varying
 localization precision. These verify implementation properties; they do not

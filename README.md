@@ -182,9 +182,6 @@ and 20 frames. See [FINDINGS.md](FINDINGS.md) for the current evidence and
 limits. These checks are not a general calibration of alpha on experimental
 tracks.
 
-Previous documentation is preserved in [docs/archive](docs/archive/INDEX.md)
-for reproducibility. Its recommendations and production claims are withdrawn.
-
 `diffusionkit.bayes` (NumPyro) fits the same exact displacement likelihood
 directly, without an MSD curve, via `fit_track` -- a per-track diagnostic
 tool (full NUTS posterior) for inspecting posterior shape on a short or
@@ -193,4 +190,4 @@ per-track diffusivity estimation is `gridpost`'s `D`-posterior job.
 MAP inference and the anisotropy (nested-sampling) workflow have been
 removed: MAP conflated the unconstrained-space mode with the physical-space
 posterior mode, and anisotropy was an archived research direction whose
-prior-provenance issues were never resolved (see the historical `AUDIT.md`).
+prior-provenance issues were never resolved.

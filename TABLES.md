@@ -2,8 +2,7 @@
 
 This reference covers `diffusionkit.classic.analyze_track`/`analyze_tracks`
 and `diffusionkit.gridpost.analyze_track`/`analyze_tracks` -- two independent
-entry points, each with its own `fits` table. Old schemas are preserved in
-[docs/archive/TABLES.md](docs/archive/TABLES.md).
+entry points, each with its own `fits` table.
 
 ## classic: `ClassicAnalysis` -- `fits`, `msd`, `acquisition`, `options`
 
