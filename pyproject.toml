@@ -24,4 +24,4 @@ packages = ["diffusionkit"]
 [tool.hatch.build.targets.sdist]
 # Keep the sample datasets and committed run outputs out of the distribution;
 # they are ~11 MB and are only needed to reproduce the study from a clone.
-exclude = ["*.csv", "results/", "graphify-out/", "notes.org"]
+exclude = ["*.csv", "results/", "graphify-out/"]
