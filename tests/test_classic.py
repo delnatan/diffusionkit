@@ -52,7 +52,7 @@ class InputTests(unittest.TestCase):
         blurred = analyze_track(track(), Acquisition(.03, .02))
         self.assertEqual((blurred.brownian.status, blurred.anomalous.status), ("excluded", "excluded"))
         self.assertIsNone(blurred.msd)
-        self.assertNotEqual(blurred.brownian_mle.status, "excluded")
+        self.assertNotEqual(blurred.posterior_D.status, "excluded")
         for opts in (MSDOptions(max_lag=0), MSDOptions(max_lag=1.5),
                      MSDOptions(min_frames=1), MSDOptions(localization="unknown"),
                      MSDOptions(max_nfev=0)):
@@ -252,11 +252,11 @@ class WorkflowTests(unittest.TestCase):
         direct = analyze_track(t, Acquisition(.03))
         result = analyze_tracks(table(t), Acquisition(.03))
         normal = result.fits.filter(pl.col("model") == "brownian").row(0, named=True)
-        mle = result.fits.filter(pl.col("model") == "brownian_mle").row(0, named=True)
+        post = result.fits.filter(pl.col("model") == "posterior_D").row(0, named=True)
         self.assertEqual(result.fits.height, 3)
         self.assertEqual(normal["D_um2_s"], direct.brownian.parameters["D_um2_s"])
-        for name, value in direct.brownian_mle.parameters.items():
-            self.assertEqual(mle[name], value)
+        for name, value in direct.posterior_D.parameters.items():
+            self.assertEqual(post[name], value)
         self.assertEqual(result.msd.height, 3)
 
     def test_empty_output_retains_schema_and_reports_progress(self):

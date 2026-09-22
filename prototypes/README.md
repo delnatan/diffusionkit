@@ -181,6 +181,40 @@ blur down.
 - Whether tracks share one `D` (versus a distribution) is judged by eye from
   `deconvolve` and the bootstrap; there is no calibrated test yet.
 
+## Companion: posterior over alpha
+
+`posterior_alpha.py` generalizes the same idea to the fBm exponent `alpha`,
+as an honest alternative to `classic.likelihood`'s calibrated non-Brownian
+z-score: instead of a single calibrated statistic testing "is this
+Brownian?", it reports a full posterior over `alpha` that stays wide when a
+short track genuinely can't resolve it.
+
+For a *fixed* `alpha`, the fGn displacement covariance is linear in the
+generalized diffusion coefficient `K` exactly as the Brownian covariance is
+linear in `D`, so the same whitening trick applies unchanged at every grid
+point in `alpha`; the 2D `(alpha, ln K)` log-likelihood surface is then
+collapsed to a 1D posterior over `alpha` by marginalizing `ln K` (a nuisance
+parameter, `K`'s own hand-set prior) with `logsumexp`. No exposure-blur
+model: the closed-form Berglund `R` average this module's `D`-posterior uses
+is specific to alpha=1 (a linear-motion double integral); no comparably
+simple closed form exists at a general `alpha`, so this assumes
+`exposure_s=0`, matching `diffusionkit.bayes.model`'s existing
+simplification.
+
+```bash
+uv run python prototypes/demo_alpha_ensemble.py   # 1000 tracks: same "sum vs truth" story, for alpha
+uv run --with pytest pytest prototypes/test_posterior_alpha.py
+```
+
+![alpha ensemble views](alpha_ensemble_view.png)
+
+Same story as the `D` ensemble view: summing per-track posteriors (or
+histogramming their medians) badly overstates the width of each `alpha`
+subpopulation, while each row's own brightness/width still shows that
+track's real information. This is a standalone research prototype, not
+wired into `diffusionkit.classic` or a replacement for the production
+non-Brownian score yet.
+
 ## Related literature (via PubMed)
 
 - Berglund 2010, Phys Rev E 82:011917. [10.1103/PhysRevE.82.011917](https://doi.org/10.1103/PhysRevE.82.011917) - MLE with localization noise and motion blur; the blur coefficient `R`.

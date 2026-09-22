@@ -40,26 +40,15 @@ class MSDFit:
 
 
 @dataclass(frozen=True)
-class MLEOptions:
-    n_boot: int = 500  # parametric-bootstrap replicates for z_nonbrownian; 0 disables
-    seed: int = 0  # combined with track_id, so results do not depend on track order
-    upper_level: float = .95  # one-sided profile-likelihood upper limit on D
-
-
-@dataclass(frozen=True)
-class BrownianMLE:
+class PosteriorD:
     PARAMETERS: ClassVar[tuple[str, ...]] = (
-        "D_um2_s", "D_upper_um2_s", "log_likelihood", "lr_motion", "p_motion",
-        "z_nonbrownian", "p_nonbrownian", "z_nonbrownian_asymptotic",
-        "alpha_1step", "alpha_1step_se")
+        "D_post_median_um2_s", "D_post_lo_um2_s", "D_post_hi_um2_s")
     parameters: dict[str, float | None]
     status: str
     message: str
-    n_boot: int = 0
-    n_boot_valid: int = 0
-    model: str = "brownian_mle"
-    method: str = "displacement_mle"
-    uncertainty_method: str = "profile_likelihood_asymptotic"
+    model: str = "posterior_D"
+    method: str = "grid_posterior"
+    uncertainty_method: str = "credible_interval"
 
 
 @dataclass(frozen=True)
@@ -71,8 +60,7 @@ class TrackAnalysis:
     anomalous: MSDFit
     acquisition: Acquisition
     options: MSDOptions
-    brownian_mle: BrownianMLE
-    mle_options: MLEOptions
+    posterior_D: PosteriorD
 
 
 @dataclass(frozen=True)
@@ -81,4 +69,3 @@ class ClassicAnalysis:
     msd: pl.DataFrame  # one row per (track_id, lag)
     acquisition: Acquisition
     options: MSDOptions
-    mle_options: MLEOptions

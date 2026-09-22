@@ -88,10 +88,13 @@ Model-based covariance or bootstrap intervals can be added after their
 assumptions and short-track coverage are established, using these data and
 estimator functions rather than another parallel workflow.
 
-## D: Brownian displacement maximum likelihood (no lag window)
+## D: grid posterior over the displacement likelihood (no lag window)
 
-`fit_brownian_mle` uses every consecutive displacement once, with each
-frame's localization SD. Per axis, the m = n-1 displacements are Gaussian:
+`diffusionkit.classic.posterior` uses every consecutive displacement once,
+with each frame's localization SD -- the same exact Gaussian displacement
+likelihood a maximum-likelihood point estimate would maximize, but reported
+as a posterior rather than collapsed to a point. Per axis, the m = n-1
+displacements are Gaussian:
 
 ```
 Sigma(D) = D A + B
@@ -100,83 +103,33 @@ B_ii = s_i² + s_(i+1)², B_(i,i+1) = -s_(i+1)²
 ```
 
 A describes Brownian motion averaged over a continuous exposure (Berglund
-2010); with `exposure_s=0` it is `2 dt I`. B describes independent
-localization errors, which make neighboring displacements negatively
-correlated. D is maximized over `D >= 0`. The result is the constrained
-maximum. Unlike the MSD fit, the MLE is never negative. `D_hat = 0` is a
-boundary result meaning the localization errors alone explain the
-displacements. The status is then `unresolved`, which is not the same as
-immobile: a particle confined to a region smaller than the localization
-error looks the same.
-
-- `lr_motion = 2[l(D_hat) - l(0)]` and `p_motion` use the asymptotic
-  boundary reference ½χ²₀ + ½χ²₁.
-- `D_upper_um2_s` is a one-sided profile-likelihood limit at `upper_level`
-  (default 0.95), using the same boundary-aware threshold.
-
-Both are asymptotic. Their short-track calibration is measured in
-`audit/brownian_mle_validation.json`, not assumed. Localization SDs must be
-strictly positive and are treated as known.
+2010, closed form); with `exposure_s=0` it is `2 dt I`. B describes
+independent localization errors, which make neighboring displacements
+negatively correlated.
 
 Implementation: with B = L Lᵀ and L⁻¹AL⁻ᵀ = Q diag(λ) Qᵀ, the whitened data
 y = QᵀL⁻¹Δ are independent with variances 1 + Dλ_k. This makes the
-likelihood a cheap one-dimensional function of D. It is maximized by a
-log-grid search, golden-section refinement, and an explicit comparison with
-D = 0.
+likelihood a cheap one-dimensional function of D, evaluated exactly on a
+fixed grid in u = ln D (`posterior.U`) rather than maximized: a prior flat
+in u is log-uniform in D (scale-invariant), and the posterior weights are
+`exp(ln L + ln prior)`, normalized. The production default is a flat prior
+over the whole grid -- the least-informative choice, no empirical-Bayes
+fitting across tracks.
 
-## Non-Brownian score: a calibrated second axis
+`posterior.summary` reports the median and an equal-tailed credible
+interval (`D_post_median_um2_s`, `D_post_lo_um2_s`, `D_post_hi_um2_s`).
+Localization SDs must be strictly positive and are treated as known. Unlike
+a point estimate, a short or noise-dominated track does not report a
+falsely confident number: its posterior stays wide, which is the honest
+answer, not a defect. Calibration is a simulation check under the model
+(see `prototypes/README.md`), not a claim about experimental tracks.
 
-Fitted alpha is a poor second axis for short tracks, because its sampling
-spread depends strongly on N and on D dt / s². `z_nonbrownian` instead asks
-one question per track: at the Brownian fit, does moving the fBm exponent
-away from alpha = 1 improve the likelihood more than chance would?
-
-With G(K, alpha) the fBm displacement covariance (exposure-averaged in the
-same way as A) and H = ∂G/∂alpha at alpha = 1, per unit K:
-
-```
-U_alpha = ½ Σ_axis [Δᵀ Σ⁻¹ (D H) Σ⁻¹ Δ - tr(Σ⁻¹ D H)]
-U       = U_alpha - (I_aD / I_DD) U_D                    (efficient score)
-I_eff   = I_aa - I_aD² / I_DD,   I_jk = ½ Σ_axis tr(Σ⁻¹ Σ_j Σ⁻¹ Σ_k)
-z_nonbrownian_asymptotic = U / sqrt(I_eff)
-alpha_1step = 1 + U / I_eff,   alpha_1step_se = 1 / sqrt(I_eff)
-```
-
-Projecting out the D direction removes the ln(dt) part of ∂/∂alpha, so the
-score does not depend on time units. To first order it is also
-uncorrelated with D_hat. The score is dominated by the excess lag-1
-displacement covariance, beyond the -s² that localization error predicts.
-
-**Calibration.** The asymptotic normal reference is unreliable at 4–19
-displacements. For each resolved track, `n_boot` (default 500) replicates
-are drawn from the fitted Brownian model with that track's own length,
-localization SDs, exposure and D_hat. Each replicate is refit and scored.
-`z_nonbrownian = Φ⁻¹(p)` uses the mid-rank p-value among replicates that
-also resolve motion, and `p_nonbrownian` is two-sided. Under the Brownian
-model with correct SDs, z_nonbrownian is therefore approximately N(0,1) for
-every track, whatever its N, localization error or D. The bootstrap RNG is
-seeded from `(MLEOptions.seed, track_id)`, so results do not depend on track
-order.
-
-**Interpretation.** z < 0 means antipersistent, and z > 0 means persistent.
-The statistic measures deviation from *this* observation model, not a
-mechanism:
-
-| z < 0 can come from | z > 0 can come from |
-| --- | --- |
-| subdiffusion, confinement | drift, directed transport |
-| localization SDs underestimated | localization SDs overestimated |
-| linking errors (jump and return) | unmodeled exposure blur |
-
-`alpha_1step` is one Newton step from the Brownian fit toward the fBm MLE.
-It is an effect-size companion that cannot hit the 0 or 2 boundaries, but
-it is as noisy as the information in the track allows. At D_hat = 0 the
-score is identically zero, so it is not reported.
-
-**What this does not do.** It does not beat the information limit. At 5
-frames most individual z values are noise, and no statistic classifies
-single tracks there. The gain is a common, calibrated null for every
-track. Read a 2D histogram of log D_hat against z column by column: each D
-column should look N(0,1) if the tracks are Brownian, so a shifted
-per-column mean (standard error ≈ 1/sqrt(n_column)) is evidence at the
-population level. Count unresolved tracks separately; they have no z.
+This module started as, and is adapted from, `prototypes/posterior_1d.py`
+(a standalone reference implementation with its own extensive calibration
+checks). A previous production estimator here (`fit_brownian_mle`, a
+maximum-likelihood D with a bootstrap-calibrated non-Brownian z-score
+testing deviation from alpha=1) has been retired now that the posterior
+supersedes its point-estimate role; `prototypes/posterior_alpha.py` is an
+active-research replacement for the z-score's role, reporting a full
+(honest, possibly wide) posterior over alpha instead of a calibrated
+hypothesis-test statistic. It is not yet wired into this module.

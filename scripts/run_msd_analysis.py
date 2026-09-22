@@ -2,7 +2,7 @@
 
 Pipeline: load -> `analysis.fit_population` (TAMSD -> ensemble fit ->
 per-track fits) -> save tables/figures. See WORKFLOW.md for this call in
-the wider low-data/bulk/anisotropy workflow picture.
+the wider low-data/bulk workflow picture.
 """
 from __future__ import annotations
 

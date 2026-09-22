@@ -1,9 +1,5 @@
 """Prior hyperparameters for the two numpyro models in `model.py`.
 
-Anisotropy has its own prior, `nested.LogEuclideanAnisotropicPrior` --
-it parameterizes a diffusion *tensor* rather than a scalar D, and is
-consumed by a nested sampler rather than by numpyro.
-
 D/sigma priors are LogNormal, weakly informative -- the defaults below are a
 reasonable starting point for typical particle-tracking D and localization
 precision, meant to be overridden with dataset-appropriate values (e.g. from

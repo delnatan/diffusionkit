@@ -2,7 +2,9 @@
 
 Use `diffusionkit.classic.analyze_track` or `analyze_tracks` for the rebuilt
 core. `classic.fit_population` and the old fitting modules remain legacy
-compatibility paths. The Bayesian workflow is unchanged and awaits revision.
+compatibility paths. `diffusionkit.bayes.fit_track` is a separate, per-track
+diagnostic tool (full NUTS posterior via NumPyro), not part of this
+workflow's bulk table.
 
 ## One track, arrays
 
@@ -52,33 +54,22 @@ tracks. A malformed table schema raises before fitting. An empty input with
 valid column types returns typed empty result tables. There is no minimum
 population size and no ensemble calculation.
 
-## Brownian MLE and the non-Brownian axis
+## The D posterior
 
 ```python
-from diffusionkit.classic import MLEOptions, fit_brownian_mle
+from diffusionkit.classic import posterior as P
 
-fit = fit_brownian_mle(one, Acquisition(dt_s=.033, exposure_s=.03), MLEOptions(n_boot=500))
-fit.status                        # 'ok', 'unresolved' (D_hat = 0), 'failed'
-fit.parameters["D_um2_s"], fit.parameters["z_nonbrownian"]
+s = P.track_posterior(one, Acquisition(dt_s=.033, exposure_s=.03))
+s["median"], s["lo"], s["hi"]   # D_post_median/lo/hi_um2_s, flat prior by default
 ```
 
-Set `exposure_s` to the camera exposure. The MLE models blur; the MSD
-fits then report `excluded`. A 2D histogram for a population:
-
-```python
-import numpy as np
-mle = all_results.fits.filter(pl.col("model") == "brownian_mle")
-resolved = mle.filter(pl.col("z_nonbrownian").is_not_null())
-n_unresolved = mle.filter(pl.col("status") == "unresolved").height   # report separately
-H, D_edges, z_edges = np.histogram2d(np.log10(resolved["D_um2_s"]), resolved["z_nonbrownian"],
-                                     bins=(30, np.linspace(-4, 4, 33)))
-```
-
-Under the Brownian model every D column is ~N(0,1). Compare each column's
-mean z with 0, using a standard error of about 1/sqrt(tracks in column).
-Stratify by `n_frames` when comparing conditions. A shift indicates
-non-Brownian behavior or miscalibrated localization SDs; it does not
-classify individual short tracks.
+Set `exposure_s` to the camera exposure. The posterior models blur; the MSD
+fits then report `excluded`. This is the field also attached to
+`analyze_track`/`analyze_tracks`' output as `result.posterior_D`
+(`model="posterior_D"` rows in the bulk `fits` table) -- a track's own
+uncertainty stays visible as how wide its interval is, rather than being
+collapsed to a point estimate. A short or noise-dominated track producing a
+wide interval is expected, not a failure.
 
 ## Inspect or change the analysis
 

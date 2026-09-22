@@ -6,26 +6,20 @@ them behave like a flat-prior MLE and an informative prior (e.g. per-track,
 from `sigma_prior_from_localization`) makes them a proper Bayesian fit.
 Exactly one code path either way.
 
-Three single-call engines, each fitting one batch:
+Two single-call engines, each fitting one batch:
 
-  `fit_map`          exact MAP + Laplace, via L-BFGS-B on numpyro's own
-                     unconstrained `potential_fn` with exact JAX
-                     gradient/Hessian. Single-track or batched model alike.
-  `sample_posterior` full NUTS.
-  `fit_batch_svi`    mean-field (`AutoNormal`) SVI.
+  `sample_posterior` full NUTS -- the per-track diagnostic tool, when the
+                     posterior's shape (not just its center) matters.
+  `fit_batch_svi`    mean-field (`AutoNormal`) SVI -- validation/comparison
+                     only (see `fit_table_svi`).
 
-and three per-track table builders wrapping them -- `fit_table_map`
-(production), `fit_table_svi` (validation/comparison), `fit_table_nuts`
-(when posterior shape matters). All three share `_per_track_table`, which
-groups tracks by shared track_length and loops: fitting tracks one
-Python-level call at a time pays a fresh JAX trace per call regardless of
-shape reuse, so batching a whole length-group into one plated call is what
-makes a full dataset tractable (see model.py, and FINDINGS.md for measured
-numbers).
-
-FINDINGS.md documents why `fit_table_map` is the production choice over
-`fit_table_svi` (more accurate, far better calibrated) and why D is reported
-from its log-space Laplace fit with an asymmetric interval.
+and two per-track table builders wrapping them -- `fit_table_svi`
+(validation/comparison) and `fit_table_nuts` (when posterior shape matters).
+Both share `_per_track_table`, which groups tracks by shared track_length
+and loops: fitting tracks one Python-level call at a time pays a fresh JAX
+trace per call regardless of shape reuse, so batching a whole length-group
+into one plated call is what makes a full dataset tractable (see model.py,
+and FINDINGS.md for measured numbers).
 """
 from __future__ import annotations
 
@@ -37,119 +31,10 @@ import jax.numpy as jnp
 import numpy as np
 import numpyro
 import polars as pl
-from jax.flatten_util import ravel_pytree
 from numpyro.diagnostics import hpdi
 from numpyro.infer import MCMC, NUTS, SVI, Trace_ELBO
 from numpyro.infer.autoguide import AutoNormal
-from numpyro.infer.util import initialize_model
-from scipy.optimize import minimize
 from tqdm import tqdm
-
-
-@dataclass(frozen=True)
-class MAPFit:
-    """MAP estimate + Laplace uncertainty, in both parameter spaces.
-
-    The Laplace approximation is a Gaussian in numpyro's *unconstrained*
-    space by construction -- that is what the Hessian is taken with respect
-    to. `params`/`stderr`/`cov` are that Gaussian pushed forward to physical
-    units by the delta method, which is only accurate where the transform is
-    locally ~linear over the posterior's width; for a scale parameter like D
-    with a wide short-track posterior, reading `unconstrained_*` (i.e.
-    log(D)) directly avoids that error rather than correcting for it. See
-    `_map_chunk`.
-    """
-
-    params: dict[str, float | np.ndarray]  # physical (constrained) units
-    stderr: dict[str, float | np.ndarray]  # marginal Laplace stderr, physical units
-    cov: dict[str, dict[str, float]] | None  # full Laplace covariance, physical units.
-    # Single-track fits only -- None for batched (array-valued) fits, where one covariance
-    # matrix would mix different tracks' parameters.
-    unconstrained_params: dict[str, float | np.ndarray]  # theta-space MAP, e.g. log(D)
-    unconstrained_stderr: dict[str, float | np.ndarray]  # marginal theta-space stderr; unlike
-    # `cov`, this works for batched fits too, since a per-site marginal needs no shared
-    # name ordering across tracks.
-    converged: bool
-
-
-def _to_python(x) -> float | np.ndarray:
-    arr = np.asarray(x)
-    return float(arr) if arr.ndim == 0 else arr
-
-
-def fit_map(model_fn: Callable, model_args: tuple, seed: int = 0) -> MAPFit:
-    """Exact MAP + Laplace (delta-method) stderr, via numpyro's own
-    unconstrained `potential_fn` + exact JAX gradient/Hessian -- no
-    hand-written parameter transforms and no finite-difference derivatives.
-    The delta-method covariance from
-    unconstrained to physical units is likewise exact autodiff (`jax.jacfwd`
-    of numpyro's `postprocess_fn`), correct for whatever prior/support each
-    parameter has without a hand-derived formula per parameter.
-
-    Works on both a single-track model and a `batched_*` model (`model_fn`
-    is generic; `ravel_pytree` flattens whatever pytree of sites
-    `initialize_model` produces, scalar or plated (n_tracks,) arrays alike)
-    -- see `fit_table_map` for the batched entry point.
-    """
-    model_info = initialize_model(
-        jax.random.PRNGKey(seed), model_fn, model_args=model_args, dynamic_args=False
-    )
-    potential_fn = model_info.potential_fn
-    flat_init, unravel = ravel_pytree(model_info.param_info.z)
-
-    def neg_log_post(flat_params):
-        return potential_fn(unravel(flat_params))
-
-    val_grad = jax.jit(jax.value_and_grad(neg_log_post))
-
-    def scipy_obj(flat_params):
-        v, g = val_grad(jnp.asarray(flat_params))
-        return float(v), np.asarray(g, dtype=np.float64)
-
-    res = minimize(scipy_obj, np.asarray(flat_init), jac=True, method="L-BFGS-B")
-    flat_map = jnp.asarray(res.x)
-    z_map = unravel(flat_map)
-    constrained_map = model_info.postprocess_fn(z_map)
-    flat_map_c, unravel_c = ravel_pytree(constrained_map)
-
-    def constrained_flat(flat_params):
-        c = model_info.postprocess_fn(unravel(flat_params))
-        flat_c, _ = ravel_pytree(c)
-        return flat_c
-
-    stderr = {k: _to_python(np.full(np.shape(v), np.nan)) for k, v in constrained_map.items()}
-    unconstrained_stderr = {k: _to_python(np.full(np.shape(v), np.nan)) for k, v in z_map.items()}
-    cov: dict[str, dict[str, float]] | None = None
-    try:
-        hessian = jax.hessian(neg_log_post)(flat_map)
-        cov_unconstrained = jnp.linalg.inv(hessian)
-        jac = jax.jacfwd(constrained_flat)(flat_map)
-        cov_constrained = jac @ cov_unconstrained @ jac.T
-        stderr_flat = jnp.sqrt(jnp.clip(jnp.diag(cov_constrained), 0.0, None))
-        if jnp.all(jnp.isfinite(stderr_flat)):
-            stderr = {k: _to_python(v) for k, v in unravel_c(stderr_flat).items()}
-        u_stderr_flat = jnp.sqrt(jnp.clip(jnp.diag(cov_unconstrained), 0.0, None))
-        if jnp.all(jnp.isfinite(u_stderr_flat)):
-            unconstrained_stderr = {k: _to_python(v) for k, v in unravel(u_stderr_flat).items()}
-        # Only a single, unambiguous parameter-name ordering exists when every
-        # site is scalar (single-track fit); ravel_pytree flattens dicts by
-        # sorted key, so that order is what cov_constrained's/cov_unconstrained's
-        # rows/cols mean.
-        if all(np.ndim(v) == 0 for v in constrained_map.values()) and np.all(np.isfinite(cov_constrained)):
-            names = sorted(constrained_map.keys())
-            cov_np = np.asarray(cov_constrained)
-            cov = {a: {b: float(cov_np[i, j]) for j, b in enumerate(names)} for i, a in enumerate(names)}
-    except Exception:
-        pass  # Hessian not usable at this optimum -- leave stderr as NaN, params/MAP still valid
-
-    return MAPFit(
-        params={k: _to_python(v) for k, v in constrained_map.items()},
-        stderr=stderr,
-        cov=cov,
-        unconstrained_params={k: _to_python(v) for k, v in z_map.items()},
-        unconstrained_stderr=unconstrained_stderr,
-        converged=bool(res.success),
-    )
 
 
 def sample_posterior(
@@ -263,8 +148,8 @@ def _batches(tracks: pl.DataFrame, max_batch_size: int | None) -> list[_Batch]:
     at all (one covariance shape per call), and tracking datasets commonly
     have many tracks sharing a length exactly -- everything that survived to
     a fixed acquisition cutoff. `max_batch_size` additionally caps how many
-    tracks go into one call, for engines whose cost is superlinear in batch
-    size (see `fit_table_map`); `None` means "the whole length-group".
+    tracks go into one call, for an engine whose cost is superlinear in batch
+    size; `None` means "the whole length-group".
     """
     out = []
     for track_length in tracks["track_length"].unique().sort().to_list():
@@ -297,9 +182,9 @@ def _per_track_table(
     """Run `fit_batch` over every eligible batch and stack the results.
 
     The one loop shared by every per-track table in this package
-    (`fit_table_map`/`_svi`/`_nuts` and `nested.per_track_nested`):
-    they differ only in which engine `fit_batch` calls and which columns it
-    returns, never in how tracks are selected, grouped, or concatenated.
+    (`fit_table_svi`/`fit_table_nuts`): they differ only in which engine
+    `fit_batch` calls and which columns it returns, never in how tracks are
+    selected, grouped, or concatenated.
 
     `progress`, if given, is called as `progress(done, total)` in tracks --
     once before the first batch and after every batch -- for a caller that
@@ -327,84 +212,6 @@ def _per_track_table(
     return pl.concat(chunks).sort("track_id")
 
 
-def _map_chunk(fit: MAPFit, batch: _Batch, param_names: list[str]) -> pl.DataFrame:
-    """One `fit_map` result -> a table chunk.
-
-    Any `name` that is itself a sample site with positive-real (LogNormal)
-    support -- true of D, K, sigma, identifiable because
-    `fit.unconstrained_params` has a matching key -- is reported from its
-    log-space Laplace fit as an asymmetric back-transformed interval
-    (`{name}_median`/`_lo`/`_hi` physical, `log10_{name}`/`_stderr`), per
-    FINDINGS.md ("D should be reported in log-space"): pushing a wide
-    log-space Gaussian through `exp()` and quoting mean +/- stderr in linear
-    units understates the skew and can produce an interval touching zero for
-    a strictly positive quantity.
-
-    Everything else (e.g. `alpha`, a deterministic site derived from a
-    Beta-distributed one, with no log-shaped unconstrained form) keeps the
-    physical-space MAP +/- symmetric Laplace stderr, adequate for alpha per
-    FINDINGS.md.
-    """
-    row = {**batch.index(), "converged": [fit.converged] * batch.n_tracks}
-    log10 = np.log(10.0)
-    for name in param_names:
-        if name in fit.unconstrained_params:
-            log_mean = np.atleast_1d(np.asarray(fit.unconstrained_params[name]))
-            log_stderr = np.atleast_1d(np.asarray(fit.unconstrained_stderr[name]))
-            row[f"{name}_median"] = np.exp(log_mean).tolist()
-            row[f"{name}_lo"] = np.exp(log_mean - log_stderr).tolist()
-            row[f"{name}_hi"] = np.exp(log_mean + log_stderr).tolist()
-            row[f"log10_{name}"] = (log_mean / log10).tolist()
-            row[f"log10_{name}_stderr"] = (log_stderr / log10).tolist()
-        else:
-            row[name] = np.atleast_1d(np.asarray(fit.params[name])).tolist()
-            row[f"{name}_stderr"] = np.atleast_1d(np.asarray(fit.stderr[name])).tolist()
-    return pl.DataFrame(row)
-
-
-def fit_table_map(
-    tracks: pl.DataFrame,
-    model_fn: Callable,
-    dt_s: float,
-    prior_fn: Callable[[np.ndarray, np.ndarray], object],
-    param_names: list[str],
-    min_track_length: int = 10,
-    max_batch_size: int = 20,
-    seed: int = 0,
-    show_progress: bool = True,
-    progress: Callable[[int, int], None] | None = None,
-) -> pl.DataFrame:
-    """Batched exact MAP (L-BFGS-B) for every eligible track -- production.
-
-    FINDINGS.md ("Inference-engine choice for production") documents this as
-    more accurate and better-calibrated than `fit_table_svi`.
-
-    `max_batch_size` exists because `fit_map`'s Hessian is dense over *all*
-    free parameters in a call at once, so its cost is superlinear in track
-    count and it OOM-crashes on a large group (measured: fine to a few dozen
-    tracks, crashed at 140). Sub-batching trades a little amortization for a
-    memory ceiling independent of how many tracks share a length.
-
-    `converged` therefore reflects a whole sub-batch's joint optimization
-    (one `scipy.optimize.minimize` call per sub-batch, not per track) -- keep
-    `max_batch_size` modest if per-track granularity matters.
-    """
-
-    def fit_batch(batch: _Batch) -> pl.DataFrame:
-        prior = prior_fn(batch.sigma_x_um, batch.sigma_y_um)
-        fit = fit_map(
-            model_fn,
-            (jnp.asarray(batch.dx), jnp.asarray(batch.dy), dt_s, batch.n_disp, prior, batch.n_tracks),
-            seed=seed,
-        )
-        return _map_chunk(fit, batch, param_names)
-
-    return _per_track_table(
-        tracks, fit_batch, "fit_table_map", min_track_length,
-        max_batch_size=max_batch_size, show_progress=show_progress, progress=progress,
-    )
-
-
 def fit_table_svi(
     tracks: pl.DataFrame,
     model_fn: Callable,
@@ -418,11 +225,11 @@ def fit_table_svi(
 ) -> pl.DataFrame:
     """Batched mean-field SVI for every eligible track: `{name}`/`{name}_stderr`.
 
-    Faster in aggregate than `fit_table_map` but materially worse calibrated
-    (FINDINGS.md: reported uncertainty 3-10x too narrow, because the
-    mean-field guide discards real posterior correlation between K,
-    alpha and sigma). Kept as the validation/comparison engine the recovery
-    scripts run against, not as a production path.
+    Materially worse calibrated than full NUTS (FINDINGS.md: reported
+    uncertainty 3-10x too narrow, because the mean-field guide discards real
+    posterior correlation between K, alpha and sigma). Kept as the
+    validation/comparison engine the recovery scripts run against, not as a
+    production path.
 
     `prior_fn(sigma_x_um, sigma_y_um)` receives the batch's whole
     localization-precision arrays and may return per-track (n_tracks,) prior
@@ -470,10 +277,10 @@ def fit_table_nuts(
     """Full-NUTS per-track table: median + `hpdi_prob` HPDI per parameter.
 
     For when the posterior's *shape*, not just its median, is what's needed
-    -- a Gaussian (Laplace/mean-field) approximation is unreliable exactly
-    where this matters, e.g. the anisotropic model's eps=0 boundary ridge
-    (FINDINGS.md). Generic over any site name including `numpyro.deterministic`
-    ones (`D_par`, `D_perp`), which appear in `mcmc.get_samples()` identically.
+    -- a mean-field (SVI) approximation is unreliable exactly where this
+    matters, e.g. a short track's weakly-identified alpha. Generic over any
+    site name including `numpyro.deterministic` ones, which appear in
+    `mcmc.get_samples()` identically to sampled sites.
     """
 
     def fit_batch(batch: _Batch) -> pl.DataFrame:

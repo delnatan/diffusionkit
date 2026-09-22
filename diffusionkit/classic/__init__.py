@@ -1,17 +1,18 @@
-"""Prior-free per-track estimates: MSD fits and Brownian displacement MLE, with explicit status."""
+"""Prior-free per-track MSD estimates plus the grid posterior over D, with explicit status."""
 from ..data import Acquisition, Track
 from ..io import AcquisitionParams, assert_contiguous_tracks, load_tracks, track_from_table
+from . import posterior
 from .analysis import compute_msd
-from .data import BrownianMLE, ClassicAnalysis, MLEOptions, MSDCurve, MSDFit, MSDOptions, TrackAnalysis
+from .data import ClassicAnalysis, MSDCurve, MSDFit, MSDOptions, PosteriorD, TrackAnalysis
 from .estimators import fit_anomalous_msd, fit_brownian_msd
-from .likelihood import brownian_log_likelihood, fit_brownian_mle, nonbrownian_score
+from .likelihood import brownian_log_likelihood
 from .workflow import analyze_track, analyze_tracks
 
 __all__ = [
     "Acquisition", "Track", "MSDOptions", "MSDCurve", "MSDFit", "TrackAnalysis",
     "ClassicAnalysis", "track_from_table", "compute_msd", "fit_brownian_msd",
-    "fit_anomalous_msd", "analyze_track", "analyze_tracks", "MLEOptions", "BrownianMLE",
-    "fit_brownian_mle", "brownian_log_likelihood", "nonbrownian_score",
+    "fit_anomalous_msd", "analyze_track", "analyze_tracks", "PosteriorD",
+    "brownian_log_likelihood", "posterior",
 ]
 
 

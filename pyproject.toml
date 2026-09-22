@@ -17,8 +17,6 @@ dependencies = [
 [project.optional-dependencies]
 bayes = ["jax", "numpyro", "tqdm"]
 plots = ["matplotlib", "seaborn", "pandas"]
-# Historical anisotropy workflow; not part of the rebuilt classical core.
-nested = ["jaxns>2.5", "jax", "numpyro", "tqdm", "matplotlib", "seaborn", "pandas"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["diffusionkit"]

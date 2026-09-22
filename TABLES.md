@@ -3,7 +3,7 @@
 This reference covers the new `analyze_track`/`analyze_tracks` API only.
 Old schemas are preserved in [docs/archive/TABLES.md](docs/archive/TABLES.md).
 
-`ClassicAnalysis` contains `fits`, `msd`, `acquisition`, `options`, and `mle_options`.
+`ClassicAnalysis` contains `fits`, `msd`, `acquisition`, and `options`.
 The settings must accompany saved tables to reproduce the analysis.
 
 ## fits — one row per track and model
@@ -11,29 +11,24 @@ The settings must accompany saved tables to reproduce the analysis.
 | Column | Meaning |
 | --- | --- |
 | `track_id`, `n_frames` | Track identity and actual observation count |
-| `model` | `brownian`, `power_law`, or `brownian_mle` |
-| `method` | `msd_ols`, `msd_nls`, or `displacement_mle` |
+| `model` | `brownian`, `power_law`, or `posterior_D` |
+| `method` | `msd_ols`, `msd_nls`, or `grid_posterior` |
 | `status`, `message` | Numerical/input status and an explanation |
-| `D_um2_s` | Brownian D (MSD fit or MLE); null on power-law rows |
-| `K_um2_s_alpha`, `alpha` | Generalized coefficient and exponent; null on Brownian rows |
-| `n_lags` | Number of lag points actually included |
+| `D_um2_s` | Brownian D (MSD fit); null on power-law and posterior_D rows |
+| `K_um2_s_alpha`, `alpha` | Generalized coefficient and exponent; null on Brownian and posterior_D rows |
+| `n_lags` | Number of lag points actually included; null on posterior_D rows |
 | `residual_sum_squares_um4` | Unweighted SSE in linear, corrected MSD space; not a goodness-of-model probability |
 | `optimizer_status` | SciPy least_squares termination code, or null if not applicable |
 | `nfev` | Total nonlinear residual evaluations over three starting points; excludes analytic endpoint checks |
 | `localization` | `provided` or explicitly `ignore` |
-| `uncertainty_method` | `not_estimated` for MSD rows; `profile_likelihood_asymptotic` for `brownian_mle` |
+| `uncertainty_method` | `not_estimated` for MSD rows; `credible_interval` for `posterior_D` |
 
-Columns only filled on `brownian_mle` rows (see [docs/classical.md](docs/classical.md)):
+Columns only filled on `posterior_D` rows (see [docs/classical.md](docs/classical.md)):
 
 | Column | Meaning |
 | --- | --- |
-| `D_upper_um2_s` | One-sided profile-likelihood upper limit on D (`MLEOptions.upper_level`), asymptotic |
-| `log_likelihood` | Maximized Gaussian log-likelihood of both axes' displacements |
-| `lr_motion`, `p_motion` | 2[l(D_hat) - l(0)] and its asymptotic ½χ²₀ + ½χ²₁ p-value |
-| `z_nonbrownian`, `p_nonbrownian` | Bootstrap-calibrated signed deviation from the Brownian + noise model; ~N(0,1) under it |
-| `z_nonbrownian_asymptotic` | The same score with the uncalibrated normal reference |
-| `alpha_1step`, `alpha_1step_se` | One-step linearized alpha, 1 + U/I_eff, and 1/sqrt(I_eff) |
-| `n_boot`, `n_boot_valid` | Replicates drawn and replicates that also resolved motion |
+| `D_post_median_um2_s` | Posterior median of D under a flat prior in ln D |
+| `D_post_lo_um2_s`, `D_post_hi_um2_s` | Equal-tailed 90% credible interval |
 
 Uncomputable parameters are null. Failed fits can retain numerical estimates
 for inspection; check `status` before interpretation. No row is removed for
@@ -44,13 +39,11 @@ a negative D, a boundary alpha, or a short track.
 | `ok` | Finite numerical estimate passed the implemented checks; precision and model adequacy are not established |
 | `nonphysical` | Negative Brownian D, retained without clipping |
 | `boundary` | Zero Brownian D or alpha at/near 0 or 2 |
-| `unresolved` | `brownian_mle`: D_hat = 0, localization noise explains the motion; no z |
 | `unidentified` | Power-law amplitude is zero/negligible or its numerical Jacobian cannot identify alpha |
 | `optimizer_failed` | Optimization did not converge or a coefficient was nonfinite |
 | `insufficient_data` | Too few lags for the requested fit |
-| `excluded` | Fewer frames than `min_frames`; MSD rows when `exposure_s > 0`; MLE rows with `localization="ignore"` |
-| `invalid_input` | A batch track failed validation, or (MLE row only) a localization SD is zero |
-| `failed` | `brownian_mle`: likelihood maximum not bracketed |
+| `excluded` | Fewer frames than `min_frames`; MSD rows when `exposure_s > 0`; posterior_D rows with `localization="ignore"` |
+| `invalid_input` | A batch track failed validation, or (posterior_D row only) a localization SD is zero |
 
 `unidentified` is a numerical check, not a complete statistical identifiability
 test. Even `ok` alpha fits on short tracks can have large uncertainty and bias.

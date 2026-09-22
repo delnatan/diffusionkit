@@ -1,8 +1,8 @@
-"""Minimal low-data-regime example: one track in, one Bayesian fit out.
+"""Minimal example: one track in, one full-NUTS Bayesian fit out.
 
-The concrete demonstration that the low-data path (`bayes.fit_track`) is
-actually a one-liner -- see WORKFLOW.md for the fuller picture (this
-workflow vs. the bulk `fit_population` workflow vs. `bayes.anisotropy`).
+The concrete demonstration that the per-track diagnostic path
+(`bayes.fit_track`) is actually a one-liner -- see WORKFLOW.md for the
+fuller picture (this workflow vs. the classical MSD/D-posterior pipeline).
 """
 from __future__ import annotations
 
@@ -33,8 +33,8 @@ def main() -> None:
     track = tracks.filter(pl.col("track_id") == track_id)
 
     # prior=None -> informative default built from this track's own
-    # measured localization precision (the honest low-data default);
-    # method="map" (default) is fast MAP + Laplace interval.
+    # measured localization precision (the honest low-data default).
+    # Full NUTS posterior: median + hpdi_prob HPDI per parameter.
     fit = fit_track(track, PARAMS.dt_s, model="anomalous")
 
     print(f"track {fit.track_id} (track_length={fit.track_length}, n_disp={fit.n_disp})")
@@ -44,13 +44,6 @@ def main() -> None:
           f"({fit.lo['alpha']:.3f}, {fit.hi['alpha']:.3f})")
     print(f"  sigma   = {fit.params['sigma']:.4g} "
           f"({fit.lo['sigma']:.4g}, {fit.hi['sigma']:.4g}) um")
-
-    # Want the full posterior shape, not just a Laplace interval? Same call,
-    # method="nuts" -- useful when the track is short/noisy enough that a
-    # Gaussian approximation is suspect (FINDINGS.md).
-    nuts_fit = fit_track(track, PARAMS.dt_s, model="anomalous", method="nuts")
-    print(f"\n  (NUTS check) K median = {nuts_fit.params['K']:.4g}, "
-          f"alpha median = {nuts_fit.params['alpha']:.3f}")
 
 
 if __name__ == "__main__":

@@ -19,9 +19,6 @@ Two motion models:
                                    shares `likelihood.displacement_covariance`.
   `anomalous_diffusion_model`  -- 3 params (K, sigma, alpha), shares
                                    `likelihood.displacement_covariance`.
-Anisotropy is not a numpyro model here at all: it is a model *comparison*,
-run by nested sampling over a log-Euclidean tensor in `nested.py`, which
-carries its own likelihood and prior.
 
 `fgn_gamma`'s alpha=1 reduction is exact (see likelihood.py), so the normal
 model isn't a separately-derived likelihood, just the alpha=1 restriction of
@@ -45,13 +42,15 @@ runtime well beyond the sub-second cost the underlying linear algebra alone
 would suggest -- one plated call per length-group amortizes that trace cost
 across every track in the group (see FINDINGS.md for a measured example).
 
-`inference.py` runs these two ways: fast batched MAP-like fit
-(`fit_table_map`, batched exact MAP on the `batched_*` models) for the full
-per-track table, and full NUTS posteriors (`sample_posterior`, single-track
-models) for a handful of illustrative tracks. MLE, in the pre-numpyro
-version of this package a separate implementation with its own optimizer, is
-now just either of these called with `priors.WEAK_*_PRIOR` -- same model,
-same code, an (almost) flat prior.
+`inference.py` runs these as full NUTS posteriors (`sample_posterior`,
+single-track models) -- the per-track diagnostic tool for when a posterior's
+shape matters, not just its median. `fit_batch_svi`/`fit_table_svi` (a
+batched mean-field approximation) exist too, but only as the
+validation/comparison engine the recovery scripts run against; neither is a
+bulk production path. MLE, in the pre-numpyro version of this package a
+separate implementation with its own optimizer, is now just either engine
+called with `priors.WEAK_*_PRIOR` -- same model, same code, an (almost) flat
+prior.
 """
 from __future__ import annotations
 
