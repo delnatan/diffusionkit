@@ -18,15 +18,18 @@ from __future__ import annotations
 
 import numpy as np
 import polars as pl
+from scipy.special import logsumexp
 
 from ..data import Acquisition
+from .data import GridPostOptions
 from .likelihood import _loglik, _prepared, _whiten
 
-# ln D grid, D in um^2/s: 1e-4 to 10 in ~2.3% steps.
-U = np.linspace(np.log(1e-4), np.log(10.0), 501)
+# The grid is `GridPostOptions.u_D()`: every function below takes it
+# explicitly, so no run can silently use a range other than the one its
+# options record.
 
 
-def track_loglik(track: pl.DataFrame, acquisition: Acquisition, u: np.ndarray = U) -> np.ndarray:
+def track_loglik(track: pl.DataFrame, acquisition: Acquisition, u: np.ndarray) -> np.ndarray:
     """(len(u),) log-likelihood of one track's displacements at D = exp(u)."""
     w = _whiten(_prepared(track, acquisition), acquisition)
     return _loglik(np.exp(u), w["lam"], w["y"][None], w["const"])
@@ -37,17 +40,17 @@ def track_loglik(track: pl.DataFrame, acquisition: Acquisition, u: np.ndarray = 
 # --------------------------------------------------------------------------
 
 
-def flat(u: np.ndarray = U) -> np.ndarray:
+def flat(u: np.ndarray) -> np.ndarray:
     """Flat in ln D over the whole grid -- the least-informative default."""
     return np.zeros_like(u)
 
 
-def log_uniform(D_lo: float, D_hi: float, u: np.ndarray = U) -> np.ndarray:
+def log_uniform(D_lo: float, D_hi: float, u: np.ndarray) -> np.ndarray:
     """Flat in ln D between the limits, impossible outside them."""
     return np.where((u >= np.log(D_lo)) & (u <= np.log(D_hi)), 0.0, -np.inf)
 
 
-def log_normal(D_lo: float, D_hi: float, u: np.ndarray = U) -> np.ndarray:
+def log_normal(D_lo: float, D_hi: float, u: np.ndarray) -> np.ndarray:
     """Log-normal whose central 95% spans [D_lo, D_hi]: the same limits with soft edges."""
     mu, sd = .5 * (np.log(D_lo) + np.log(D_hi)), (np.log(D_hi) - np.log(D_lo)) / (2 * 1.96)
     return -.5 * ((u - mu) / sd) ** 2
@@ -83,12 +86,36 @@ def posterior(ll: np.ndarray, log_prior: np.ndarray) -> np.ndarray:
     return _normalize(ll + log_prior)
 
 
-def quantile(p: np.ndarray, q: float, u: np.ndarray = U) -> float:
+def log_posterior(ll: np.ndarray, log_prior: np.ndarray) -> np.ndarray:
+    """`posterior`'s weights as logs, computed without the round trip through exp
+    (so far-tail cells stay finite instead of underflowing to -inf)."""
+    lw = ll + log_prior
+    return lw - logsumexp(lw)
+
+
+def edge_ratios(p: np.ndarray) -> tuple[float, float]:
+    """Posterior weight at the grid's first and last point, each relative to its peak.
+
+    Near 0: the posterior has died out inside the grid. Not small: it is cut
+    by the grid edge, i.e. limited there by the prior's support rather than
+    by the data, so its median and interval depend on where that edge is.
+    (Localization-limited, near-immobile tracks reach the low edge this way:
+    the data only bound D from above.)
+    """
+    peak = p.max()
+    return float(p[0] / peak), float(p[-1] / peak)
+
+
+# `edge_ratios` above this flags a track's D posterior as cut by the grid.
+EDGE_RATIO_WARN = .05
+
+
+def quantile(p: np.ndarray, q: float, u: np.ndarray) -> float:
     """Posterior q-quantile of D, interpolating the CDF at cell midpoints."""
     return float(np.exp(_grid_quantile(p, u, q)))
 
 
-def summary(p: np.ndarray, u: np.ndarray = U, level: float = .9) -> dict[str, float]:
+def summary(p: np.ndarray, u: np.ndarray, level: float = .9) -> dict[str, float]:
     """Median and equal-tailed credible interval of D, in um^2/s."""
     return {
         "median": quantile(p, .5, u),
@@ -98,12 +125,14 @@ def summary(p: np.ndarray, u: np.ndarray = U, level: float = .9) -> dict[str, fl
 
 
 def track_posterior(track: pl.DataFrame, acquisition: Acquisition, log_prior: np.ndarray | None = None,
-                    u: np.ndarray = U, level: float = .9) -> dict[str, float]:
-    """Posterior median and `level` credible interval of D for one track.
+                    options: GridPostOptions = GridPostOptions()) -> dict[str, float]:
+    """Posterior median and `options.level` credible interval of D for one track.
 
-    `log_prior` defaults to `flat()` -- the least-informative choice, no
-    empirical-Bayes fitting across tracks. Pass `log_uniform`/`log_normal`
-    (physical-limit bounds) for an informative prior instead.
+    Evaluated on `options.u_D()`. `log_prior` (on that grid) defaults to
+    `flat` -- the least-informative choice, no empirical-Bayes fitting across
+    tracks. Pass `log_uniform`/`log_normal` (physical-limit bounds) for an
+    informative prior instead.
     """
+    u = options.u_D()
     prior = flat(u) if log_prior is None else log_prior
-    return summary(posterior(track_loglik(track, acquisition, u), prior), u, level)
+    return summary(posterior(track_loglik(track, acquisition, u), prior), u, options.level)

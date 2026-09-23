@@ -73,7 +73,7 @@ Columns only filled on `posterior_D` rows (see [docs/gridpost.md](docs/gridpost.
 
 | Column | Meaning |
 | --- | --- |
-| `D_post_median_um2_s` | Posterior 0.5 quantile (median) of D under a flat prior in ln D |
+| `D_post_median_um2_s` | Posterior 0.5 quantile (median) of D under a flat prior in ln D over `[GridPostOptions.D_min_um2_s, D_max_um2_s]` |
 | `D_post_lo_um2_s`, `D_post_hi_um2_s` | Posterior quantiles at `(1-level)/2` and `(1+level)/2` (`GridPostOptions.level`, default 0.9: an equal-tailed 90% interval) |
 
 Columns only filled on `posterior_alpha` rows -- D and alpha are independent
@@ -91,10 +91,12 @@ not +/-1 SD (+/-1 SD covers ~68.3% of a normal, not 90%) -- and these
 posteriors are frequently asymmetric or wide enough on short tracks that a
 Gaussian sigma wouldn't describe them well anyway.
 
-Uncomputable parameters are null. `status` values:
+Uncomputable parameters are null. An `ok` `posterior_D` row whose posterior
+is cut by a grid edge (edge weight above 5% of the peak) says so in
+`message`: its summary then depends on where that edge is. `status` values:
 
 | Status | Meaning |
 | --- | --- |
 | `ok` | Finite numerical estimate passed the implemented checks |
-| `excluded` | Fewer frames than `GridPostOptions.min_frames`; `posterior_alpha` rows also when `exposure_s > 0` (no blur model) |
+| `excluded` | Fewer frames than `GridPostOptions.min_frames`; `posterior_alpha` rows also when `exposure_s > 0` (no blur model) or `GridPostOptions.compute_alpha=False` |
 | `invalid_input` | A batch track failed validation, or a localization SD is zero |

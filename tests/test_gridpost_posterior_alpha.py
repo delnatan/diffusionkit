@@ -6,11 +6,14 @@ import polars as pl
 from scipy.stats import multivariate_normal
 
 from diffusionkit import Acquisition
+from diffusionkit.gridpost import GridPostOptions
 from diffusionkit.gridpost import posterior as PD
 from diffusionkit.gridpost import posterior_alpha as PA
 from diffusionkit.gridpost.likelihood import fgn_motion_covariance, localization_covariance
 
 DT = .033
+OPTIONS = GridPostOptions()
+ALPHA, U_K, U_D = OPTIONS.alphas(), OPTIONS.u_K(), OPTIONS.u_D()
 
 
 def track_table(track_id, frames, positions, sd):
@@ -48,8 +51,8 @@ class PosteriorAlphaTests(unittest.TestCase):
         for alpha in (0.4, 1.0, 1.6):
             pos = simulate(.05, alpha, sd[:, 0], DT, rng, n_frames=n)
             t = track_table(1, np.arange(n), pos, sd)
-            ll = PA.track_loglik_given_alpha(t, Acquisition(DT), alpha)
-            direct = np.array([dense_loglik(t, alpha, K) for K in np.exp(PA.U)])
+            ll = PA.track_loglik_given_alpha(t, Acquisition(DT), alpha, U_K)
+            direct = np.array([dense_loglik(t, alpha, K) for K in np.exp(U_K)])
             np.testing.assert_allclose(ll, direct, atol=1e-8)
 
     def test_alpha_one_reduces_to_the_D_posterior(self):
@@ -60,22 +63,22 @@ class PosteriorAlphaTests(unittest.TestCase):
         pos = simulate(.05, 1.0, sd[:, 0], DT, rng, n_frames=n)
         t = track_table(1, np.arange(n), pos, sd)
         np.testing.assert_allclose(
-            PA.track_loglik_given_alpha(t, Acquisition(DT), 1.0, u=PD.U),
-            PD.track_loglik(t, Acquisition(DT)), atol=1e-10)
+            PA.track_loglik_given_alpha(t, Acquisition(DT), 1.0, U_D),
+            PD.track_loglik(t, Acquisition(DT), U_D), atol=1e-10)
 
     def test_credible_intervals_are_calibrated(self):
         """Truth drawn from flat priors, data simulated independently: 90% intervals cover 90%."""
         K_true = .05
-        K_prior = PA.flat_K(PA.U)
+        K_prior = PA.flat_K(U_K)
         rng = np.random.default_rng(3)
         for n_frames in (8, 15):
             hits, n_tracks = 0, 250
             for _ in range(n_tracks):
-                alpha_true = rng.uniform(PA.ALPHA[0], PA.ALPHA[-1])
+                alpha_true = rng.uniform(ALPHA[0], ALPHA[-1])
                 sd = rng.uniform(.025, .045, (n_frames, 2))
                 pos = simulate(K_true, alpha_true, sd[:, 0], DT, rng, n_frames=n_frames)
                 t = track_table(1, np.arange(n_frames), pos, sd)
-                s = PA.track_alpha_posterior(t, Acquisition(DT), K_prior, level=.9)
+                s = PA.track_alpha_posterior(t, Acquisition(DT), K_prior, GridPostOptions(level=.9))
                 hits += s["lo"] <= alpha_true <= s["hi"]
             self.assertLess(abs(hits/n_tracks - .9), .08)
 
@@ -86,11 +89,11 @@ class PosteriorAlphaTests(unittest.TestCase):
         sd = rng.uniform(.03, .045, (n, 2))
         pos = simulate(.05, 1.0, sd[:, 0], DT, rng, n_frames=n)
         t = track_table(1, np.arange(n), pos, sd)
-        s = PA.track_alpha_posterior(t, Acquisition(DT), PA.flat_K(PA.U))
-        self.assertGreater(s["hi"] - s["lo"], 0.6 * (PA.ALPHA[-1] - PA.ALPHA[0]))
+        s = PA.track_alpha_posterior(t, Acquisition(DT), PA.flat_K(U_K))
+        self.assertGreater(s["hi"] - s["lo"], 0.6 * (ALPHA[-1] - ALPHA[0]))
 
     def test_flat_alpha_prior_is_uniform_over_grid(self):
-        np.testing.assert_array_equal(PA.flat_alpha(), np.zeros_like(PA.ALPHA))
+        np.testing.assert_array_equal(PA.flat_alpha(ALPHA), np.zeros_like(ALPHA))
 
     def test_exposure_blur_is_not_modeled(self):
         rng = np.random.default_rng(5)

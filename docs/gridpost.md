@@ -28,11 +28,19 @@ negatively correlated.
 Implementation: with B = L Lᵀ and L⁻¹AL⁻ᵀ = Q diag(λ) Qᵀ, the whitened data
 y = QᵀL⁻¹Δ are independent with variances 1 + Dλ_k. This makes the
 likelihood a cheap one-dimensional function of D, evaluated exactly on a
-fixed grid in u = ln D (`posterior.U`) rather than maximized: a prior flat
+fixed grid in u = ln D (`GridPostOptions.u_D()`) rather than maximized: a prior flat
 in u is log-uniform in D (scale-invariant), and the posterior weights are
 `exp(ln L + ln prior)`, normalized. The production default is a flat prior
 over the whole grid -- the least-informative choice, no empirical-Bayes
-fitting across tracks.
+fitting across tracks. The grid's range, `[D_min_um2_s, D_max_um2_s]`
+(default 1e-4 to 10 um^2/s, 501 points), is therefore the prior's support:
+a posterior that has not died out by an edge is cut there, and its median
+and interval move with the edge. The workflow flags such tracks in
+`message` (`posterior.edge_ratios`); localization-limited, near-immobile
+tracks reach the lower edge this way, since their data only bound D from
+above. No module-level grid exists to fall back on: the workflow reads the
+grids from `GridPostOptions`, and the lower-level functions take them as
+required arguments.
 
 `posterior.summary` reports the `(1-level)/2`/0.5/`(1+level)/2` quantiles of
 the posterior (`D_post_lo_um2_s`, `D_post_median_um2_s`, `D_post_hi_um2_s`;
@@ -69,8 +77,8 @@ A(alpha)_k = dt^alpha (|k+1|^alpha - 2|k|^alpha + |k-1|^alpha)   (lag k)
 with B the same localization-noise covariance as the D posterior. For any
 *fixed* alpha this is linear in K exactly as the D posterior's model is
 linear in D, so the same whitening trick applies -- but A(alpha) itself
-changes shape with alpha, so each alpha grid point (`posterior_alpha.ALPHA`,
-39 points) needs its own eigendecomposition, unlike the D posterior's single
+changes shape with alpha, so each alpha grid point (`GridPostOptions.alphas()`,
+39 points by default) needs its own eigendecomposition, unlike the D posterior's single
 decomposition reused across the whole D grid. This is a bounded, linear-in
 -grid-size cost (a few milliseconds per track), not a bottleneck at the
 track lengths this project targets.
@@ -94,7 +102,12 @@ is not excluded.
 
 `GridPostOptions(min_frames=3, level=.9)` sets the short-track exclusion
 threshold (the whitening step's own hard minimum) and the credible-interval
-mass. `analyze_track`/`analyze_tracks` mirror `classic`'s workflow contract:
+mass; its grid fields (`D_min_um2_s`, `D_max_um2_s`, `n_D`, `alpha_min`,
+`alpha_max`, `n_alpha`, and `n_K` for the nuisance K grid, which spans D's
+range) set every grid the run evaluates, and `compute_alpha=False` skips the
+alpha posterior. `analyze_tracks(..., keep_posteriors=True)` returns each
+`ok` track's normalized log posterior too (`GridPosteriors`), for population
+reads such as `deconvolve.deconvolve`. `analyze_track`/`analyze_tracks` mirror `classic`'s workflow contract:
 invalid input raises for a single track, a batch keeps going and marks the
 offending track `invalid_input`, and `status="excluded"` records *why* a
 track wasn't fit rather than silently dropping it. See

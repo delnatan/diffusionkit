@@ -32,7 +32,7 @@ from ..data import Acquisition
 from ..io import validate_table_schema, validated_track_frame
 from ..validation import validate_acquisition
 from .data import GridPostOptions
-from .posterior import U, flat, posterior, track_loglik
+from .posterior import flat, posterior, track_loglik
 
 
 @dataclass(frozen=True)
@@ -75,13 +75,12 @@ def deconvolve_tracks(
     acquisition: Acquisition,
     log_prior: np.ndarray | None = None,
     options: GridPostOptions = GridPostOptions(),
-    u: np.ndarray = U,
     iters: int = 500,
     smooth: float = 0.5,
 ) -> PopulationDistribution:
-    """Distribution of D across every track in `table`.
+    """Distribution of D across every track in `table`, on `options.u_D()`.
 
-    `log_prior` defaults to `flat(u)`, matching `track_posterior`'s own default.
+    `log_prior` (on that grid) defaults to `flat`, matching `track_posterior`'s own default.
     Tracks shorter than `options.min_frames` or with invalid input (schema,
     non-contiguous frames, non-positive localization SD) are skipped and
     counted in `n_excluded`, mirroring `analyze_tracks`'s tolerance for bad
@@ -89,6 +88,7 @@ def deconvolve_tracks(
     """
     validate_acquisition(acquisition, allow_exposure=True)
     validate_table_schema(table)
+    u = options.u_D()
     prior = flat(u) if log_prior is None else log_prior
     groups = table.sort("track_id", "frame").partition_by("track_id", maintain_order=True)
 

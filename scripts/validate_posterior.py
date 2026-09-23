@@ -60,7 +60,7 @@ def main():
             results.append({"n_frames": n, "D_um2_s": D, "n_tracks": args.replicates,
                             **summarize(post, D)})
     report = {"seed": args.seed, "dt_s": .033, "options": vars(GridPostOptions()),
-              "prior": "flat in ln D over gridpost.posterior.U (1e-4 to 10 um^2/s)",
+              "prior": "flat in ln D over the options' D grid (D_min_um2_s to D_max_um2_s)",
               "credible_level": .9, "elapsed_s": time.perf_counter()-start, "cells": results}
     output = json.dumps(report, indent=2)
     if args.output:

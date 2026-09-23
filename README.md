@@ -76,7 +76,7 @@ tracks = load_tracks(
 result = analyze_tracks(
     tracks,
     Acquisition(dt_s=0.035, exposure_s=0.020),  # the D posterior models blur; the alpha posterior excludes it
-    GridPostOptions(min_frames=3, level=.9),
+    GridPostOptions(min_frames=3, level=.9, D_min_um2_s=1e-4, D_max_um2_s=10., n_D=501),
 )
 
 result.fits  # two rows per track: posterior_D, posterior_alpha
@@ -84,7 +84,12 @@ result.fits  # two rows per track: posterior_D, posterior_alpha
 
 An exact grid posterior over `D` from the Gaussian likelihood of all
 consecutive displacements, using each frame's localization SD and a flat
-(least-informative) prior in `ln D`. There is no lag window. This is the
+(least-informative) prior in `ln D` over `[D_min_um2_s, D_max_um2_s]` (the
+defaults shown). That range is the prior's support, so it is part of the
+analysis: every gridpost function reads it from `GridPostOptions` (or takes
+the grid array explicitly), and a posterior cut by an edge says so in its
+row's `message`. `analyze_tracks(..., keep_posteriors=True)` also returns
+each track's full log posterior (`result.posteriors`). There is no lag window. This is the
 per-track information to report for `D`: a short, uninformative track
 produces a wide posterior rather than a falsely confident point estimate (see
 [docs/gridpost.md](docs/gridpost.md) and

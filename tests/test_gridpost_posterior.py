@@ -5,10 +5,12 @@ import numpy as np
 import polars as pl
 
 from diffusionkit import Acquisition
+from diffusionkit.gridpost import GridPostOptions
 from diffusionkit.gridpost import posterior as P
 
-
 DT = .033
+OPTIONS = GridPostOptions()
+U = OPTIONS.u_D()
 
 
 def track_table(track_id, frames, positions, sd):
@@ -40,15 +42,15 @@ class PosteriorTests(unittest.TestCase):
         sd = rng.uniform(.02, .05, (n, 2))
         pos = simulate(.05, sd[:, 0], DT, rng, n_frames=n)
         t = track_table(1, np.arange(n), pos, sd)
-        ll = P.track_loglik(t, Acquisition(DT))
+        ll = P.track_loglik(t, Acquisition(DT), U)
         from diffusionkit.gridpost.likelihood import brownian_log_likelihood
-        direct = np.array([brownian_log_likelihood(t, Acquisition(DT), D) for D in np.exp(P.U)])
+        direct = np.array([brownian_log_likelihood(t, Acquisition(DT), D) for D in np.exp(U)])
         np.testing.assert_allclose(ll, direct, atol=1e-8)
 
     def test_credible_intervals_are_calibrated(self):
         """Truth drawn from the prior, data simulated independently: 90% intervals cover 90%."""
         lo, hi = 1e-3, 1.
-        prior = P.log_uniform(lo, hi)
+        prior = P.log_uniform(lo, hi, U)
         rng = np.random.default_rng(2)
         for n_frames in (5, 12):
             hits = 0
@@ -59,7 +61,7 @@ class PosteriorTests(unittest.TestCase):
                 sd = rng.uniform(.025, .045, (n_frames, 2))
                 pos = simulate(D_true, sd[:, 0], DT, rng, n_frames=n_frames)
                 t = track_table(1, np.arange(n_frames), pos, sd)
-                s = P.track_posterior(t, Acquisition(DT), prior, level=.9)
+                s = P.track_posterior(t, Acquisition(DT), prior, GridPostOptions(level=.9))
                 hits += s["lo"] <= D_true <= s["hi"]
             self.assertLess(abs(hits/n_tracks - .9), .06)
 
@@ -70,11 +72,11 @@ class PosteriorTests(unittest.TestCase):
         sd = rng.uniform(.03, .045, (n, 2))
         pos = simulate(.05, sd[:, 0], DT, rng, n_frames=n)
         t = track_table(1, np.arange(n), pos, sd)
-        s = P.track_posterior(t, Acquisition(DT), P.log_uniform(1e-3, 1.))
+        s = P.track_posterior(t, Acquisition(DT), P.log_uniform(1e-3, 1., U))
         self.assertGreater(s["hi"]/s["lo"], 3.)
 
     def test_flat_prior_is_uniform_over_grid(self):
-        np.testing.assert_array_equal(P.flat(), np.zeros_like(P.U))
+        np.testing.assert_array_equal(P.flat(U), np.zeros_like(U))
 
 
 if __name__ == "__main__":

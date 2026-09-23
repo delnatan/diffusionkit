@@ -8,6 +8,8 @@ import polars as pl
 
 from diffusionkit import Acquisition
 from diffusionkit.gridpost import GridPostOptions, analyze_track, analyze_tracks
+from diffusionkit.gridpost import posterior as P
+from diffusionkit.gridpost import posterior_alpha as PA
 from diffusionkit.gridpost.workflow import FIT_SCHEMA
 
 
@@ -76,6 +78,65 @@ class WorkflowTests(unittest.TestCase):
         d_narrow = narrow.posterior_D.parameters["D_post_hi_um2_s"] - narrow.posterior_D.parameters["D_post_lo_um2_s"]
         d_wide = wide.posterior_D.parameters["D_post_hi_um2_s"] - wide.posterior_D.parameters["D_post_lo_um2_s"]
         self.assertLess(d_narrow, d_wide)
+
+    def test_options_grid_is_the_one_used(self):
+        """A custom D range reaches every posterior: none falls back to a default grid."""
+        t = table(12)
+        options = GridPostOptions(D_min_um2_s=1e-3, D_max_um2_s=2., n_D=101, alpha_min=.2, alpha_max=1.8,
+                                  n_alpha=17, n_K=61)
+        out = analyze_track(t, Acquisition(.03), options)
+        self.assertEqual(out.log_post_D.shape, (101,))
+        self.assertEqual(out.log_post_alpha.shape, (17,))
+        u = options.u_D()
+        expected = P.summary(P.posterior(P.track_loglik(t, Acquisition(.03), u), P.flat(u)), u, options.level)
+        self.assertAlmostEqual(out.posterior_D.parameters["D_post_median_um2_s"], expected["median"], places=12)
+        self.assertAlmostEqual(np.exp(out.log_post_D).sum(), 1., places=12)
+        self.assertEqual(P.track_posterior(t, Acquisition(.03), options=options), expected)
+        alpha = PA.track_alpha_posterior(t, Acquisition(.03), options=options)
+        self.assertAlmostEqual(out.posterior_alpha.parameters["alpha_post_median"], alpha["median"], places=12)
+        self.assertGreaterEqual(alpha["lo"], .2)
+
+    def test_narrow_grid_moves_the_summary_and_says_so(self):
+        """An upper edge below where the data put D cuts the posterior: the median sits
+        at the edge and the message names it."""
+        t = table(12)
+        wide = analyze_track(t, Acquisition(.03))
+        D_med = wide.posterior_D.parameters["D_post_median_um2_s"]
+        cut = analyze_track(t, Acquisition(.03), GridPostOptions(D_max_um2_s=D_med / 3))
+        self.assertEqual(cut.posterior_D.status, "ok")
+        self.assertLess(cut.posterior_D.parameters["D_post_hi_um2_s"], D_med / 3 + 1e-12)
+        self.assertIn("D_max_um2_s", cut.posterior_D.message)
+        self.assertEqual(wide.posterior_D.message, "")
+
+    def test_keep_posteriors_returns_ok_tracks_only(self):
+        good = table()
+        short = table(2, track_id=9)
+        result = analyze_tracks(pl.concat([good, short]), Acquisition(.03), keep_posteriors=True)
+        post = result.posteriors
+        self.assertEqual(post.D_track_ids.tolist(), [7])
+        self.assertEqual(post.alpha_track_ids.tolist(), [7])
+        self.assertEqual(post.log_post_D.shape, (1, result.options.n_D))
+        self.assertEqual(post.log_post_alpha.shape, (1, result.options.n_alpha))
+        np.testing.assert_allclose(post.log_post_D[0], analyze_track(good, Acquisition(.03)).log_post_D)
+        self.assertIsNone(analyze_tracks(good, Acquisition(.03)).posteriors)
+
+    def test_keep_posteriors_empty_keeps_grid_width(self):
+        result = analyze_tracks(table(2), Acquisition(.03), GridPostOptions(n_D=11), keep_posteriors=True)
+        self.assertEqual(result.posteriors.log_post_D.shape, (0, 11))
+
+    def test_compute_alpha_false_excludes_alpha(self):
+        out = analyze_track(table(), Acquisition(.03), GridPostOptions(compute_alpha=False))
+        self.assertEqual(out.posterior_D.status, "ok")
+        self.assertEqual(out.posterior_alpha.status, "excluded")
+        self.assertIn("not requested", out.posterior_alpha.message)
+        self.assertIsNone(out.log_post_alpha)
+
+    def test_invalid_grid_options_raise(self):
+        for bad in (dict(D_min_um2_s=0.), dict(D_min_um2_s=1., D_max_um2_s=.5), dict(D_max_um2_s=np.inf),
+                    dict(n_D=1), dict(alpha_min=0.), dict(alpha_max=2.), dict(n_alpha=1), dict(n_K=1),
+                    dict(level=1.)):
+            with self.subTest(**bad), self.assertRaises(ValueError):
+                GridPostOptions(**bad)
 
     def test_import_does_not_load_bayes_or_plotting(self):
         code = "import diffusionkit.gridpost, sys; assert not any(x in sys.modules for x in ('jax','numpyro','matplotlib'))"

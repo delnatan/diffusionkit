@@ -41,13 +41,12 @@ from scipy.special import logsumexp
 
 from ..data import Acquisition
 from .likelihood import _loglik, _prepared, _whiten_axis, fgn_motion_covariance, localization_covariance
-from .posterior import _grid_quantile, _normalize
+from .data import GridPostOptions
+from .posterior import _grid_quantile
 from .posterior import flat as flat_K  # noqa: F401  (re-exported: a generic log-scale-grid prior)
 
-# alpha grid: avoid the exact 0/2 edges, where the fGn covariance degenerates.
-ALPHA = np.linspace(0.05, 1.95, 39)
-# ln K grid, K in um^2/s^alpha: 1e-4 to 10, matching gridpost.posterior.U's D grid.
-U = np.linspace(np.log(1e-4), np.log(10.0), 251)
+# The grids are `GridPostOptions.alphas()` and `.u_K()`: every function below
+# takes them explicitly, like `gridpost.posterior` does its D grid.
 
 
 def _whiten_alpha(track: pl.DataFrame, acquisition: Acquisition, alpha: float) -> dict:
@@ -70,14 +69,14 @@ def _whiten_alpha(track: pl.DataFrame, acquisition: Acquisition, alpha: float) -
 
 
 def track_loglik_given_alpha(track: pl.DataFrame, acquisition: Acquisition, alpha: float,
-                             u: np.ndarray = U) -> np.ndarray:
+                             u: np.ndarray) -> np.ndarray:
     """(len(u),) log-likelihood of one track's displacements at K = exp(u), fixed alpha."""
     w = _whiten_alpha(_prepared(track, acquisition), acquisition, alpha)
     return _loglik(np.exp(u), w["lam"], w["y"][None], w["const"])
 
 
-def joint_loglik(track: pl.DataFrame, acquisition: Acquisition, alphas: np.ndarray = ALPHA,
-                 u: np.ndarray = U) -> np.ndarray:
+def joint_loglik(track: pl.DataFrame, acquisition: Acquisition, alphas: np.ndarray,
+                 u: np.ndarray) -> np.ndarray:
     """(len(alphas), len(u)) log-likelihood surface over (alpha, ln K)."""
     return np.array([track_loglik_given_alpha(track, acquisition, a, u) for a in alphas])
 
@@ -87,14 +86,14 @@ def joint_loglik(track: pl.DataFrame, acquisition: Acquisition, alphas: np.ndarr
 # --------------------------------------------------------------------------
 
 
-def flat_alpha(alphas: np.ndarray = ALPHA) -> np.ndarray:
+def flat_alpha(alphas: np.ndarray) -> np.ndarray:
     """Flat over the alpha grid -- the least-informative default."""
     return np.zeros_like(alphas)
 
 
-def alpha_posterior(joint_ll: np.ndarray, log_K_prior: np.ndarray,
-                    log_alpha_prior: np.ndarray | None = None) -> np.ndarray:
-    """(len(alphas),) posterior over alpha: add priors, integrate ln K out, normalize.
+def log_alpha_posterior(joint_ll: np.ndarray, log_K_prior: np.ndarray,
+                        log_alpha_prior: np.ndarray | None = None) -> np.ndarray:
+    """(len(alphas),) normalized log posterior over alpha: add priors, integrate ln K out.
 
     `joint_ll` is (len(alphas), len(u)) from `joint_loglik`. Integrating a
     nuisance parameter out is exactly `logsumexp` over its axis (a Riemann
@@ -104,15 +103,21 @@ def alpha_posterior(joint_ll: np.ndarray, log_K_prior: np.ndarray,
     log_mass = logsumexp(joint_ll + log_K_prior[None, :], axis=1)
     if log_alpha_prior is not None:
         log_mass = log_mass + log_alpha_prior
-    return _normalize(log_mass)
+    return log_mass - logsumexp(log_mass)
 
 
-def quantile(p: np.ndarray, q: float, alphas: np.ndarray = ALPHA) -> float:
+def alpha_posterior(joint_ll: np.ndarray, log_K_prior: np.ndarray,
+                    log_alpha_prior: np.ndarray | None = None) -> np.ndarray:
+    """(len(alphas),) posterior weights over alpha (sum to 1); see `log_alpha_posterior`."""
+    return np.exp(log_alpha_posterior(joint_ll, log_K_prior, log_alpha_prior))
+
+
+def quantile(p: np.ndarray, q: float, alphas: np.ndarray) -> float:
     """Posterior q-quantile of alpha, interpolating the CDF at cell midpoints."""
     return _grid_quantile(p, alphas, q)
 
 
-def summary(p: np.ndarray, alphas: np.ndarray = ALPHA, level: float = .9) -> dict[str, float]:
+def summary(p: np.ndarray, alphas: np.ndarray, level: float = .9) -> dict[str, float]:
     """Median and equal-tailed credible interval of alpha."""
     return {
         "median": quantile(p, .5, alphas),
@@ -122,14 +127,15 @@ def summary(p: np.ndarray, alphas: np.ndarray = ALPHA, level: float = .9) -> dic
 
 
 def track_alpha_posterior(track: pl.DataFrame, acquisition: Acquisition, log_K_prior: np.ndarray | None = None,
-                          alphas: np.ndarray = ALPHA, u: np.ndarray = U, level: float = .9) -> dict[str, float]:
-    """Posterior median and `level` credible interval of alpha for one track.
+                          options: GridPostOptions = GridPostOptions()) -> dict[str, float]:
+    """Posterior median and `options.level` credible interval of alpha for one track.
 
-    `log_K_prior` defaults to `flat_K()` (flat in ln K over the whole grid) --
-    the least-informative choice for the nuisance parameter, no
-    empirical-Bayes fitting across tracks. Raises if `acquisition.exposure_s`
-    is nonzero.
+    Evaluated on `options.alphas()`, with K integrated out over `options.u_K()`.
+    `log_K_prior` (on that K grid) defaults to `flat_K` -- the
+    least-informative choice for the nuisance parameter, no empirical-Bayes
+    fitting across tracks. Raises if `acquisition.exposure_s` is nonzero.
     """
+    alphas, u = options.alphas(), options.u_K()
     prior = flat_K(u) if log_K_prior is None else log_K_prior
     ll = joint_loglik(track, acquisition, alphas, u)
-    return summary(alpha_posterior(ll, prior), alphas, level)
+    return summary(alpha_posterior(ll, prior), alphas, options.level)

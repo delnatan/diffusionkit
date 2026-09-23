@@ -10,6 +10,7 @@ from diffusionkit.gridpost import posterior as P
 from diffusionkit.gridpost.data import GridPostOptions
 
 DT = .033
+U = GridPostOptions().u_D()
 
 
 def track_table(track_id, frames, positions, sd):
@@ -83,15 +84,23 @@ class DeconvolveTests(unittest.TestCase):
         rng = np.random.default_rng(4)
         table = simulated_table([.05] * 5, rng, track_id0=0)
         result = D.deconvolve_tracks(table, Acquisition(DT))
-        np.testing.assert_array_equal(result.u, P.U)
+        np.testing.assert_array_equal(result.u, U)
+
+    def test_options_grid_is_the_one_used(self):
+        rng = np.random.default_rng(7)
+        table = simulated_table([.05] * 5, rng, track_id0=0)
+        options = GridPostOptions(D_min_um2_s=1e-3, D_max_um2_s=1., n_D=101)
+        result = D.deconvolve_tracks(table, Acquisition(DT), options=options)
+        np.testing.assert_array_equal(result.u, options.u_D())
+        self.assertEqual(len(result.weights), 101)
 
     def test_one_unsmoothed_em_step_is_the_mean_of_posteriors(self):
         rng = np.random.default_rng(5)
         D_values = np.exp(rng.uniform(np.log(.01), np.log(.5), 20))
         table = simulated_table(D_values, rng)
-        prior = P.log_uniform(1e-3, 1.)
+        prior = P.log_uniform(1e-3, 1., U)
         lls = np.array([
-            P.track_loglik(track, Acquisition(DT))
+            P.track_loglik(track, Acquisition(DT), U)
             for track in table.sort("track_id", "frame").partition_by("track_id", maintain_order=True)
         ])
         one_step = D.deconvolve(lls, prior, iters=1, smooth=0)
@@ -102,7 +111,7 @@ class DeconvolveTests(unittest.TestCase):
         rng = np.random.default_rng(6)
         D_values = np.exp(np.log(rng.choice([.02, .2], 300)) + .15 * rng.standard_normal(300))
         table = simulated_table(D_values, rng, frames=(8, 21))
-        result = D.deconvolve_tracks(table, Acquisition(DT), log_prior=P.log_uniform(1e-3, 1.))
+        result = D.deconvolve_tracks(table, Acquisition(DT), log_prior=P.log_uniform(1e-3, 1., U))
         mid = np.log(np.sqrt(.02 * .2))
         recovered = result.weights[result.u > mid].sum()
         truth = np.mean(D_values > np.sqrt(.02 * .2))
