@@ -9,6 +9,8 @@ from ..io import validate_table_schema, validated_track_frame
 from ..validation import validate_acquisition
 from . import posterior as posterior_mod
 from . import posterior_alpha as posterior_alpha_mod
+from .comparison import _motion_lrt
+from .likelihood import _loglik, _prepared, _whiten
 from .data import GridPosteriorAnalysis, GridPosteriors, GridPostOptions, PosteriorAlpha, PosteriorD, TrackPosterior
 
 FIT_SCHEMA = {
@@ -34,13 +36,22 @@ def _posterior_D_or_invalid(track: pl.DataFrame, acquisition: Acquisition,
                             options: GridPostOptions) -> tuple[PosteriorD, np.ndarray | None]:
     try:
         u = options.u_D()
-        lp = posterior_mod.log_posterior(posterior_mod.track_loglik(track, acquisition, u), posterior_mod.flat(u))
+        prior = posterior_mod.flat(u)
+        w = _whiten(_prepared(track, acquisition), acquisition)
+        lp = posterior_mod.log_posterior(_loglik(np.exp(u), w["lam"], w["y"][None], w["const"]), prior)
+        motion_lrt = _motion_lrt(w["lam"], w["y"])
     except ValueError as exc:  # e.g. a zero localization SD
         return PosteriorD(dict.fromkeys(PosteriorD.PARAMETERS), "invalid_input", str(exc)), None
     p = np.exp(lp)
     s = posterior_mod.summary(p, u, options.level)
+    message = _edge_message(p, options)
+    if motion_lrt is None:
+        message = "; ".join(filter(None, [message, "D_motion_lrt undefined for zero displacements"]))
     return PosteriorD({"D_post_median_um2_s": s["median"], "D_post_lo_um2_s": s["lo"],
-                       "D_post_hi_um2_s": s["hi"]}, "ok", _edge_message(p, options)), lp
+                       "D_post_hi_um2_s": s["hi"],
+                       "D_post_info_bits": posterior_mod.information_bits(lp, prior),
+                       "D_motion_lrt": motion_lrt},
+                      "ok", message), lp
 
 
 def _posterior_alpha_or_invalid(track: pl.DataFrame, acquisition: Acquisition,

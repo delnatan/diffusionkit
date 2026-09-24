@@ -75,6 +75,8 @@ Columns only filled on `posterior_D` rows (see [docs/gridpost.md](docs/gridpost.
 | --- | --- |
 | `D_post_median_um2_s` | Posterior 0.5 quantile (median) of D under a flat prior in ln D over `[GridPostOptions.D_min_um2_s, D_max_um2_s]` |
 | `D_post_lo_um2_s`, `D_post_hi_um2_s` | Posterior quantiles at `(1-level)/2` and `(1+level)/2` (`GridPostOptions.level`, default 0.9: an equal-tailed 90% interval) |
+| `D_post_info_bits` | Information the track gave about D: relative entropy KL(posterior \|\| prior) in bits, prior flat in ln D over the grid. 0 = data left the prior unchanged; each bit is about a halving of the plausible ln D range. Comparable only between runs on the same `[D_min_um2_s, D_max_um2_s]` |
+| `D_motion_lrt` | Nonnegative twice-log likelihood ratio for Brownian motion plus rescaled localization noise versus rescaled noise alone. Both hypotheses fit a global localization SD multiplier. Near 0 = little improvement from adding motion; larger = greater improvement. Not a Bayes factor, p-value, or mobility probability. Null for zero displacements or uncomputable/excluded tracks. |
 
 Columns only filled on `posterior_alpha` rows -- D and alpha are independent
 per-track measurements (see [docs/gridpost.md](docs/gridpost.md)), not a

@@ -93,6 +93,24 @@ def log_posterior(ll: np.ndarray, log_prior: np.ndarray) -> np.ndarray:
     return lw - logsumexp(lw)
 
 
+def information_bits(log_post: np.ndarray, log_prior: np.ndarray) -> float:
+    """What the track taught about D: relative entropy KL(posterior || prior), in bits.
+
+    Both are taken as distributions over the grid points (the prior is
+    normalized here), which approximates the continuous relative entropy
+    whenever the grid resolves the posterior. 0 means the data left the prior
+    unchanged; each further bit is worth about halving the plausible range of
+    ln D. It is invariant to reparametrizing D, but relative to the prior, so
+    bits are comparable only between runs on the same grid range (a
+    localization-limited track, which only bounds D from above, gains
+    whatever fraction of the prior below its bound it rules out).
+    """
+    lq = log_posterior(np.zeros_like(log_prior), log_prior)
+    p = np.exp(log_post)
+    keep = p > 0
+    return float(np.sum(p[keep] * (log_post[keep] - lq[keep])) / np.log(2))
+
+
 def edge_ratios(p: np.ndarray) -> tuple[float, float]:
     """Posterior weight at the grid's first and last point, each relative to its peak.
 

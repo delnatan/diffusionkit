@@ -60,7 +60,8 @@ class GridPostOptions:
 @dataclass(frozen=True)
 class PosteriorD:
     PARAMETERS: ClassVar[tuple[str, ...]] = (
-        "D_post_median_um2_s", "D_post_lo_um2_s", "D_post_hi_um2_s")
+        "D_post_median_um2_s", "D_post_lo_um2_s", "D_post_hi_um2_s", "D_post_info_bits",
+        "D_motion_lrt")
     parameters: dict[str, float | None]
     status: str
     message: str

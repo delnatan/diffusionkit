@@ -51,8 +51,38 @@ posteriors are often far from normal on short tracks anyway). Localization
 SDs must be strictly positive and are treated as known. Unlike a point
 estimate, a short or noise-dominated track does not report a falsely
 confident number: its posterior stays wide, which is the honest answer, not
-a defect. Calibration is a simulation check under the model (see
+a defect. `D_post_info_bits` (`posterior.information_bits`) puts a number on
+that: the relative entropy from the flat prior to the posterior, in bits.
+It is invariant to reparametrizing D but relative to the prior's range, so
+it compares tracks and experiments only on the same grid; a
+localization-limited track that only bounds D from above earns the bits of
+the prior it rules out. Calibration is a simulation check under the model (see
 `prototypes/README.md`), not a claim about experimental tracks.
+
+The track summary also includes `D_motion_lrt`, available directly as
+`gridpost.brownian_motion_lrt(track, acquisition)`. This compares a noise-only
+covariance `c² B` against `D A + c² B`, fitting a global localization SD
+multiplier `c > 0` in both hypotheses and `D >= 0` in the alternative. It is
+twice the maximized log-likelihood difference (using the supremum when the
+alternative approaches `c = 0`). Near zero means Brownian motion adds little
+fit improvement beyond rescaling localization noise; larger values indicate
+greater improvement. Failure to distinguish the models does not establish
+immobility. This is a likelihood-ratio score, not a Bayes factor or a p-value;
+short-track significance thresholds require simulation calibration, rather
+than an ordinary chi-square cutoff at the `D = 0` boundary.
+
+The comparison profiles out the common variance analytically in the existing
+whitened coordinates, then scans and refines the remaining covariance-shape
+parameter, including both limiting shapes. It is independent of the posterior
+grid and prior, and invariant to a global scaling of positions or reported
+localization SDs. It only tolerates a global noise-scale mismatch, not arbitrary
+errors in temporal covariance or relative per-frame uncertainties. The D
+posterior and its information bits still condition on the reported SDs (`c=1`);
+they are not replaced by this separate comparison. Exactly zero displacements
+give an unbounded likelihood as the scale tends to zero, so the score is null
+and the summary message explains why. Excluded/invalid rows also have null
+scores. The value appears on `posterior_D` rows in `analysis.fits`, and in
+`result.posterior_D.parameters` for single-track analysis.
 
 This module started as, and is adapted from, `prototypes/posterior_1d.py`
 (a standalone reference implementation with its own extensive calibration

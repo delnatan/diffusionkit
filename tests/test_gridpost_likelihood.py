@@ -58,7 +58,7 @@ class LikelihoodTests(unittest.TestCase):
 
     def test_zero_localization_sd_rejected(self):
         t = brownian()
-        sd = t.select("sigma_x_um", "sigma_y_um").to_numpy()
+        sd = t.select("sigma_x_um", "sigma_y_um").to_numpy().copy()
         sd[2, 0] = 0.
         zero = t.with_columns(pl.Series("sigma_x_um", sd[:, 0]))
         with self.assertRaisesRegex(ValueError, "positive"):

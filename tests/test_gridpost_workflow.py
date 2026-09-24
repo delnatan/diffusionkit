@@ -53,6 +53,12 @@ class WorkflowTests(unittest.TestCase):
         for name, value in direct.posterior_alpha.parameters.items():
             self.assertEqual(post_alpha[name], value)
 
+    def test_info_bits_reported_from_the_log_posterior(self):
+        out = analyze_track(table(8), Acquisition(.03))
+        bits = out.posterior_D.parameters["D_post_info_bits"]
+        self.assertAlmostEqual(bits, P.information_bits(out.log_post_D, P.flat(GridPostOptions().u_D())))
+        self.assertGreater(bits, 0.)
+
     def test_empty_output_retains_schema_and_reports_progress(self):
         calls = []
         result = analyze_tracks(table().head(0), Acquisition(.03), progress=lambda *x: calls.append(x))

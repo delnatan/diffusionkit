@@ -78,6 +78,33 @@ class PosteriorTests(unittest.TestCase):
     def test_flat_prior_is_uniform_over_grid(self):
         np.testing.assert_array_equal(P.flat(U), np.zeros_like(U))
 
+    def test_information_bits_zero_when_posterior_is_prior(self):
+        self.assertAlmostEqual(P.information_bits(P.log_posterior(np.zeros_like(U), P.flat(U)), P.flat(U)), 0.)
+        box = P.log_uniform(1e-3, 1., U)
+        self.assertAlmostEqual(P.information_bits(P.log_posterior(np.zeros_like(U), box), box), 0.)
+
+    def test_information_bits_match_gaussian_in_uniform(self):
+        """KL(N(mu, s^2) || Uniform(width W)) = log2 W - log2(s sqrt(2 pi e)), for a resolved Gaussian."""
+        s = .2
+        ll = -.5 * ((U - np.log(.05)) / s) ** 2
+        width = U[-1] - U[0] + (U[1] - U[0])  # the grid's cells, each carrying equal prior mass
+        expected = np.log2(width) - np.log2(s * np.sqrt(2 * np.pi * np.e))
+        self.assertAlmostEqual(P.information_bits(P.log_posterior(ll, P.flat(U)), P.flat(U)), expected, places=3)
+
+    def test_information_bits_grow_with_track_length(self):
+        rng = np.random.default_rng(4)
+        bits = {}
+        for n in (5, 40):
+            b = []
+            for _ in range(40):
+                sd = np.full((n, 2), .03)
+                t = track_table(1, np.arange(n), simulate(.05, sd[:, 0], DT, rng, n_frames=n), sd)
+                b.append(P.information_bits(P.log_posterior(P.track_loglik(t, Acquisition(DT), U), P.flat(U)),
+                                            P.flat(U)))
+            bits[n] = np.median(b)
+        # Fisher information for D is ~ linear in m when motion dominates: about +1/2 log2(39/4) bits
+        self.assertGreater(bits[40] - bits[5], 1.)
+
 
 if __name__ == "__main__":
     unittest.main()
