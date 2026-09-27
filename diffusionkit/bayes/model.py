@@ -14,6 +14,11 @@ same construction Kepten, Bronshtein & Garini (Phys. Rev. E 87, 052713,
 anywhere in this package** -- K, alpha, and the localization precision
 sigma are fit directly from `dx = diff(x)`, `dy = diff(y)`.
 
+`exposure_s` (every model's last argument, default 0 = instantaneous
+positions) is the camera exposure: each frame's position is the true path's
+average over it, the same box-shutter blur `gridpost` models, so a NUTS fit
+and the grid posteriors of one track describe the same likelihood.
+
 Two motion models:
   `normal_diffusion_model`     -- 2 params (D, sigma), alpha pinned to 1,
                                    shares `likelihood.displacement_covariance`.
@@ -63,18 +68,20 @@ from .priors import AnomalousModelPrior, NormalModelPrior
 
 
 def normal_diffusion_model(
-    dx_um: jnp.ndarray, dy_um: jnp.ndarray, dt_s: float, n_disp: int, prior: NormalModelPrior
+    dx_um: jnp.ndarray, dy_um: jnp.ndarray, dt_s: float, n_disp: int, prior: NormalModelPrior,
+    exposure_s: float = 0.0,
 ) -> None:
     D = numpyro.sample("D", dist.LogNormal(prior.log_D_mean, prior.log_D_sd))
     sigma = numpyro.sample("sigma", dist.LogNormal(prior.log_sigma_mean, prior.log_sigma_sd))
-    cov = displacement_covariance(n_disp, D, dt_s, 1.0, sigma**2)
+    cov = displacement_covariance(n_disp, D, dt_s, 1.0, sigma**2, exposure_s)
     mvn = dist.MultivariateNormal(jnp.zeros(n_disp), covariance_matrix=cov)
     numpyro.sample("dx_obs", mvn, obs=dx_um)
     numpyro.sample("dy_obs", mvn, obs=dy_um)
 
 
 def anomalous_diffusion_model(
-    dx_um: jnp.ndarray, dy_um: jnp.ndarray, dt_s: float, n_disp: int, prior: AnomalousModelPrior
+    dx_um: jnp.ndarray, dy_um: jnp.ndarray, dt_s: float, n_disp: int, prior: AnomalousModelPrior,
+    exposure_s: float = 0.0,
 ) -> None:
     K = numpyro.sample("K", dist.LogNormal(prior.log_D_mean, prior.log_D_sd))
     sigma = numpyro.sample("sigma", dist.LogNormal(prior.log_sigma_mean, prior.log_sigma_sd))
@@ -89,7 +96,7 @@ def anomalous_diffusion_model(
     # avoids that bug entirely.
     alpha_unit = numpyro.sample("alpha_unit", dist.Beta(prior.alpha_conc, prior.alpha_conc))
     alpha = numpyro.deterministic("alpha", 2.0 * alpha_unit)
-    cov = displacement_covariance(n_disp, K, dt_s, alpha, sigma**2)
+    cov = displacement_covariance(n_disp, K, dt_s, alpha, sigma**2, exposure_s)
     mvn = dist.MultivariateNormal(jnp.zeros(n_disp), covariance_matrix=cov)
     numpyro.sample("dx_obs", mvn, obs=dx_um)
     numpyro.sample("dy_obs", mvn, obs=dy_um)
@@ -97,7 +104,7 @@ def anomalous_diffusion_model(
 
 def batched_normal_diffusion_model(
     dx_um: jnp.ndarray, dy_um: jnp.ndarray, dt_s: float, n_disp: int,
-    prior: NormalModelPrior, n_tracks: int,
+    prior: NormalModelPrior, n_tracks: int, exposure_s: float = 0.0,
 ) -> None:
     """`normal_diffusion_model` for `n_tracks` tracks of the same `n_disp` at
     once: dx_um/dy_um shape (n_tracks, n_disp); prior fields may be plain
@@ -107,7 +114,7 @@ def batched_normal_diffusion_model(
     with numpyro.plate("track", n_tracks):
         D = numpyro.sample("D", dist.LogNormal(prior.log_D_mean, prior.log_D_sd))
         sigma = numpyro.sample("sigma", dist.LogNormal(prior.log_sigma_mean, prior.log_sigma_sd))
-        cov = displacement_covariance(n_disp, D[:, None, None], dt_s, 1.0, (sigma**2)[:, None, None])
+        cov = displacement_covariance(n_disp, D[:, None, None], dt_s, 1.0, (sigma**2)[:, None, None], exposure_s)
         mvn = dist.MultivariateNormal(jnp.zeros(n_disp), covariance_matrix=cov)
         numpyro.sample("dx_obs", mvn, obs=dx_um)
         numpyro.sample("dy_obs", mvn, obs=dy_um)
@@ -115,7 +122,7 @@ def batched_normal_diffusion_model(
 
 def batched_anomalous_diffusion_model(
     dx_um: jnp.ndarray, dy_um: jnp.ndarray, dt_s: float, n_disp: int,
-    prior: AnomalousModelPrior, n_tracks: int,
+    prior: AnomalousModelPrior, n_tracks: int, exposure_s: float = 0.0,
 ) -> None:
     """`anomalous_diffusion_model` for `n_tracks` tracks of the same
     `n_disp` at once -- see `batched_normal_diffusion_model`."""
@@ -125,7 +132,7 @@ def batched_anomalous_diffusion_model(
         alpha_unit = numpyro.sample("alpha_unit", dist.Beta(prior.alpha_conc, prior.alpha_conc))
         alpha = numpyro.deterministic("alpha", 2.0 * alpha_unit)
         cov = displacement_covariance(
-            n_disp, K[:, None, None], dt_s, alpha[:, None, None], (sigma**2)[:, None, None]
+            n_disp, K[:, None, None], dt_s, alpha[:, None, None], (sigma**2)[:, None, None], exposure_s
         )
         mvn = dist.MultivariateNormal(jnp.zeros(n_disp), covariance_matrix=cov)
         numpyro.sample("dx_obs", mvn, obs=dx_um)

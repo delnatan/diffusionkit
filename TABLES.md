@@ -59,13 +59,13 @@ other tracks were not analyzed. The maximum lag is capped at `n_frames-1`.
 
 ## gridpost: `GridPosteriorAnalysis` -- `fits`, `acquisition`, `options`
 
-### fits -- one row per track and model (posterior_D, posterior_alpha)
+### fits -- one row per track and model (posterior_D, posterior_alpha, and with `GridPostOptions.D_long_stride` set posterior_D_timescale)
 
 | Column | Meaning |
 | --- | --- |
 | `track_id`, `n_frames` | Track identity and actual observation count |
-| `model` | `posterior_D` or `posterior_alpha` |
-| `method` | `grid_posterior` or `grid_posterior_marginal_K` |
+| `model` | `posterior_D`, `posterior_alpha` or `posterior_D_timescale` |
+| `method` | `grid_posterior` (D); `grid_posterior_marginal_K` (alpha, exact likelihood) or `grid_posterior_marginal_K_whittle` (alpha, debiased Whittle; see `GridPostOptions.alpha_method`); `grid_posterior_phase_averaged` (D timescale) |
 | `status`, `message` | Numerical/input status and an explanation |
 | `uncertainty_method` | `credible_interval` |
 
@@ -87,6 +87,17 @@ joint fit:
 | `alpha_post_median` | Posterior 0.5 quantile (median) of the fBm exponent alpha, K marginalized out |
 | `alpha_post_lo`, `alpha_post_hi` | Posterior quantiles at `(1-level)/2` and `(1+level)/2` |
 
+Columns only filled on `posterior_D_timescale` rows -- D refitted at a
+longer timescale, tau = `D_long_stride` frame intervals (see
+[docs/gridpost.md](docs/gridpost.md)):
+
+| Column | Meaning |
+| --- | --- |
+| `tau_long_s` | The longer timescale, `D_long_stride * dt_s` |
+| `D_long_post_median_um2_s`, `D_long_post_lo_um2_s`, `D_long_post_hi_um2_s` | Posterior median and interval of D at `tau_long_s`: the Brownian D posterior of the track thinned to every `D_long_stride`-th frame, its phases' log-likelihoods averaged |
+| `D_ratio_post_median`, `D_ratio_post_lo`, `D_ratio_post_hi` | D at `tau_long_s` over D at `dt_s` (the `posterior_D` row), median and interval. 1 for Brownian motion; below 1 when motion slows at longer times (confinement, crowding, alpha < 1), above 1 when it is persistent. The two posteriors are combined as if independent, which widens the interval |
+| `P_D_decrease` | Posterior probability that D at `tau_long_s` is below D at `dt_s` |
+
 A quantile-defined interval is not a multiple of a standard deviation. For a
 normal distribution specifically, a 90% equal-tailed interval is +/-1.645 SD,
 not +/-1 SD (+/-1 SD covers ~68.3% of a normal, not 90%) -- and these
@@ -100,5 +111,5 @@ is cut by a grid edge (edge weight above 5% of the peak) says so in
 | Status | Meaning |
 | --- | --- |
 | `ok` | Finite numerical estimate passed the implemented checks |
-| `excluded` | Fewer frames than `GridPostOptions.min_frames`; `posterior_alpha` rows also when `exposure_s > 0` (no blur model) or `GridPostOptions.compute_alpha=False` |
+| `excluded` | Fewer frames than `GridPostOptions.min_frames`; `posterior_alpha` rows also when `GridPostOptions.compute_alpha=False`; `posterior_D_timescale` rows also when no thinned phase keeps `min_frames` frames (a track needs `(min_frames - 1) * D_long_stride + 1`) |
 | `invalid_input` | A batch track failed validation, or a localization SD is zero |

@@ -13,6 +13,9 @@ Two single-call engines, each fitting one batch:
   `fit_batch_svi`    mean-field (`AutoNormal`) SVI -- validation/comparison
                      only (see `fit_table_svi`).
 
+Every engine takes the camera `exposure_s` (default 0) and hands it to the
+model, which averages the motion over it (see model.py).
+
 and two per-track table builders wrapping them -- `fit_table_svi`
 (validation/comparison) and `fit_table_nuts` (when posterior shape matters).
 Both share `_per_track_table`, which groups tracks by shared track_length
@@ -69,6 +72,7 @@ def fit_batch_svi(
     n_tracks: int,
     num_steps: int = 2000,
     seed: int = 0,
+    exposure_s: float = 0.0,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     """MAP-like medians + marginal stderr for `n_tracks` tracks sharing the
     same `n_disp`, via one SVI run on a `batched_*` model's plated
@@ -83,7 +87,7 @@ def fit_batch_svi(
     guide = AutoNormal(model_fn)
     svi = SVI(model_fn, guide, numpyro.optim.Adam(0.01), Trace_ELBO())
     result = svi.run(
-        jax.random.PRNGKey(seed), num_steps, dx_um, dy_um, dt_s, n_disp, prior, n_tracks,
+        jax.random.PRNGKey(seed), num_steps, dx_um, dy_um, dt_s, n_disp, prior, n_tracks, exposure_s,
         progress_bar=False,
     )
     medians = {k: np.asarray(v) for k, v in guide.median(result.params).items()}
@@ -222,6 +226,7 @@ def fit_table_svi(
     num_steps: int = 2000,
     seed: int = 0,
     show_progress: bool = True,
+    exposure_s: float = 0.0,
 ) -> pl.DataFrame:
     """Batched mean-field SVI for every eligible track: `{name}`/`{name}_stderr`.
 
@@ -247,7 +252,7 @@ def fit_table_svi(
         prior = prior_fn(batch.sigma_x_um, batch.sigma_y_um)
         medians, stderrs = fit_batch_svi(
             model_fn, jnp.asarray(batch.dx), jnp.asarray(batch.dy), dt_s, batch.n_disp,
-            prior, batch.n_tracks, num_steps=num_steps, seed=seed,
+            prior, batch.n_tracks, num_steps=num_steps, seed=seed, exposure_s=exposure_s,
         )
         row = batch.index()
         for name in param_names:
@@ -273,6 +278,7 @@ def fit_table_nuts(
     num_chains: int = 4,
     seed: int = 0,
     show_progress: bool = True,
+    exposure_s: float = 0.0,
 ) -> pl.DataFrame:
     """Full-NUTS per-track table: median + `hpdi_prob` HPDI per parameter.
 
@@ -287,7 +293,8 @@ def fit_table_nuts(
         prior = prior_fn(batch.sigma_x_um, batch.sigma_y_um)
         samples, _ = sample_posterior(
             model_fn,
-            (jnp.asarray(batch.dx), jnp.asarray(batch.dy), dt_s, batch.n_disp, prior, batch.n_tracks),
+            (jnp.asarray(batch.dx), jnp.asarray(batch.dy), dt_s, batch.n_disp, prior, batch.n_tracks,
+             exposure_s),
             num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains, seed=seed,
         )
         row = batch.index()

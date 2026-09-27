@@ -27,6 +27,8 @@ import numpy as np
 import polars as pl
 from numpyro.diagnostics import hpdi
 
+from ..data import Acquisition
+from ..validation import validate_acquisition
 from .inference import sample_posterior
 from .model import (
     anomalous_diffusion_model,
@@ -80,13 +82,19 @@ def fit_track(
     num_samples: int = 1000,
     num_chains: int = 4,
     seed: int = 0,
+    exposure_s: float = 0.0,
 ) -> TrackFit:
     """Full NUTS posterior for one track (rows for a single track_id, schema
     from `io.load_tracks`) -- the per-track diagnostic tool for when a
     posterior's shape matters, not just its center. `.raw` holds the full
     `(samples, mcmc)` for direct inspection (`bayes.viz.plot_posterior_corner`
     etc.).
+
+    `exposure_s` is the camera exposure (0 <= exposure_s <= dt_s): the model
+    averages the motion over it, as `gridpost`'s posteriors do. Leaving it at
+    0 for a blurred acquisition biases D low and alpha high.
     """
+    validate_acquisition(Acquisition(dt_s, exposure_s), allow_exposure=True)
     model_fn, _, prior_cls, param_names = MODEL_REGISTRY[model]
     dx, dy, xstd, ystd = _track_arrays(track)
     n_disp = dx.shape[0]
@@ -95,7 +103,7 @@ def fit_track(
     track_length = int(track["track_length"][0])
 
     samples, mcmc = sample_posterior(
-        model_fn, (jnp.asarray(dx), jnp.asarray(dy), dt_s, n_disp, p),
+        model_fn, (jnp.asarray(dx), jnp.asarray(dy), dt_s, n_disp, p, exposure_s),
         num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains, seed=seed,
     )
     params, lo, hi = {}, {}, {}

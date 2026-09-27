@@ -30,12 +30,14 @@ def simulate_fbm_tracks(
     dt_s: float,
     sigma_loc_um: float,
     seed: int = 0,
+    exposure_s: float = 0.0,
 ) -> pl.DataFrame:
     """Simulate 2D fBm tracks (+ iid localization noise) for each (K,
-    alpha) pair in `params_um2_s_alpha`, `n_replicates` tracks each.
+    alpha) pair in `params_um2_s_alpha`, `n_replicates` tracks each, each
+    position averaged over an `exposure_s` camera exposure.
 
     The Cholesky factor of the fGn covariance depends only on (K,
-    alpha, track_length), not on the random draw, so it's built once per
+    alpha, track_length, exposure_s), not on the random draw, so it's built once per
     parameter pair and reused across all `n_replicates` tracks -- avoids
     n_replicates redundant O(track_length^3) factorizations.
     """
@@ -51,7 +53,7 @@ def simulate_fbm_tracks(
 
     track_id = 0
     for K, alpha in params_um2_s_alpha:
-        cov = np.asarray(fgn_covariance(n_disp, K, dt_s, alpha))
+        cov = np.asarray(fgn_covariance(n_disp, K, dt_s, alpha, exposure_s))
         L = np.linalg.cholesky(cov)
         for _ in range(n_replicates):
             dx = L @ rng.standard_normal(n_disp)

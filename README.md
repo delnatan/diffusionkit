@@ -75,7 +75,7 @@ tracks = load_tracks(
 )
 result = analyze_tracks(
     tracks,
-    Acquisition(dt_s=0.035, exposure_s=0.020),  # the D posterior models blur; the alpha posterior excludes it
+    Acquisition(dt_s=0.035, exposure_s=0.020),  # both posteriors model the exposure's motion blur
     GridPostOptions(min_frames=3, level=.9, D_min_um2_s=1e-4, D_max_um2_s=10., n_D=501),
 )
 
@@ -125,8 +125,9 @@ each lag. Different frames and axes may have different errors.
 Assumptions: independent, zero-mean static localization errors; consecutive
 unique frames; uniform positive frame interval; instantaneous positions.
 Missing frames are rejected, not compressed into one time step. The
-`gridpost` D posterior models continuous-exposure blur through
-`Acquisition(exposure_s=...)` (a closed-form Berglund box-shutter average).
+`gridpost` D and alpha posteriors model continuous-exposure blur through
+`Acquisition(exposure_s=...)` (a closed-form box-shutter average: Berglund's at
+alpha=1, its fBm generalization for alpha).
 The MSD fits do not, and they are `excluded` when `exposure_s > 0`.
 `exposure_s=0` is an instantaneous-observation assumption, not a statement
 that your camera has zero exposure.
@@ -190,7 +191,9 @@ tracks.
 `diffusionkit.bayes` (NumPyro) fits the same exact displacement likelihood
 directly, without an MSD curve, via `fit_track` -- a per-track diagnostic
 tool (full NUTS posterior) for inspecting posterior shape on a short or
-weakly-identified track. It is not a bulk production pipeline: bulk
+weakly-identified track. It models the same exposure blur as `gridpost`
+(`fit_track(track, dt_s, exposure_s=...)`), but fits one iid localization SD
+per track rather than using the per-frame ones. It is not a bulk production pipeline: bulk
 per-track diffusivity estimation is `gridpost`'s `D`-posterior job.
 MAP inference and the anisotropy (nested-sampling) workflow have been
 removed: MAP conflated the unconstrained-space mode with the physical-space

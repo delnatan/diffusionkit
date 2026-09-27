@@ -7,7 +7,8 @@ from scipy.stats import multivariate_normal
 
 from diffusionkit import Acquisition
 from diffusionkit.gridpost import brownian_log_likelihood
-from diffusionkit.gridpost.likelihood import motion_covariance
+from diffusionkit.gridpost.likelihood import (
+    _BLUR_SERIES_RATIO, _blurred_abs_power, fgn_motion_covariance, motion_covariance)
 
 
 DT = .033
@@ -93,6 +94,58 @@ class LikelihoodTests(unittest.TestCase):
         self.assertLess(np.abs(emp-model).max(), .04*model.max())
         self.assertGreater(model[0, 1], 0.)  # blur, not localization noise, correlates neighbours positively
 
+
+    def test_blurred_fgn_reduces_to_berglund_at_alpha_one(self):
+        """fBm's exposure average at alpha=1 is the D posterior's Berglund closed form, at any exposure."""
+        for exposure in (0., .001, .02, DT):
+            np.testing.assert_allclose(fgn_motion_covariance(6, DT, 1.0, exposure),
+                                       motion_covariance(6, DT, exposure), rtol=1e-12, atol=1e-15)
+
+    def test_blurred_fgn_without_exposure_is_plain_fgn(self):
+        k = np.arange(5.)
+        for alpha in (.3, 1.4):
+            gamma = DT**alpha * (np.abs(k + 1)**alpha - 2*k**alpha + np.abs(k - 1)**alpha)
+            np.testing.assert_allclose(fgn_motion_covariance(5, DT, alpha)[0], gamma, rtol=1e-12)
+
+    def test_blurred_fgn_matches_quadrature(self):
+        """The closed form against a midpoint double integral of |x + u - v|^alpha over both exposures."""
+        exposure, m, n = .02, 5, 600
+        u = (np.arange(n) + .5) / n * exposure
+        w = (u[:, None] - u[None, :]).ravel()
+        for alpha in (.3, .8, 1.5, 1.9):
+            G = lambda x: np.mean(np.abs(x + w)**alpha)  # noqa: E731
+            gamma = [G((k+1)*DT) - 2*G(k*DT) + G((k-1)*DT) for k in range(m)]
+            np.testing.assert_allclose(fgn_motion_covariance(m, DT, alpha, exposure)[0], gamma,
+                                       rtol=1e-3, atol=1e-6 * gamma[0])
+
+    def test_blurred_fgn_is_continuous_across_its_series_switch(self):
+        """E|x + u - v|^alpha switches to its series at te/x = _BLUR_SERIES_RATIO; both sides must agree."""
+        for alpha in (.05, .4, 1.3, 1.95):
+            for te in (1e-4, .02):
+                x = te / _BLUR_SERIES_RATIO * np.array([1 - 1e-12, 1 + 1e-12])
+                below, above = _blurred_abs_power(x, alpha, te)
+                self.assertLess(abs(below / above - 1), 1e-10)
+        for alpha in (.4, 1.3):
+            # Lag 0's blur fades like te^alpha, slowly at small alpha: 1e-30 s is invisible.
+            np.testing.assert_allclose(fgn_motion_covariance(4, DT, alpha, 1e-30),
+                                       fgn_motion_covariance(4, DT, alpha), rtol=1e-10)
+
+    def test_blurred_fgn_matches_fine_step_simulation(self):
+        """Covariance of box-averaged, exactly simulated fBm displacements (no localization noise)."""
+        rng = np.random.default_rng(3)
+        exposure, m, sub, sims = .02, 3, 60, 20000
+        h = DT / sub
+        n_on = round(exposure / h)
+        t = np.arange(1, (m + 1) * sub + 1) * h  # fine time points after z(0) = 0
+        for alpha in (.5, 1.5):
+            # fBm with E[(z(t) - z(s))^2] = 2|t - s|^alpha: Cov(z(t), z(s)) = |t|^a + |s|^a - |t - s|^a.
+            cov = t[:, None]**alpha + t[None, :]**alpha - np.abs(t[:, None] - t[None, :])**alpha
+            path = np.hstack([np.zeros((sims, 1)), rng.standard_normal((sims, len(t))) @ np.linalg.cholesky(cov).T])
+            w = np.ones(n_on + 1)
+            w[[0, -1]] = .5
+            pos = np.stack([path[:, i*sub:i*sub + n_on + 1] @ w / n_on for i in range(m + 1)], axis=1)
+            emp, model = np.cov(np.diff(pos, axis=1).T), fgn_motion_covariance(m, DT, alpha, exposure)
+            self.assertLess(np.abs(emp - model).max(), .04 * model.max())
 
 if __name__ == "__main__":
     unittest.main()

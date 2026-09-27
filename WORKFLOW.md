@@ -5,7 +5,8 @@ Use `diffusionkit.classic.analyze_track`/`analyze_tracks` for MSD fits and
 grid posteriors -- two independent entry points, each returning its own
 `fits` table; join on `track_id` if you want both. `diffusionkit.bayes.fit_track`
 is a separate, per-track diagnostic tool (full NUTS posterior via NumPyro),
-not part of either bulk table.
+not part of either bulk table; pass it the same `exposure_s` as the grid
+posteriors' `Acquisition`, so both fit the blurred motion.
 
 ## One track, a DataFrame
 
@@ -87,9 +88,21 @@ A separate per-track measurement from the D posterior, not a joint fit:
 `D` comes from the alpha=1 model, `alpha` from the fBm model with the
 generalized diffusion coefficient K marginalized out entirely -- this
 answers "how correlated are consecutive steps" independently of "how big
-are the steps", sidestepping the well-known K/alpha MLE degeneracy. It has
-no exposure-blur model, so `exposure_s` must be 0; `result.posterior_alpha`
-(`model="posterior_alpha"` rows) reports `excluded` otherwise.
+are the steps", sidestepping the well-known K/alpha MLE degeneracy. Set
+`exposure_s` to the camera exposure here too: blur correlates neighbouring
+displacements positively, and a model without it reads that as a larger
+alpha (0.5 comes out near 0.7 at 20 ms of a 33 ms frame).
+
+`analyze_tracks` fits tracks one after another by default. The alpha
+posterior costs about ten times the D posterior (one eigendecomposition per
+alpha grid point), so for a large table pass a thread pool's `map`; the
+linear algebra releases the GIL, and the result is the serial one:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+with ThreadPoolExecutor(8) as pool:
+    result = analyze_tracks(tracks, acquisition, map_fn=pool.map)
+```
 
 ## Inspect or change the classical analysis
 

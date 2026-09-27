@@ -30,10 +30,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(out.posterior_D.status, "excluded")
         self.assertEqual(out.posterior_alpha.status, "excluded")
 
-    def test_exposure_blur_excludes_alpha_not_D(self):
-        out = analyze_track(table(), Acquisition(.03, .02))
-        self.assertNotEqual(out.posterior_D.status, "excluded")
-        self.assertEqual(out.posterior_alpha.status, "excluded")
+    def test_exposure_blur_is_modelled_for_D_and_alpha(self):
+        acquisition, options = Acquisition(.03, .02), GridPostOptions()
+        out = analyze_track(table(), acquisition, options)
+        self.assertEqual(out.posterior_D.status, "ok")
+        self.assertEqual(out.posterior_alpha.status, "ok")
+        direct = PA.track_alpha_posterior(table(), acquisition, options=options)
+        self.assertAlmostEqual(out.posterior_alpha.parameters["alpha_post_median"], direct["median"], places=12)
 
     def test_zero_localization_sd_gives_invalid_input(self):
         zero = table().with_columns(pl.Series("sigma_x_um", np.zeros(5)))
@@ -125,6 +128,35 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(post.log_post_alpha.shape, (1, result.options.n_alpha))
         np.testing.assert_allclose(post.log_post_D[0], analyze_track(good, Acquisition(.03)).log_post_D)
         self.assertIsNone(analyze_tracks(good, Acquisition(.03)).posteriors)
+
+    def test_thread_pool_map_matches_serial(self):
+        """A caller's executor map gives the serial result, rows and progress in track order."""
+        from concurrent.futures import ThreadPoolExecutor
+        tracks = pl.concat([table(n, track_id=i) for i, n in enumerate((12, 2, 6, 30, 5, 9))])
+        zero = tracks.with_columns(pl.when(pl.col("track_id") == 4).then(0.).otherwise(pl.col("sigma_x_um"))
+                                   .alias("sigma_x_um"))  # one invalid_input track
+        acquisition = Acquisition(.03, .015)
+        serial = analyze_tracks(zero, acquisition, keep_posteriors=True)
+        calls = []
+        with ThreadPoolExecutor(4) as pool:
+            threaded = analyze_tracks(zero, acquisition, keep_posteriors=True, map_fn=pool.map,
+                                      progress=lambda done, total: calls.append(done))
+        self.assertTrue(serial.fits.equals(threaded.fits))
+        self.assertIn("invalid_input", serial.fits["status"].to_list())
+        np.testing.assert_array_equal(serial.posteriors.log_post_alpha, threaded.posteriors.log_post_alpha)
+        np.testing.assert_array_equal(serial.posteriors.alpha_track_ids, threaded.posteriors.alpha_track_ids)
+        self.assertEqual(calls, list(range(7)))
+
+    def test_alpha_method_is_recorded_per_track(self):
+        """"auto" gives short tracks the exact likelihood and long ones Whittle, and says which."""
+        tracks = pl.concat([table(8, track_id=1), table(45, track_id=2)])
+        options = GridPostOptions(alpha_whittle_min_frames=40)
+        fits = analyze_tracks(tracks, Acquisition(.03, .01), options).fits.filter(pl.col("model") == "posterior_alpha")
+        self.assertEqual(fits.sort("track_id")["method"].to_list(),
+                         ["grid_posterior_marginal_K", "grid_posterior_marginal_K_whittle"])
+        exact = analyze_tracks(tracks, Acquisition(.03, .01), GridPostOptions(alpha_method="exact")).fits
+        self.assertEqual(set(exact.filter(pl.col("model") == "posterior_alpha")["method"]),
+                         {"grid_posterior_marginal_K"})
 
     def test_keep_posteriors_empty_keeps_grid_width(self):
         result = analyze_tracks(table(2), Acquisition(.03), GridPostOptions(n_D=11), keep_posteriors=True)
