@@ -35,6 +35,24 @@ def track_loglik(track: pl.DataFrame, acquisition: Acquisition, u: np.ndarray) -
     return _loglik(np.exp(u), w["lam"], w["y"][None], w["const"])
 
 
+def localization_floor(track: pl.DataFrame, acquisition: Acquisition) -> float:
+    """The D (um^2/s) at which a displacement's motion equals its localization noise.
+
+    Per axis a displacement's variance is 2 D (dt - exposure/3) from motion
+    (`likelihood.motion_covariance`'s diagonal) plus s_i^2 + s_(i+1)^2 from
+    localization, so the two are equal at D = <s^2> / (dt - exposure/3),
+    with <s^2> the mean localization variance over the track's frames and
+    both axes. A reference scale to draw next to D, not a threshold: the
+    posterior already accounts for the noise, and a D below the floor is
+    still measured, only with less information per displacement. It
+    conditions on the reported SDs, so an SD scaled by c moves it by c^2.
+    """
+    track = _prepared(track, acquisition)
+    sd = track.select("sigma_x_um", "sigma_y_um").to_numpy()
+    tau = float(acquisition.dt_s) - float(acquisition.exposure_s) / 3
+    return float(np.mean(sd ** 2) / tau)
+
+
 # --------------------------------------------------------------------------
 # Priors: log-density on the grid, up to a constant
 # --------------------------------------------------------------------------
@@ -94,7 +112,7 @@ def log_posterior(ll: np.ndarray, log_prior: np.ndarray) -> np.ndarray:
 
 
 def information_bits(log_post: np.ndarray, log_prior: np.ndarray) -> float:
-    """What the track taught about D: relative entropy KL(posterior || prior), in bits.
+    """What the track taught about the gridded parameter (D, or alpha): KL(posterior || prior), in bits.
 
     Both are taken as distributions over the grid points (the prior is
     normalized here), which approximates the continuous relative entropy

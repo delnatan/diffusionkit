@@ -61,6 +61,23 @@ class WorkflowTests(unittest.TestCase):
         bits = out.posterior_D.parameters["D_post_info_bits"]
         self.assertAlmostEqual(bits, P.information_bits(out.log_post_D, P.flat(GridPostOptions().u_D())))
         self.assertGreater(bits, 0.)
+        alpha_bits = out.posterior_alpha.parameters["alpha_post_info_bits"]
+        self.assertAlmostEqual(alpha_bits, P.information_bits(out.log_post_alpha, PA.flat_alpha(GridPostOptions().alphas())))
+        self.assertGreaterEqual(alpha_bits, 0.)
+
+    def test_localization_floor_is_mean_sd_squared_over_blurred_step(self):
+        acquisition = Acquisition(.03, .02)
+        track = table(8)
+        sd = track.select("sigma_x_um", "sigma_y_um").to_numpy()
+        expected = np.mean(sd ** 2) / (.03 - .02 / 3)
+        out = analyze_track(track, acquisition)
+        self.assertAlmostEqual(out.posterior_D.parameters["D_floor_um2_s"], expected, places=15)
+        # At the floor, motion's diagonal in the displacement covariance equals the noise's (constant SD).
+        from diffusionkit.gridpost.likelihood import localization_covariance, motion_covariance
+        s = np.full(8, .02)
+        floor = P.localization_floor(track.with_columns(sigma_x_um=s, sigma_y_um=s), acquisition)
+        np.testing.assert_allclose(floor * np.diag(motion_covariance(7, .03, .02)),
+                                   np.diag(localization_covariance(np.column_stack([s, s]))[0]), rtol=1e-12)
 
     def test_empty_output_retains_schema_and_reports_progress(self):
         calls = []
@@ -92,7 +109,7 @@ class WorkflowTests(unittest.TestCase):
         """A custom D range reaches every posterior: none falls back to a default grid."""
         t = table(12)
         options = GridPostOptions(D_min_um2_s=1e-3, D_max_um2_s=2., n_D=101, alpha_min=.2, alpha_max=1.8,
-                                  n_alpha=17, n_K=61)
+                                  n_alpha=17)
         out = analyze_track(t, Acquisition(.03), options)
         self.assertEqual(out.log_post_D.shape, (101,))
         self.assertEqual(out.log_post_alpha.shape, (17,))
@@ -153,10 +170,10 @@ class WorkflowTests(unittest.TestCase):
         options = GridPostOptions(alpha_whittle_min_frames=40)
         fits = analyze_tracks(tracks, Acquisition(.03, .01), options).fits.filter(pl.col("model") == "posterior_alpha")
         self.assertEqual(fits.sort("track_id")["method"].to_list(),
-                         ["grid_posterior_marginal_K", "grid_posterior_marginal_K_whittle"])
+                         ["grid_posterior_marginal_D", "grid_posterior_marginal_D_whittle"])
         exact = analyze_tracks(tracks, Acquisition(.03, .01), GridPostOptions(alpha_method="exact")).fits
         self.assertEqual(set(exact.filter(pl.col("model") == "posterior_alpha")["method"]),
-                         {"grid_posterior_marginal_K"})
+                         {"grid_posterior_marginal_D"})
 
     def test_keep_posteriors_empty_keeps_grid_width(self):
         result = analyze_tracks(table(2), Acquisition(.03), GridPostOptions(n_D=11), keep_posteriors=True)
@@ -171,7 +188,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_invalid_grid_options_raise(self):
         for bad in (dict(D_min_um2_s=0.), dict(D_min_um2_s=1., D_max_um2_s=.5), dict(D_max_um2_s=np.inf),
-                    dict(n_D=1), dict(alpha_min=0.), dict(alpha_max=2.), dict(n_alpha=1), dict(n_K=1),
+                    dict(n_D=1), dict(alpha_min=0.), dict(alpha_max=2.), dict(n_alpha=1),
                     dict(level=1.)):
             with self.subTest(**bad), self.assertRaises(ValueError):
                 GridPostOptions(**bad)

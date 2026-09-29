@@ -17,8 +17,8 @@ class GridPostOptions:
     it, so a posterior that reaches an edge is cut there, and its median and
     interval move with the edge. Every public function that evaluates a grid
     takes these options (or the arrays they build) -- there is no module-level
-    grid to fall back on. The nuisance K grid (um^2/s^alpha) spans the same
-    numeric range as D, with its own, coarser point count.
+    grid to fall back on. The alpha posterior integrates its scale, D at the
+    frame interval, over this same D grid and prior.
     """
     min_frames: int = 3  # the whitening step's own hard minimum (>= 3 frames -> >= 2 displacements)
     level: float = .9  # credible-interval mass
@@ -29,7 +29,6 @@ class GridPostOptions:
     alpha_min: float = .05
     alpha_max: float = 1.95
     n_alpha: int = 39
-    n_K: int = 251
     compute_alpha: bool = True  # False: every alpha row is `excluded` ("not requested")
     # The alpha likelihood: "exact" (Gaussian, one eigendecomposition per alpha,
     # O(m^3)), "whittle" (debiased Whittle, one FFT per alpha, O(m log m)), or
@@ -40,10 +39,6 @@ class GridPostOptions:
     # (scripts/validate_alpha_whittle.py, audit/alpha_whittle_validation.json).
     alpha_method: str = "auto"
     alpha_whittle_min_frames: int = 40
-    # D at a second timescale, tau = D_long_stride * dt (`gridpost.timescale`):
-    # the D posterior refitted to the track thinned to every D_long_stride-th
-    # frame, and its ratio to D at dt. None skips it.
-    D_long_stride: int | None = None
 
     ALPHA_METHODS: ClassVar[tuple[str, ...]] = ("auto", "exact", "whittle")
 
@@ -53,7 +48,7 @@ class GridPostOptions:
             raise ValueError(f"need 0 < D_min_um2_s < D_max_um2_s, got {self.D_min_um2_s}, {self.D_max_um2_s}")
         if not 0 < self.alpha_min < self.alpha_max < 2:
             raise ValueError(f"need 0 < alpha_min < alpha_max < 2, got {self.alpha_min}, {self.alpha_max}")
-        for name in ("n_D", "n_alpha", "n_K"):
+        for name in ("n_D", "n_alpha"):
             if getattr(self, name) < 2:
                 raise ValueError(f"{name} must be at least 2")
         if not 0 < self.level < 1:
@@ -62,16 +57,10 @@ class GridPostOptions:
             raise ValueError(f"alpha_method must be one of {self.ALPHA_METHODS}, got {self.alpha_method!r}")
         if self.alpha_whittle_min_frames < 3:
             raise ValueError(f"alpha_whittle_min_frames must be at least 3, got {self.alpha_whittle_min_frames}")
-        if self.D_long_stride is not None and (isinstance(self.D_long_stride, bool) or self.D_long_stride < 2):
-            raise ValueError(f"D_long_stride must be an integer >= 2 (or None), got {self.D_long_stride!r}")
 
     def u_D(self) -> np.ndarray:
-        """The ln D grid (D in um^2/s) the D posterior is evaluated on."""
+        """The ln D grid (D in um^2/s): the D posterior's, and the alpha posterior's nuisance scale."""
         return np.linspace(np.log(self.D_min_um2_s), np.log(self.D_max_um2_s), self.n_D)
-
-    def u_K(self) -> np.ndarray:
-        """The ln K grid the alpha posterior integrates K out over: D's range, n_K points."""
-        return np.linspace(np.log(self.D_min_um2_s), np.log(self.D_max_um2_s), self.n_K)
 
     def alpha_likelihood(self, n_frames: int) -> str:
         """"exact" or "whittle": the alpha likelihood a track of `n_frames` gets."""
@@ -88,7 +77,7 @@ class GridPostOptions:
 class PosteriorD:
     PARAMETERS: ClassVar[tuple[str, ...]] = (
         "D_post_median_um2_s", "D_post_lo_um2_s", "D_post_hi_um2_s", "D_post_info_bits",
-        "D_motion_lrt")
+        "D_floor_um2_s")
     parameters: dict[str, float | None]
     status: str
     message: str
@@ -100,30 +89,12 @@ class PosteriorD:
 @dataclass(frozen=True)
 class PosteriorAlpha:
     PARAMETERS: ClassVar[tuple[str, ...]] = (
-        "alpha_post_median", "alpha_post_lo", "alpha_post_hi")
+        "alpha_post_median", "alpha_post_lo", "alpha_post_hi", "alpha_post_info_bits")
     parameters: dict[str, float | None]
     status: str
     message: str
     model: str = "posterior_alpha"
-    method: str = "grid_posterior_marginal_K"
-    uncertainty_method: str = "credible_interval"
-
-
-@dataclass(frozen=True)
-class PosteriorDTimescale:
-    """D at tau = `GridPostOptions.D_long_stride` * dt, and its ratio to D at dt.
-
-    `P_D_decrease` is P(D_long < D) -- the posterior probability that the
-    apparent diffusivity drops between the two timescales.
-    """
-    PARAMETERS: ClassVar[tuple[str, ...]] = (
-        "tau_long_s", "D_long_post_median_um2_s", "D_long_post_lo_um2_s", "D_long_post_hi_um2_s",
-        "D_ratio_post_median", "D_ratio_post_lo", "D_ratio_post_hi", "P_D_decrease")
-    parameters: dict[str, float | None]
-    status: str
-    message: str
-    model: str = "posterior_D_timescale"
-    method: str = "grid_posterior_phase_averaged"
+    method: str = "grid_posterior_marginal_D"
     uncertainty_method: str = "credible_interval"
 
 
@@ -139,10 +110,6 @@ class TrackPosterior:
     # unless that posterior's status is "ok".
     log_post_D: np.ndarray | None = field(default=None, compare=False, repr=False)
     log_post_alpha: np.ndarray | None = field(default=None, compare=False, repr=False)
-    # With `options.D_long_stride` set: D at the longer timescale, and its
-    # normalized log posterior on `options.u_D()` (None unless "ok").
-    posterior_D_long: PosteriorDTimescale | None = None
-    log_post_D_long: np.ndarray | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -158,14 +125,11 @@ class GridPosteriors:
     log_post_D: np.ndarray  # (len(D_track_ids), n_D)
     alpha_track_ids: np.ndarray
     log_post_alpha: np.ndarray  # (len(alpha_track_ids), n_alpha)
-    # With `GridPostOptions.D_long_stride` set, D at the longer timescale, rows on `u_D()`.
-    D_long_track_ids: np.ndarray | None = None
-    log_post_D_long: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
 class GridPosteriorAnalysis:
-    fits: pl.DataFrame  # one row per (track_id, model): posterior_D, posterior_alpha[, posterior_D_timescale]
+    fits: pl.DataFrame  # one row per (track_id, model): posterior_D, posterior_alpha
     acquisition: Acquisition
     options: GridPostOptions
     posteriors: GridPosteriors | None = field(default=None, compare=False, repr=False)  # keep_posteriors=True

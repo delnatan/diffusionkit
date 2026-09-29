@@ -117,6 +117,22 @@ class DeconvolveTests(unittest.TestCase):
         truth = np.mean(D_values > np.sqrt(.02 * .2))
         self.assertLess(abs(recovered - truth), .06)
 
+    def test_flat_likelihoods_leave_the_alpha_distribution_unchanged(self):
+        # On the alpha grid, as the per-track posteriors are used: a track with no
+        # information has a flat likelihood and must not add mass at the prior's median.
+        # Unsmoothed, flat rows only slow EM down; the smoothed update is not invariant
+        # (see the module docstring).
+        alphas = GridPostOptions().alphas()
+        rng = np.random.default_rng(9)
+        centers = rng.choice([.3, 1.4], 200)
+        informative = -.5 * ((alphas[None] - centers[:, None]) / .15) ** 2
+        flat_rows = np.zeros((400, len(alphas)))
+        prior = np.zeros(len(alphas))
+        alone = D.deconvolve(informative, prior, iters=3000, smooth=0)
+        mixed = D.deconvolve(np.vstack([informative, flat_rows]), prior, iters=3000, smooth=0)
+        np.testing.assert_allclose(mixed, alone, atol=1e-6)
+        self.assertLess(mixed[(alphas > .7) & (alphas < 1.1)].sum(), .02)
+
     def test_import_does_not_load_bayes_or_plotting(self):
         import subprocess
         import sys

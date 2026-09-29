@@ -13,7 +13,7 @@ from diffusionkit.gridpost.likelihood import fgn_motion_covariance, localization
 
 DT = .033
 OPTIONS = GridPostOptions()
-ALPHA, U_K, U_D = OPTIONS.alphas(), OPTIONS.u_K(), OPTIONS.u_D()
+ALPHA, U_D = OPTIONS.alphas(), OPTIONS.u_D()
 
 
 def track_table(track_id, frames, positions, sd):
@@ -36,12 +36,14 @@ def simulate(K, alpha, sd, dt, rng, n_frames=None, exposure=0.):
     return true + sd[:, None] * rng.standard_normal((n, 2))
 
 
-def dense_loglik(track, alpha, K, exposure=0.):
-    """Independent oracle: dense per-axis fGn + localization covariance, SciPy density."""
+def dense_loglik(track, alpha, D, exposure=0.):
+    """Independent oracle: dense per-axis fGn + localization covariance, SciPy density.
+
+    D is the apparent diffusivity at the frame interval, K = D dt^(1-alpha)."""
     delta = np.diff(track.select("x_um", "y_um").to_numpy(), axis=0)
     sd = track.select("sigma_x_um", "sigma_y_um").to_numpy()
     m = delta.shape[0]
-    A = K * fgn_motion_covariance(m, DT, alpha, exposure)
+    A = D * DT ** (1 - alpha) * fgn_motion_covariance(m, DT, alpha, exposure)
     return sum(multivariate_normal(np.zeros(m), A + B).logpdf(delta[:, axis])
               for axis, B in enumerate(localization_covariance(sd)))
 
@@ -54,8 +56,8 @@ class PosteriorAlphaTests(unittest.TestCase):
         for alpha in (0.4, 1.0, 1.6):
             pos = simulate(.05, alpha, sd[:, 0], DT, rng, n_frames=n)
             t = track_table(1, np.arange(n), pos, sd)
-            ll = PA.track_loglik_given_alpha(t, Acquisition(DT), alpha, U_K)
-            direct = np.array([dense_loglik(t, alpha, K) for K in np.exp(U_K)])
+            ll = PA.track_loglik_given_alpha(t, Acquisition(DT), alpha, U_D[::5])
+            direct = np.array([dense_loglik(t, alpha, D) for D in np.exp(U_D[::5])])
             np.testing.assert_allclose(ll, direct, atol=1e-8)
 
     def test_alpha_one_reduces_to_the_D_posterior(self):
@@ -72,7 +74,7 @@ class PosteriorAlphaTests(unittest.TestCase):
     def test_credible_intervals_are_calibrated(self):
         """Truth drawn from flat priors, data simulated independently: 90% intervals cover 90%."""
         K_true = .05
-        K_prior = PA.flat_K(U_K)
+        D_prior = PD.flat(U_D)
         rng = np.random.default_rng(3)
         for n_frames in (8, 15):
             hits, n_tracks = 0, 250
@@ -81,7 +83,7 @@ class PosteriorAlphaTests(unittest.TestCase):
                 sd = rng.uniform(.025, .045, (n_frames, 2))
                 pos = simulate(K_true, alpha_true, sd[:, 0], DT, rng, n_frames=n_frames)
                 t = track_table(1, np.arange(n_frames), pos, sd)
-                s = PA.track_alpha_posterior(t, Acquisition(DT), K_prior, GridPostOptions(level=.9))
+                s = PA.track_alpha_posterior(t, Acquisition(DT), D_prior, GridPostOptions(level=.9))
                 hits += s["lo"] <= alpha_true <= s["hi"]
             self.assertLess(abs(hits/n_tracks - .9), .08)
 
@@ -92,8 +94,29 @@ class PosteriorAlphaTests(unittest.TestCase):
         sd = rng.uniform(.03, .045, (n, 2))
         pos = simulate(.05, 1.0, sd[:, 0], DT, rng, n_frames=n)
         t = track_table(1, np.arange(n), pos, sd)
-        s = PA.track_alpha_posterior(t, Acquisition(DT), PA.flat_K(U_K))
+        s = PA.track_alpha_posterior(t, Acquisition(DT), PD.flat(U_D))
         self.assertGreater(s["hi"] - s["lo"], 0.6 * (ALPHA[-1] - ALPHA[0]))
+
+    def test_alpha_posterior_does_not_depend_on_the_unit_of_time(self):
+        """The same track, grid and prior in seconds or in milliseconds: the same alpha posterior.
+
+        A nuisance grid over fBm's K (um^2/s^alpha) fails this, because what a
+        fixed K range means depends on alpha and on the unit; D at dt does not.
+        Slow, noise-dominated motion puts the scale near the grid floor, where
+        the difference shows."""
+        rng = np.random.default_rng(14)
+        n, exposure = 8, .02
+        sd = np.full((n, 2), .015)
+        t = track_table(1, np.arange(n), simulate(.001, .5, sd[:, 0], DT, rng, n, exposure), sd)
+        options = GridPostOptions(D_min_um2_s=1e-4, D_max_um2_s=10.)
+        in_ms = GridPostOptions(D_min_um2_s=1e-7, D_max_um2_s=1e-2)  # um^2/ms
+        for method in ("exact", "whittle"):
+            with self.subTest(method=method):
+                s = PA.alpha_posterior(PA.joint_loglik(t, Acquisition(DT, exposure), ALPHA, options.u_D(), method),
+                                       PD.flat(options.u_D()))
+                ms = PA.alpha_posterior(PA.joint_loglik(t, Acquisition(1e3 * DT, 1e3 * exposure), ALPHA,
+                                                        in_ms.u_D(), method), PD.flat(in_ms.u_D()))
+                np.testing.assert_allclose(ms, s, rtol=1e-7, atol=1e-12)
 
     def test_flat_alpha_prior_is_uniform_over_grid(self):
         np.testing.assert_array_equal(PA.flat_alpha(ALPHA), np.zeros_like(ALPHA))
@@ -105,8 +128,8 @@ class PosteriorAlphaTests(unittest.TestCase):
         for alpha in (0.4, 1.0, 1.6):
             pos = simulate(.05, alpha, sd[:, 0], DT, rng, n_frames=n, exposure=exposure)
             t = track_table(1, np.arange(n), pos, sd)
-            ll = PA.track_loglik_given_alpha(t, Acquisition(DT, exposure), alpha, U_K)
-            direct = np.array([dense_loglik(t, alpha, K, exposure) for K in np.exp(U_K)])
+            ll = PA.track_loglik_given_alpha(t, Acquisition(DT, exposure), alpha, U_D[::5])
+            direct = np.array([dense_loglik(t, alpha, D, exposure) for D in np.exp(U_D[::5])])
             np.testing.assert_allclose(ll, direct, atol=1e-8)
 
     def test_blurred_alpha_one_reduces_to_the_D_posterior(self):
@@ -125,20 +148,20 @@ class PosteriorAlphaTests(unittest.TestCase):
         sd = rng.uniform(.02, .05, (n, 2))
         t = track_table(1, np.arange(n), simulate(.05, .7, sd[:, 0], DT, rng, n, .01), sd)
         acquisition = Acquisition(DT, .01)
-        whole = PA.joint_loglik(t, acquisition, ALPHA, U_K)
+        whole = PA.joint_loglik(t, acquisition, ALPHA, U_D)
         saved = PA._BATCH_ELEMENTS
         try:
             PA._BATCH_ELEMENTS = 5 * 2 * (n - 1) ** 2  # five alphas per chunk
-            chunked = PA.joint_loglik(t, acquisition, ALPHA, U_K)
+            chunked = PA.joint_loglik(t, acquisition, ALPHA, U_D)
         finally:
             PA._BATCH_ELEMENTS = saved
         np.testing.assert_allclose(chunked, whole, rtol=0, atol=1e-9)
-        by_alpha = np.array([PA.track_loglik_given_alpha(t, acquisition, a, U_K) for a in ALPHA[::10]])
+        by_alpha = np.array([PA.track_loglik_given_alpha(t, acquisition, a, U_D) for a in ALPHA[::10]])
         np.testing.assert_allclose(whole[::10], by_alpha, rtol=0, atol=1e-9)
 
     def test_blurred_credible_intervals_are_calibrated(self):
         """Blurred simulation, blur modelled: 90% intervals cover 90%."""
-        K_prior, exposure = PA.flat_K(U_K), .02
+        D_prior, exposure = PD.flat(U_D), .02
         rng = np.random.default_rng(8)
         hits, n_tracks, n_frames = 0, 250, 10
         for _ in range(n_tracks):
@@ -146,7 +169,7 @@ class PosteriorAlphaTests(unittest.TestCase):
             sd = rng.uniform(.025, .045, (n_frames, 2))
             pos = simulate(.05, alpha_true, sd[:, 0], DT, rng, n_frames, exposure)
             t = track_table(1, np.arange(n_frames), pos, sd)
-            s = PA.track_alpha_posterior(t, Acquisition(DT, exposure), K_prior)
+            s = PA.track_alpha_posterior(t, Acquisition(DT, exposure), D_prior)
             hits += s["lo"] <= alpha_true <= s["hi"]
         self.assertLess(abs(hits/n_tracks - .9), .08)
 
@@ -166,12 +189,12 @@ class PosteriorAlphaTests(unittest.TestCase):
 
     def test_whittle_matches_a_dense_expected_periodogram(self):
         """The FFT-built debiased Whittle surface against its definition, evaluated densely:
-        S(w) = f(w)^H (K A + B) f(w) / m, f(w)_t = exp(-i w t)."""
+        S(w) = f(w)^H (D dt^(1-alpha) A + B) f(w) / m, f(w)_t = exp(-i w t)."""
         rng = np.random.default_rng(10)
         n, exposure = 12, .02
         sd = rng.uniform(.02, .05, (n, 2))
         t = track_table(1, np.arange(n), simulate(.05, .8, sd[:, 0], DT, rng, n, exposure), sd)
-        acquisition, alphas, u = Acquisition(DT, exposure), np.array([.4, 1.3]), U_K[::50]
+        acquisition, alphas, u = Acquisition(DT, exposure), np.array([.4, 1.3]), U_D[::100]
         ours = PA.joint_loglik(t, acquisition, alphas, u, method="whittle")
         delta = np.diff(t.select("x_um", "y_um").to_numpy(), axis=0).T
         m = n - 1
@@ -179,9 +202,9 @@ class PosteriorAlphaTests(unittest.TestCase):
         I = np.abs(F @ delta.T).T ** 2 / m
         B = localization_covariance(sd)
         for i, alpha in enumerate(alphas):
-            A = fgn_motion_covariance(m, DT, alpha, exposure)
-            for k, K in enumerate(np.exp(u)):
-                S = np.stack([np.einsum("ji,il,jl->j", F.conj(), K * A + B[axis], F).real / m for axis in range(2)])
+            A = DT ** (1 - alpha) * fgn_motion_covariance(m, DT, alpha, exposure)
+            for k, D in enumerate(np.exp(u)):
+                S = np.stack([np.einsum("ji,il,jl->j", F.conj(), D * A + B[axis], F).real / m for axis in range(2)])
                 direct = -.5 * np.sum(np.log(S) + I / S) - m * np.log(2 * np.pi)
                 self.assertAlmostEqual(ours[i, k], direct, places=8)
 
@@ -217,11 +240,11 @@ class PosteriorAlphaTests(unittest.TestCase):
         sd = rng.uniform(.02, .05, (n, 2))
         t = track_table(1, np.arange(n), simulate(.05, 1.2, sd[:, 0], DT, rng, n, .01), sd)
         acquisition = Acquisition(DT, .01)
-        whole = PA.joint_loglik(t, acquisition, ALPHA, U_K, method="whittle")
+        whole = PA.joint_loglik(t, acquisition, ALPHA, U_D, method="whittle")
         saved = PA._BATCH_ELEMENTS
         try:
-            PA._BATCH_ELEMENTS = 7 * len(U_K) * 2 * (n - 1)  # seven alphas per chunk
-            chunked = PA.joint_loglik(t, acquisition, ALPHA, U_K, method="whittle")
+            PA._BATCH_ELEMENTS = 7 * len(U_D) * 2 * (n - 1)  # seven alphas per chunk
+            chunked = PA.joint_loglik(t, acquisition, ALPHA, U_D, method="whittle")
         finally:
             PA._BATCH_ELEMENTS = saved
         np.testing.assert_allclose(chunked, whole, rtol=0, atol=1e-9)
@@ -236,7 +259,7 @@ class PosteriorAlphaTests(unittest.TestCase):
             GridPostOptions(alpha_method="fast")
         with self.assertRaisesRegex(ValueError, "method"):
             PA.joint_loglik(track_table(1, np.arange(5), np.zeros((5, 2)), np.full((5, 2), .03)),
-                            Acquisition(DT), ALPHA, U_K, method="fast")
+                            Acquisition(DT), ALPHA, U_D, method="fast")
 
 if __name__ == "__main__":
     unittest.main()

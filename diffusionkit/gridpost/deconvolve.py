@@ -19,6 +19,20 @@ evidence) instead of the fixed `smooth` constant, but on synthetic data it
 underperformed this simpler method and its evidence curve did not show a
 clear interior maximum, so the Gaussian-smoothed EM below remains the one
 wired in here.
+
+`deconvolve` itself only needs log-likelihood rows on a common 1D grid, so it
+serves the alpha grid too: with a flat alpha prior, each track's normalized
+log posterior over alpha is its log likelihood up to a constant. That
+likelihood has the scale (D at dt) marginalized under the D grid's flat prior
+(`posterior_alpha.log_alpha_posterior`), not a clean likelihood the way D's
+is, so a deconvolved alpha distribution inherits that choice. A track with
+no information about the parameter has a flat likelihood: unsmoothed, it
+leaves the maximum unchanged (it only slows EM), where it would pull a
+histogram of medians toward the prior's median. The per-step smoothing is
+not invariant to it -- flat tracks shrink each EM step while the blur per
+step stays -- so a large uninformative fraction widens the result somewhat.
+On a gelled-bead movie with 42% of tracks under 0.5 bits about alpha,
+dropping those tracks moved the mass below alpha = 0.5 from 0.95 to 0.99.
 """
 from __future__ import annotations
 

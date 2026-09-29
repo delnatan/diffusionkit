@@ -56,33 +56,13 @@ that: the relative entropy from the flat prior to the posterior, in bits.
 It is invariant to reparametrizing D but relative to the prior's range, so
 it compares tracks and experiments only on the same grid; a
 localization-limited track that only bounds D from above earns the bits of
-the prior it rules out. Calibration is a simulation check under the model (see
+the prior it rules out. `D_floor_um2_s` (`posterior.localization_floor`) is the D at
+which a displacement's motion variance, 2 D (dt - exposure/3) per axis,
+equals its localization noise, `s_i^2 + s_(i+1)^2`: `<s^2> / (dt -
+exposure/3)` over the track's own SDs. It is a scale to draw next to any D,
+not a detection threshold -- the posterior already accounts for the noise
+-- and it moves with the square of any error in the reported SDs. Calibration is a simulation check under the model (see
 `prototypes/README.md`), not a claim about experimental tracks.
-
-The track summary also includes `D_motion_lrt`, available directly as
-`gridpost.brownian_motion_lrt(track, acquisition)`. This compares a noise-only
-covariance `c² B` against `D A + c² B`, fitting a global localization SD
-multiplier `c > 0` in both hypotheses and `D >= 0` in the alternative. It is
-twice the maximized log-likelihood difference (using the supremum when the
-alternative approaches `c = 0`). Near zero means Brownian motion adds little
-fit improvement beyond rescaling localization noise; larger values indicate
-greater improvement. Failure to distinguish the models does not establish
-immobility. This is a likelihood-ratio score, not a Bayes factor or a p-value;
-short-track significance thresholds require simulation calibration, rather
-than an ordinary chi-square cutoff at the `D = 0` boundary.
-
-The comparison profiles out the common variance analytically in the existing
-whitened coordinates, then scans and refines the remaining covariance-shape
-parameter, including both limiting shapes. It is independent of the posterior
-grid and prior, and invariant to a global scaling of positions or reported
-localization SDs. It only tolerates a global noise-scale mismatch, not arbitrary
-errors in temporal covariance or relative per-frame uncertainties. The D
-posterior and its information bits still condition on the reported SDs (`c=1`);
-they are not replaced by this separate comparison. Exactly zero displacements
-give an unbounded likelihood as the scale tends to zero, so the score is null
-and the summary message explains why. Excluded/invalid rows also have null
-scores. The value appears on `posterior_D` rows in `analysis.fits`, and in
-`result.posterior_D.parameters` for single-track analysis.
 
 This module started as, and is adapted from, `prototypes/posterior_1d.py`
 (a standalone reference implementation with its own extensive calibration
@@ -91,16 +71,16 @@ maximum-likelihood D with a bootstrap-calibrated non-Brownian z-score
 testing deviation from alpha=1) has been retired now that the posterior
 supersedes its point-estimate role.
 
-## alpha: grid posterior over the fBm exponent, K marginalized out
+## alpha: grid posterior over the fBm exponent, its scale marginalized out
 
 `diffusionkit.gridpost.posterior_alpha`, adapted from
 `prototypes/posterior_alpha.py`, answers a different question from the D
 posterior above: not "how big are the steps" (the alpha=1 model) but "how
-are consecutive steps correlated". Per axis, the same m = n-1 displacements
+does the spread grow with time". Per axis, the same m = n-1 displacements
 are Gaussian under the fBm model:
 
 ```
-Sigma(K, alpha) = K A(alpha) + B
+Sigma(D, alpha) = D dt^(1-alpha) A(alpha) + B
 A(alpha)_k = G((k+1) dt) - 2 G(k dt) + G((k-1) dt)   (lag k)
 G(x) = E|x + u - v|^alpha,   u, v ~ Uniform(0, exposure_s)
 ```
@@ -131,8 +111,24 @@ Blur matters for alpha. It correlates neighbouring displacements positively
 which is what alpha is read from: fitted without it, simulated alpha=0.5
 tracks come out near 0.7 and alpha=1 near 1.14.
 
-For any *fixed* alpha this is linear in K exactly as the D posterior's model
-is linear in D, so the same whitening trick applies -- but A(alpha) itself
+The scale D is the apparent diffusivity at the frame interval,
+MSD(dt) / (4 dt) = K dt^(alpha-1), not fBm's generalized coefficient K
+(um^2/s^alpha). The two describe the same motion, but a grid and a flat prior
+over ln K do not describe the same prior: K's unit depends on alpha, so a
+fixed K range admits different motions at each alpha, and which ones depends
+on whether time is in seconds or milliseconds. On a gelled-bead movie (dt 44
+ms, D ~ 0.001 um^2/s at dt) the K grid's 1e-4 floor removed low-alpha
+hypotheses, since there K = D dt^(1-alpha) falls below 1e-4 as alpha drops:
+5-9 frame tracks, which carry ~0.06 bits about alpha, reported a median of
+1.15 with the scale on K and 0.79 with it on D at dt; on 40-frame tracks the
+two agreed. With D at dt, alpha's nuisance scale is the D posterior's own
+grid and prior (`GridPostOptions.u_D`, flat in ln D), a grid edge means the
+same thing for both posteriors, the alpha posterior is unchanged by a change
+of time unit (tested), and at alpha=1 its likelihood is exactly the D
+posterior's.
+
+For any *fixed* alpha this is linear in D, like the D posterior's model, so
+the same whitening trick applies -- but A(alpha) itself
 changes shape with alpha, so each alpha grid point (`GridPostOptions.alphas()`,
 39 points by default) needs its own eigendecomposition, unlike the D
 posterior's single decomposition reused across the whole D grid. Everything
@@ -149,16 +145,16 @@ eigenvectors: with each axis's periodogram I(w_j) = |FFT(d)_j|^2 / m,
 
 ```
 log L = -1/2 sum_{axis, j} [ln S(w_j) + I(w_j) / S(w_j)] - m ln 2 pi
-S(w)  = K S_A(w; alpha) + S_B(w)
+S(w)  = D S_A(w; alpha) + S_B(w)
 ```
 
 The *debiased* version (Sykulski, Olhede, Guillaumin, Lilly & Early 2019,
 Biometrika 106:251) takes S to be the expected periodogram of the exact
 finite-m covariance, not the process's spectral density: S_A is the FFT of
-the tapered exact blurred autocovariance (1 - k/m) gamma(k), and S_B comes
+the tapered exact blurred autocovariance (1 - k/m) dt^(1-alpha) gamma(k), and S_B comes
 from the per-frame localization SDs. That removes the leakage and aliasing
 bias of plain Whittle, so the only approximation left is treating the
-periodogram ordinates as independent. S is linear in K, so the K
+periodogram ordinates as independent. S is linear in D, so the D
 marginalization is unchanged, and each alpha costs one O(m log m) FFT
 (`posterior_alpha._whittle_joint_loglik`).
 
@@ -182,72 +178,54 @@ tracks >= 40 frames move by 0.02 (median) and 0.13 (90th percentile) in
 alpha. `analyze_tracks(..., map_fn=pool.map)` spreads tracks over a
 caller's thread pool (the linear algebra releases the GIL).
 
-The alpha posterior is the 1D marginal of the 2D (alpha, ln K) log-likelihood
-surface, integrating the nuisance K out with its own (hand-set, not
-empirical-Bayes) prior via `logsumexp` -- `posterior_alpha.summary` reports
-the median and credible interval (`alpha_post_median`, `alpha_post_lo`,
-`alpha_post_hi`). D and alpha are reported as two independent per-track
-measurements, not a joint (K, alpha) fit: `D` comes from the alpha=1 model,
-`alpha` from the fBm model with K integrated out entirely, which sidesteps
-the well-known K/alpha MLE degeneracy rather than inheriting it.
+The alpha posterior is the 1D marginal of the 2D (alpha, ln D) log-likelihood
+surface, integrating the nuisance D out under the flat ln D prior via
+`logsumexp` -- `posterior_alpha.summary` reports the median and credible
+interval (`alpha_post_median`, `alpha_post_lo`, `alpha_post_hi`). D and alpha
+are reported as two per-track measurements, not a joint (D, alpha) point:
+`D` comes from the alpha=1 model, `alpha` from the fBm model with its scale
+integrated out entirely, which sidesteps the scale/alpha MLE degeneracy
+rather than inheriting it. `alpha_post_info_bits` is
+`posterior.information_bits` against the flat alpha prior. A track with too
+little motion above its localization noise, or too few frames, has a
+near-flat alpha posterior whose median sits near the prior's centre (1.0 on
+the default grid) whatever the motion is, so read alpha medians together
+with their bits. `deconvolve.deconvolve` accepts these posteriors as
+likelihood rows on the alpha grid (flat alpha prior); see its docstring for
+what that distribution inherits from the scale's prior and the smoothing.
 
-## D at two timescales: `gridpost.timescale`
+## What is reported, and what is not
 
-`GridPostOptions(D_long_stride=k)` refits the D posterior at tau = k dt and
-reports how D changes between the two timescales -- the apparent diffusivity
-D(tau) = MSD(tau) / (4 tau), which is constant for Brownian motion. A ratio
-below 1 says the motion slows at longer times (confinement, a crowded or
-elastic surrounding, fBm with alpha < 1, where it is k^(alpha-1)); above 1,
-that it is persistent. It needs no model of why, which is its use next to
-the alpha posterior: alpha commits to fBm, and a confined particle is not
-one. The gap k is the one choice it asks for -- the timescale being
-compared with dt -- and the shortest track it can use is
-`(min_frames - 1) * k + 1` frames.
+Under this model a track's information is its displacement covariance
+relative to the localization noise -- equivalently MSD(tau) -- and that has
+one well-measured direction and one weak one: its scale, D, and how it bends
+with tau, alpha. Other per-track metrics are functions of the same
+covariance. On the 2026-09-23 gelatin temperature series (198 nm beads,
+liquid to gel), Spearman correlations over tracks show two groups: D with
+the mean step (0.94 in the liquid); and alpha with a timescale ratio of D
+(0.87), a Brownian-versus-noise likelihood ratio (0.64), the radius of
+gyration (0.65) and straightness (0.55-0.77), the likelihood ratio in turn
+0.92 with the radius of gyration and 0.00 with D. In the liquid, where every
+bead's alpha is ~1, the second group's correlation is chance: a track that
+happens to wander further raises all of them at once. They are one
+fluctuation under several names, each inviting a different story
+("confined", "trapped", "directed") that the data do not separate on short
+tracks.
 
-D at tau is the D posterior of the track thinned to every k-th frame: the
-same exact likelihood with frame interval k dt, the same exposure (so its
-blur is Berglund's average at R = exposure / (6 k dt)), and each retained
-frame's own localization SD. Thinning leaves k interleaved phases, which
-share the underlying path and so are not independent: their
-log-likelihoods are averaged (`timescale.thinned_loglik`, a composite
-likelihood with weight 1/k per phase), so every frame counts toward the
-estimate while the posterior keeps about one phase's width. The ratio's
-posterior (`timescale.ratio_posterior`) combines the two D posteriors as if
-independent; they are positively correlated, so this widens the ratio's
-interval. Both choices err conservative.
-
-`scripts/validate_D_timescale.py` (recorded in
-`audit/D_timescale_validation.json`) checks them on tracks simulated at a
-fine time step and averaged over a 20 ms exposure, with per-frame
-localization SDs of 0.015-0.05 um, stride 5 (33 -> 165 ms), 300 tracks per
-cell:
-
-| | 20 frames | 50 frames | 100 frames |
-| --- | --- | --- | --- |
-| Brownian: ratio median (truth 1) | 1.08 | 1.01 | 1.01 |
-| Brownian: ratio interval covers 1 | 0.99 | 0.99 | 1.00 |
-| Brownian: P_D_decrease > 0.95 (false flags) | 0.01 | 0.00 | 0.00 |
-| Brownian: D_long 90% coverage, averaged (one phase) | 0.98 (0.90) | 0.96 (0.91) | 0.96 (0.92) |
-| Brownian: D_long RMSE in ln D, averaged (one phase) | 0.49 (0.66) | 0.28 (0.35) | 0.19 (0.24) |
-| Trapped, L = 0.15 um: ratio median (noise-free 0.50) | 0.52 | 0.49 | 0.49 |
-| Trapped, L = 0.15 um: P_D_decrease > 0.95 | 0.07 | 0.49 | 0.92 |
-| fBm alpha = 0.6: ratio median (noise-free 0.53) | 0.58 | 0.59 | 0.57 |
-| fBm alpha = 0.6: P_D_decrease > 0.95 | 0.04 | 0.30 | 0.79 |
-
-Averaging the phases buys ~20-25% in accuracy over one phase at the same
-width. The ratio tracks the noise-free value; per-track detection of a
-slowdown needs long tracks, and the intervals' conservatism costs power
-there. On the 539 bead tracks (20 ms exposure assumed) the ratio is 1.01
-(median) at strides 3, 5 and 10, with P_D_decrease > 0.95 in 1-2% of
-tracks, and its log correlates with the alpha posterior median at r = 0.8.
+The package therefore reports D and alpha, each with an interval and its
+information in bits, plus D's localization floor as a scale. Confinement
+and subdiffusion are readings of low alpha, not separate outputs. A ratio of
+D at two timescales (`gridpost.timescale`) and a Brownian-versus-noise
+likelihood ratio (`D_motion_lrt`) were implemented and removed for this
+reason; see the git history before this change.
 
 ## Workflow: `gridpost.analyze_track`/`analyze_tracks`
 
 `GridPostOptions(min_frames=3, level=.9)` sets the short-track exclusion
 threshold (the whitening step's own hard minimum) and the credible-interval
 mass; its grid fields (`D_min_um2_s`, `D_max_um2_s`, `n_D`, `alpha_min`,
-`alpha_max`, `n_alpha`, and `n_K` for the nuisance K grid, which spans D's
-range) set every grid the run evaluates, and `compute_alpha=False` skips the
+`alpha_max`, `n_alpha`; alpha's nuisance scale uses the D grid) set every
+grid the run evaluates, and `compute_alpha=False` skips the
 alpha posterior. `analyze_tracks(..., keep_posteriors=True)` returns each
 `ok` track's normalized log posterior too (`GridPosteriors`), for population
 reads such as `deconvolve.deconvolve`. `analyze_track`/`analyze_tracks` mirror `classic`'s workflow contract:

@@ -39,6 +39,7 @@ import polars as pl
 
 from diffusionkit import Acquisition
 from diffusionkit.gridpost import GridPostOptions
+from diffusionkit.gridpost import posterior as PD
 from diffusionkit.gridpost import posterior_alpha as PA
 from diffusionkit.gridpost.likelihood import _prepared, fgn_motion_covariance
 
@@ -69,7 +70,7 @@ def simulate(n, alpha, exposure, noise, count, rng):
 
 
 def compare(track, acquisition, options):
-    alphas, u, prior = options.alphas(), options.u_K(), PA.flat_K(options.u_K())
+    alphas, u, prior = options.alphas(), options.u_D(), PD.flat(options.u_D())
     track = _prepared(track, acquisition)
     out = {}
     for name, loglik in (("exact", PA._joint_loglik), ("whittle", PA._whittle_joint_loglik)):
