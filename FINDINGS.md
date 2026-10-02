@@ -10,6 +10,14 @@ an independent profile-grid calculation, and Brownian recovery under varying
 localization precision. These verify implementation properties; they do not
 establish precise per-track inference from five observations.
 
+The distribution of D across tracks (`gridpost.deconvolve_tracks`) has a
+coverage study in `scripts/validate_deconvolve.py`, recorded in
+[audit/deconvolve_validation.json](audit/deconvolve_validation.json): five
+simulated populations, 40 datasets of 1000 tracks each, on the default grid.
+Its 68%/95% bands covered the population CDF in 69-82%/94-99% of datasets,
+and no meaningful mass appeared past the tracks (97.5% quantile above
+1 um^2/s under 0.003). See docs/gridpost.md for the table and limits.
+
 A reproducible short-track study is in `scripts/validate_classic.py` and its
 recorded output is in [audit/classic_validation.json](audit/classic_validation.json).
 It varies length (5, 10, 20), K (0.01, 0.05), and alpha (0.5, 1, 1.5), with

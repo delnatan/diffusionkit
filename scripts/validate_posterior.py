@@ -2,8 +2,7 @@
 
 Independent position-space Gaussian simulator; no production likelihood code
 generates the ground truth. This is a simulation-based coverage check under
-the model, not a calibration claim on experimental tracks (see
-prototypes/README.md).
+the model, not a calibration claim on experimental tracks.
 """
 import argparse
 from collections import Counter

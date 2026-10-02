@@ -62,19 +62,16 @@ equals its localization noise, `s_i^2 + s_(i+1)^2`: `<s^2> / (dt -
 exposure/3)` over the track's own SDs. It is a scale to draw next to any D,
 not a detection threshold -- the posterior already accounts for the noise
 -- and it moves with the square of any error in the reported SDs. Calibration is a simulation check under the model (see
-`prototypes/README.md`), not a claim about experimental tracks.
+`scripts/validate_posterior.py`), not a claim about experimental tracks.
 
-This module started as, and is adapted from, `prototypes/posterior_1d.py`
-(a standalone reference implementation with its own extensive calibration
-checks). A previous production estimator (`fit_brownian_mle`, a
+A previous production estimator (`fit_brownian_mle`, a
 maximum-likelihood D with a bootstrap-calibrated non-Brownian z-score
 testing deviation from alpha=1) has been retired now that the posterior
 supersedes its point-estimate role.
 
 ## alpha: grid posterior over the fBm exponent, its scale marginalized out
 
-`diffusionkit.gridpost.posterior_alpha`, adapted from
-`prototypes/posterior_alpha.py`, answers a different question from the D
+`diffusionkit.gridpost.posterior_alpha` answers a different question from the D
 posterior above: not "how big are the steps" (the alpha=1 model) but "how
 does the spread grow with time". Per axis, the same m = n-1 displacements
 are Gaussian under the fBm model:
@@ -192,7 +189,46 @@ near-flat alpha posterior whose median sits near the prior's centre (1.0 on
 the default grid) whatever the motion is, so read alpha medians together
 with their bits. `deconvolve.deconvolve` accepts these posteriors as
 likelihood rows on the alpha grid (flat alpha prior); see its docstring for
-what that distribution inherits from the scale's prior and the smoothing.
+what that distribution inherits from the scale's prior.
+
+## Distribution of D across tracks: `deconvolve`
+
+`deconvolve_tracks(table, acquisition)` estimates how D is distributed across
+a table of tracks -- a population-level comparator to an ensemble MSD fit,
+not a replacement for the per-track posteriors. It uses each track's
+likelihood on the D grid, not its posterior or a point estimate, so the prior
+is not counted once per track and a short track's uncertainty is not averaged
+away. The grid weights g maximize `sum_i log sum_k L_ik g_k` under a Gaussian
+smoothness prior on log g (the second-order penalty
+`(lam/2) int (log g)''^2 du`, a logistic-Gaussian-process density); lam is
+chosen by its Laplace evidence over `deconvolve.LAM_GRID`, not set by hand.
+`samples` are posterior draws of the whole distribution, lam integrated out
+by its evidence, from Hamiltonian Monte Carlo preconditioned by the Laplace
+approximation. Plain Laplace draws are not used: where the data rule a grid
+cell out, the Gaussian ignores the cliff in the posterior and puts mass in
+empty cells. `band(level, cumulative)` gives pointwise or CDF bands; any mass
+or mean has its interval in `samples @ a`.
+
+`scripts/validate_deconvolve.py` (recorded in
+`audit/deconvolve_validation.json`) simulates five populations -- a spike, two
+narrow modes, a log-normal, two broad modes, and a mode below the
+localization floor -- 40 datasets of 1000 tracks each, on the default grid:
+
+| population | lam (median) | W1 in ln D | CDF coverage 68% / 95% |
+|---|---|---|---|
+| spike at 0.05 | 3e-5 | 0.058 | (CDF is 0 or 1) |
+| 0.02 / 0.2, sd .15 | 1.5e-3 | 0.048 | 0.82 / 0.96 |
+| log-normal 0.05, sd .8 | 0.28 | 0.042 | 0.72 / 0.96 |
+| .3 at 0.01 / .7 at 0.1, sd .4 | 0.026 | 0.058 | 0.76 / 0.99 |
+| .4 at 0.002 / .6 at 0.1 | 0.033 | 0.114 | 0.69 / 0.94 |
+
+A mode narrower than the per-track resolution comes out as wide as that
+resolution allows, so a peak's width is not a measurement. Below the
+localization floor the bands widen, because the tracks cannot tell those D
+values apart. For a spike the evidence may run to the rough end of
+`LAM_GRID`, which warns. The same function serves the alpha grid
+(`deconvolve.deconvolve(lls, alphas)`); a track with a flat likelihood leaves
+the result unchanged.
 
 ## What is reported, and what is not
 

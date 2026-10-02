@@ -12,7 +12,7 @@ exp(ln L + ln prior), normalized. This is the per-track information to
 report for D: a track's own uncertainty stays visible as how narrow its
 posterior is, rather than being collapsed into a point estimate. A short,
 uninformative track producing a wide posterior is an honest answer, not a
-defect (see prototypes/posterior_1d.py, prototypes/README.md).
+defect (scripts/validate_posterior.py checks the intervals' coverage).
 """
 from __future__ import annotations
 

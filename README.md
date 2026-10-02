@@ -92,17 +92,14 @@ row's `message`. `analyze_tracks(..., keep_posteriors=True)` also returns
 each track's full log posterior (`result.posteriors`). There is no lag window. This is the
 per-track information to report for `D`: a short, uninformative track
 produces a wide posterior rather than a falsely confident point estimate (see
-[docs/gridpost.md](docs/gridpost.md) and
-[prototypes/README.md](prototypes/README.md), which this module is built
-from). `alpha` (the fBm exponent) gets its own grid posterior with the
+[docs/gridpost.md](docs/gridpost.md)). `alpha` (the fBm exponent) gets its own grid posterior with the
 generalized diffusion coefficient `K` marginalized out as a nuisance
 parameter -- `D` and `alpha` are two independent per-track measurements, not
 a joint fit, which sidesteps the well-known `K`/`alpha` MLE degeneracy.
 
 The D posterior's interval is a genuine credible interval under a flat
 prior, but its calibration is a simulation check under the model (see
-[prototypes/README.md](prototypes/README.md)), not a claim about
-experimental tracks.
+`scripts/validate_posterior.py`), not a claim about experimental tracks.
 
 ## Localization and acquisition contract
 
@@ -154,24 +151,17 @@ output semantics, [docs/classical.md](docs/classical.md) for the MSD
 estimators' equations and scope, and [docs/gridpost.md](docs/gridpost.md) for
 the grid posteriors'.
 
-## Short-track posterior prototypes
+## Distribution of D across tracks
 
-`diffusionkit.gridpost.posterior` (the production `D`-posterior module used
-above) is adapted from `prototypes/posterior_1d.py`, which remains the
-standalone reference implementation (it imports nothing from `diffusionkit`)
-with its own calibration checks and two population-level comparators to an
-ensemble MSD fit (a shared-`D` posterior and a deconvolved distribution of
-`D` across tracks, not used in production -- pooling is a distinct question
-from per-track inference). `diffusionkit.gridpost.posterior_alpha`, adapted
-from `prototypes/posterior_alpha.py`, is now production too: an honest grid
-posterior over the fBm exponent `alpha` (the generalized diffusion
-coefficient `K` marginalized out as a nuisance parameter) for "how correlated
-are consecutive steps", staying wide on a short, uninformative track rather
-than forcing a confident answer the way a calibrated hypothesis-test
-statistic would. It is reported alongside, not combined with, the `D`
-posterior -- `D` and `alpha` are deliberately two independent per-track
-measurements, not a joint fit, which sidesteps the well-known `K`/`alpha`
-MLE degeneracy. See [prototypes/README.md](prototypes/README.md).
+`gridpost.deconvolve_tracks(table, acquisition)` is a population-level
+comparator to an ensemble MSD fit, not a replacement for the per-track
+posteriors: it estimates how `D` is distributed across a table of tracks from
+each track's likelihood, without averaging away each track's own uncertainty
+first. The estimate is a smooth log density whose smoothness is chosen by the
+data (Laplace evidence), and `samples` are posterior draws of the whole
+distribution, so any band or mass comes with an interval
+(`result.band(.68, cumulative=True)`). See
+[docs/gridpost.md](docs/gridpost.md#distribution-of-d-across-tracks-deconvolve).
 
 ## Validation
 
@@ -179,6 +169,7 @@ MLE degeneracy. See [prototypes/README.md](prototypes/README.md).
 python -m unittest discover -s tests -v
 python scripts/validate_classic.py --output /tmp/classic_validation.json
 python scripts/validate_posterior.py --output /tmp/posterior_validation.json
+python scripts/validate_deconvolve.py --output /tmp/deconvolve_validation.json
 ```
 
 Tests include an independent pair-sum oracle, nonlinear objective checks,

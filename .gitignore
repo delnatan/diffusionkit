@@ -5,3 +5,4 @@ __pycache__/
 .claude/scheduled_tasks.lock
 graphify-out/
 results/
+prototypes/

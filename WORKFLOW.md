@@ -104,6 +104,25 @@ with ThreadPoolExecutor(8) as pool:
     result = analyze_tracks(tracks, acquisition, map_fn=pool.map)
 ```
 
+## The distribution of D across tracks
+
+```python
+import numpy as np
+from diffusionkit.gridpost import deconvolve_tracks
+
+pop = deconvolve_tracks(tracks, Acquisition(dt_s=.033, exposure_s=.03))
+pop.u, pop.weights                    # ln D grid, distribution (sums to 1)
+lo, hi = pop.band(.68)                # pointwise band on the weights
+lo, hi = pop.band(.95, cumulative=True)
+above = pop.samples[:, pop.u > np.log(.05)].sum(axis=1)  # any mass: read its interval off the draws
+```
+
+A population-level comparator to an ensemble MSD fit, built from each
+track's likelihood rather than its point estimate. Its smoothness is chosen
+by the data, not set by hand; a peak narrower than the tracks can resolve
+comes out as wide as that resolution, and below the localization floor the
+bands widen because the tracks cannot tell those D values apart.
+
 ## Inspect or change the classical analysis
 
 ```python
