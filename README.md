@@ -136,6 +136,20 @@ Omitting correction requires explicit `localization="ignore"`; missing SD
 columns do not silently become zero. Calibrated zero SDs can be supplied
 for noise-free synthetic data.
 
+## Drift
+
+```python
+from diffusionkit.drift import estimate_drift, neighbour_correlation, subtract
+
+corrected = subtract(tracks, estimate_drift(tracks, acquisition, degree=2))
+neighbour_correlation(corrected)   # motion still shared between neighbours = local drift
+```
+
+The drift field every track shares (stage drift, slow tissue motion) is estimated from the tracks themselves. It is a
+generalized-least-squares fit on displacements, with each track's own Brownian covariance and its D marginalized by EM,
+so still spots carry the estimate without any classification. Correct before any per-track analysis: uncorrected
+drift of ~17 nm/frame moves a D ~ 1e-3 um^2/s population to 0.01-0.05. See [docs/drift.md](docs/drift.md).
+
 ## Data and algorithms
 
 Trajectory data is a `polars.DataFrame` (`track_id`, `frame`, `x_um`, `y_um`,
