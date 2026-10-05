@@ -18,6 +18,19 @@ Its 68%/95% bands covered the population CDF in 69-82%/94-99% of datasets,
 and no meaningful mass appeared past the tracks (97.5% quantile above
 1 um^2/s under 0.003). See docs/gridpost.md for the table and limits.
 
+Drift (`diffusionkit.drift`) is tested in `tests/test_drift.py`:
+- a simulated rigid path is recovered to < 4 nm rms;
+- with no drift the estimate stays within its reported SE;
+- the neighbour check separates shared motion from each particle's own.
+
+On three C. elegans hypodermis GEM movies, uncorrected drift (800 nm in anc-1) moved the whole slow population
+(D ~ 1e-3 um^2/s) to 0.01-0.05. A local flow in one movie (~1 nm/frame) changed neither the D population nor the
+step-memory summaries, consistent with its ~2e-5 um^2/s bias on D (docs/drift.md).
+
+The per-track alpha posterior, the joint (alpha, D) posterior and its deconvolution were removed from `gridpost`
+after commit 540ba4a. Per-track alpha was weakly identified on short tracks, leaned low for immobile tracks, and
+confounded localization-SD errors with caging (docs/gridpost.md, "What is reported").
+
 A reproducible short-track study is in `scripts/validate_classic.py` and its
 recorded output is in [audit/classic_validation.json](audit/classic_validation.json).
 It varies length (5, 10, 20), K (0.01, 0.05), and alpha (0.5, 1, 1.5), with
