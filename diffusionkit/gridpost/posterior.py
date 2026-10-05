@@ -80,22 +80,14 @@ def log_normal(D_lo: float, D_hi: float, u: np.ndarray) -> np.ndarray:
 
 
 def _normalize(log_weights: np.ndarray) -> np.ndarray:
-    """Grid weights (sum to 1) from log un-normalized weights.
-
-    Shared with `gridpost.posterior_alpha`, whose alpha grid is linear rather
-    than log-scale -- this step (exp, shift for stability, sum to 1) doesn't
-    care which quantity the grid represents.
-    """
+    """Grid weights (sum to 1) from log un-normalized weights."""
     p = np.exp(log_weights - log_weights.max())
     return p / p.sum()
 
 
 def _grid_quantile(p: np.ndarray, grid: np.ndarray, q: float) -> float:
-    """q-quantile of `grid`'s distribution `p`, interpolating the CDF at cell midpoints.
-
-    Also shared with `gridpost.posterior_alpha`; this module's own `quantile`
-    below is the D-specific (log-scale grid, exponentiated result) wrapper.
-    """
+    """q-quantile of `grid`'s distribution `p`, interpolating the CDF at cell midpoints; `quantile` below is
+    the D wrapper (log-scale grid, exponentiated result)."""
     return float(np.interp(q, np.cumsum(p) - p / 2, grid))
 
 
@@ -112,7 +104,7 @@ def log_posterior(ll: np.ndarray, log_prior: np.ndarray) -> np.ndarray:
 
 
 def information_bits(log_post: np.ndarray, log_prior: np.ndarray) -> float:
-    """What the track taught about the gridded parameter (D, or alpha): KL(posterior || prior), in bits.
+    """What the track taught about D: KL(posterior || prior), in bits.
 
     Both are taken as distributions over the grid points (the prior is
     normalized here), which approximates the continuous relative entropy

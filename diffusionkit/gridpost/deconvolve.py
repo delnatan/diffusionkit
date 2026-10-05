@@ -45,40 +45,20 @@ remain:
 - Below the localization floor the data cannot tell D values apart; the bands
   widen there, and a mode's location is under-covered (62% at 68%).
 
-`deconvolve` itself only needs log-likelihood rows on a common 1D grid, so it
-serves the alpha grid too: with a flat alpha prior, each track's normalized
-log posterior over alpha is its log likelihood up to a constant. That
-likelihood has the scale (the apparent D) marginalized under the D grid's flat
-prior (`posterior_alpha.log_alpha_posterior`), not a clean likelihood the way
-D's is, so a deconvolved alpha distribution inherits that choice. A track with
-no information about the parameter has a flat likelihood and leaves the fit
+`deconvolve` itself only needs log-likelihood rows on a common 1D grid. A track
+with no information about the parameter has a flat likelihood and leaves the fit
 and the evidence exactly unchanged (and the bands, up to Monte Carlo error),
 where it would pull a histogram of medians toward the prior's median.
-
-`deconvolve_joint` reads (alpha, D) together from each track's joint posterior
-on (alpha, ln D) cells (`posterior_alpha.log_joint_posterior`), with the same
-log-density model and one smoothness per axis (`_LogG2`). It keeps what the
-two 1D reads throw away: which D goes with which alpha. A short track says
-little about alpha but much about D, so in the joint fit it takes the alpha
-mix of the tracks with D like its own, rather than the population's overall
-mix. That mix is assumed not to depend on track length; where a low-alpha
-population makes longer tracks than the mobile one, the joint read
-over-counts it (by ~0.12 of 0.26 in scripts/validate_deconvolve_joint.py).
-Below the localization floor alpha is not identified, and an immobile
-track's likelihood still leans toward low alpha (noise-like motion fits a
-little excess jitter best), so a population of immobile particles ends up at
-the lowest alpha cells there; read low-alpha mass together with its D.
 """
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass, fields
 from warnings import warn
 
 import numpy as np
 import polars as pl
 from scipy.linalg import solve_triangular
-from scipy.optimize import minimize, minimize_scalar
+from scipy.optimize import minimize_scalar
 from scipy.special import logsumexp
 
 from ..data import Acquisition
@@ -89,7 +69,6 @@ from .posterior import flat, track_loglik
 
 EPS = 1e-6  # prior precision on log g's unpenalized linear tilt: there only so the evidence is proper
 LAM_GRID = np.geomspace(1e4, 1e-8, 37)  # scanned from smooth to rough, flat prior in log lam
-LOG10_LAM_BOUNDS = (-8., 4.)  # deconvolve_joint's range for each lam: LAM_GRID's
 N_CHAINS = 50  # HMC chains, shared across lam by evidence weight
 TINY = 1e-300
 
@@ -122,24 +101,11 @@ class PopulationDistribution(Deconvolution):
     acquisition: Acquisition
 
 
-@dataclass(frozen=True)
-class JointDeconvolution:
-    """Distribution of (alpha, D) across tracks on the cells (`alphas`, `u` = ln D)."""
-
-    alphas: np.ndarray
-    u: np.ndarray
-    weights: np.ndarray        # (len(alphas), len(u)) posterior mode at lam, sums to 1
-    samples: np.ndarray        # (n_samples, len(alphas), len(u)) draws, lam integrated out
-    lam: tuple[float, float]   # (lam_D, lam_alpha) at the evidence maximum
-    log_evidence: np.ndarray   # (n_fits, 3): log10 lam_D, log10 lam_alpha, Laplace log evidence
-    n_tracks: int
-
-
 @dataclass
 class _Mode:
     """Posterior mode of eta at one lam and its Laplace approximation."""
 
-    lam: float | tuple[float, float]  # (lam_D, lam_alpha) for the joint model
+    lam: float
     x: np.ndarray  # eta at the mode
     C: np.ndarray  # lower Cholesky factor of the negative Hessian in tangent coordinates
     log_evidence: float
@@ -277,42 +243,6 @@ class _LogG:
         return np.hstack(keep).T
 
 
-class _LogG2(_LogG):
-    """`_LogG` on an (n_alpha, n_D) grid, flattened row-major, with a smoothness prior per axis.
-
-    Q(lam) = lam_D Omega_D + lam_alpha Omega_alpha + tilt for lam = (lam_D, lam_alpha), each
-    Omega the 1D second-difference penalty along its axis integrated over the other
-    (lam_D int int eta_uu^2 du dalpha, and likewise), so lam does not depend on the cell
-    sizes. Their sum's null space is {1, alpha} (x) {1, ln D}: the constant, which softmax
-    ignores, and three tilts (two linear, one bilinear) that get precision EPS. The
-    penalty's eigenvalues are lam_D a_j + lam_alpha b_i from the two 1D spectra, so its
-    pseudo-determinant costs nothing.
-    """
-
-    def __init__(self, L: np.ndarray, n_alpha: int, du: float, dalpha: float):
-        self._setup(L)
-        n_D = self.K // n_alpha
-        if n_D * n_alpha != self.K or n_D < 3 or n_alpha < 3:
-            raise ValueError(f"need at least 3 x 3 cells on an (n_alpha, n_D) grid, got K={self.K}, n_alpha={n_alpha}")
-        Om_D, Om_a = _second_difference_penalty(n_D, du), _second_difference_penalty(n_alpha, dalpha)
-        self.Omega_D = dalpha * np.kron(np.eye(n_alpha), Om_D)
-        self.Omega_a = du * np.kron(Om_a, np.eye(n_D))
-        self.ev_D, self.ev_a = dalpha * np.linalg.eigvalsh(Om_D), du * np.linalg.eigvalsh(Om_a)
-        self.ev_D[:2] = self.ev_a[:2] = 0.  # the exact null spaces {1, u}, {1, alpha}
-        a, d = np.meshgrid(np.arange(n_alpha) - (n_alpha - 1) / 2, np.arange(n_D) - (n_D - 1) / 2, indexing="ij")
-        N, _ = np.linalg.qr(np.column_stack([d.ravel(), a.ravel(), (a * d).ravel()]))  # each orthogonal to 1
-        self.tilt = EPS * N @ N.T
-
-    def Q(self, lam) -> np.ndarray:
-        lam_D, lam_a = lam
-        return lam_D * self.Omega_D + lam_a * self.Omega_a + self.tilt
-
-    def log_prior_norm(self, lam) -> float:
-        lam_D, lam_a = lam
-        ev = (lam_D * self.ev_D[None, :] + lam_a * self.ev_a[:, None]).ravel()
-        return 0.5 * (float(np.sum(np.log(ev[ev > 0]))) + 3 * np.log(EPS))
-
-
 def _softmax(eta: np.ndarray, axis: int = 0) -> np.ndarray:
     e = np.exp(eta - eta.max(axis=axis, keepdims=True))
     return e / e.sum(axis=axis, keepdims=True)
@@ -434,94 +364,3 @@ def deconvolve_tracks(
     fit = deconvolve(np.array(lls), u, prior, n_samples=n_samples, rng=rng)
     return PopulationDistribution(**{f.name: getattr(fit, f.name) for f in fields(fit)},
                                   n_tracks=len(lls), n_excluded=n_excluded, acquisition=acquisition)
-
-
-def deconvolve_joint(log_post: np.ndarray, alphas: np.ndarray, u: np.ndarray, n_samples: int = 1000,
-                     rng: np.random.Generator | None = None) -> JointDeconvolution:
-    """Distribution of (alpha, D) across tracks from per-track joint posteriors on cells.
-
-    `log_post` is (n_tracks, len(alphas), len(u)): each track's log posterior under flat
-    priors, i.e. its log likelihood up to a constant (`GridPosteriors.log_post_joint`, on
-    `GridPostOptions.alphas()` and `.u_joint_D()`). Both grids must be evenly spaced.
-
-    The weights g = softmax(eta) maximize sum_i log sum_k L_ik g_k under a second-order
-    smoothness prior on eta along each axis, with its own lam (`_LogG2`). lam = (lam_D,
-    lam_alpha) maximizes the Laplace evidence, by Nelder-Mead in log lam within
-    `LOG10_LAM_BOUNDS`, started from the lam `deconvolve` picks for each margin (on
-    GEM tracks within a decade of the joint optimum), then probed two decades out
-    along each axis and climbed again from any better point. `samples` are HMC
-    draws (as `deconvolve`'s) with lam integrated out over a 3 x 3 grid half a decade
-    around the maximum, by evidence weight. Warns when the maximum sits on a bound.
-    """
-    log_post, alphas, u = np.asarray(log_post, float), np.asarray(alphas, float), np.asarray(u, float)
-    if log_post.ndim != 3 or log_post.shape[1:] != (len(alphas), len(u)):
-        raise ValueError(f"log_post must be (n_tracks, {len(alphas)}, {len(u)}), got {log_post.shape}")
-    steps = []
-    for name, grid in (("alphas", alphas), ("u", u)):
-        d = np.diff(grid)
-        if len(grid) < 3 or not np.allclose(d, d[0], rtol=1e-6):
-            raise ValueError(f"{name} must be evenly spaced, with at least 3 points")
-        steps.append(float(d[0]))
-    flat_ll = log_post.reshape(len(log_post), -1)
-    model = _LogG2(np.exp(flat_ll - flat_ll.max(axis=1, keepdims=True)), len(alphas), steps[1], steps[0])
-
-    lo, hi = LOG10_LAM_BOUNDS
-    modes = {}
-
-    def fit(point, x0):
-        key = tuple(np.round(np.clip(point, lo, hi), 4))
-        if key not in modes:
-            modes[key] = model.fit(tuple(10. ** np.array(key)), x0)
-        return modes[key]
-
-    def nearest(point):
-        keys = list(modes)
-        return modes[keys[int(np.argmin([np.sum((np.array(k) - point) ** 2) for k in keys]))]].x
-
-    def climb(start):
-        start = np.clip(start, lo, hi)
-        step = np.where(start + 1 > hi, -1., 1.)
-        minimize(lambda p: -fit(p, nearest(p)).log_evidence, start, method="Nelder-Mead",
-                 bounds=[LOG10_LAM_BOUNDS] * 2,
-                 options={"initial_simplex": start + np.array([[0, 0], [1, 0], [0, 1]]) * step,
-                          "xatol": .05, "fatol": .05})
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # a margin's edge maximum only seeds the search
-        seed = np.log10([deconvolve(logsumexp(log_post, axis=1), u, n_samples=1).lam,
-                         deconvolve(logsumexp(log_post, axis=2), alphas, n_samples=1).lam])
-    fit(np.clip(seed, lo, hi), np.zeros(model.K))
-    climb(seed)
-    for _ in range(3):  # probe two decades out on each axis; climb again from anything better
-        top = max(modes, key=lambda k: modes[k].log_evidence)
-        probes = [np.array(top) + d for d in ([2, 0], [-2, 0], [0, 2], [0, -2])]
-        better = [p for p in probes
-                  if fit(p, modes[top].x).log_evidence > modes[top].log_evidence + .5]
-        if not better:
-            break
-        climb(max(better, key=lambda p: modes[tuple(np.round(np.clip(p, lo, hi), 4))].log_evidence))
-    best_key = max(modes, key=lambda k: modes[k].log_evidence)
-    for k in best_key:
-        if min(k - lo, hi - k) < .25:
-            warn(f"deconvolve_joint: evidence maximum at a lam bound (log10 lam = {best_key}); "
-                 f"widen LOG10_LAM_BOUNDS", stacklevel=2)
-            break
-
-    best = np.array(best_key)
-    local = [tuple(np.round(np.clip(best + [a, b], lo, hi), 4)) for a in (-.5, 0, .5) for b in (-.5, 0, .5)]
-    local = list(dict.fromkeys(local))
-    for k in local:
-        fit(k, modes[best_key].x)
-    rng = np.random.default_rng(0) if rng is None else rng
-    ev = np.array([modes[k].log_evidence for k in local])
-    w = np.exp(ev - ev.max())
-    n_keep = -(-n_samples // N_CHAINS)
-    chains = rng.multinomial(N_CHAINS, w / w.sum())
-    draws = np.vstack([model.hmc(modes[k], c, n_keep, rng) for k, c in zip(local, chains) if c])[:n_samples]
-    for k in dict.fromkeys([best_key] + [k for k, c in zip(local, chains) if c]):
-        if modes[k].problem:
-            warn(f"deconvolve_joint: {modes[k].problem} at log10 lam = {k}", stacklevel=2)
-    shape = (len(alphas), len(u))
-    table = np.array([[*k, m.log_evidence] for k, m in modes.items()])
-    return JointDeconvolution(alphas, u, _softmax(modes[best_key].x).reshape(shape),
-                              draws.reshape(-1, *shape), tuple(10. ** best), table, len(log_post))

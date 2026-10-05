@@ -17,7 +17,7 @@ K, alpha, sigma):
   Observed position:  x_obs[n] = mean of X_true over frame n's exposure + eps[n],
                        eps[n] ~ iid N(0, sigma^2) (static localization noise).
                        The exposure average is the box-shutter blur the grid
-                       posteriors model (`gridpost.likelihood.fgn_motion_covariance`,
+                       posteriors model (`bayes.reference.fgn_motion_covariance`,
                        Berglund 2010 at alpha=1); exposure_s=0 is instantaneous.
 
 Differentiable in K and alpha (NUTS needs the gradient); the time lags are
@@ -32,7 +32,7 @@ from __future__ import annotations
 import jax.numpy as jnp
 import numpy as np
 
-from ..gridpost.likelihood import _BLUR_SERIES_RATIO, _BLUR_SERIES_TERMS
+from .reference import _BLUR_SERIES_RATIO, _BLUR_SERIES_TERMS
 
 
 def _safe_pow(y: np.ndarray, p):
@@ -51,7 +51,7 @@ def _blurred_abs_power(x: np.ndarray, alpha, exposure_s: float):
     """E|x + u - v|^alpha for u, v ~ Uniform(0, exposure_s), elementwise in concrete x.
 
     The same closed form and series switch as
-    `gridpost.likelihood._blurred_abs_power` (see there), in jax so that it
+    `reference._blurred_abs_power` (see there), in jax so that it
     differentiates in alpha; alpha may be an array that broadcasts against x.
     """
     x = np.abs(np.asarray(x, dtype=float))

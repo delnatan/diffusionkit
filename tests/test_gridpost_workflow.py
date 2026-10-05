@@ -1,16 +1,14 @@
-"""Table/per-track workflow contracts for the D and alpha grid posteriors."""
+"""Table/per-track workflow contracts for the D grid posterior."""
 import subprocess
 import sys
 import unittest
 
 import numpy as np
 import polars as pl
-from scipy.special import logsumexp
 
 from diffusionkit import Acquisition
 from diffusionkit.gridpost import GridPostOptions, analyze_track, analyze_tracks
 from diffusionkit.gridpost import posterior as P
-from diffusionkit.gridpost import posterior_alpha as PA
 from diffusionkit.gridpost.workflow import FIT_SCHEMA
 
 
@@ -29,42 +27,38 @@ class WorkflowTests(unittest.TestCase):
     def test_short_track_is_excluded(self):
         out = analyze_track(table(2), Acquisition(.03))
         self.assertEqual(out.posterior_D.status, "excluded")
-        self.assertEqual(out.posterior_alpha.status, "excluded")
+        self.assertIsNone(out.log_post_D)
 
-    def test_exposure_blur_is_modelled_for_D_and_alpha(self):
+    def test_exposure_blur_is_modelled(self):
         acquisition, options = Acquisition(.03, .02), GridPostOptions()
         out = analyze_track(table(), acquisition, options)
         self.assertEqual(out.posterior_D.status, "ok")
-        self.assertEqual(out.posterior_alpha.status, "ok")
-        direct = PA.track_alpha_posterior(table(), acquisition, options=options)
-        self.assertAlmostEqual(out.posterior_alpha.parameters["alpha_post_median"], direct["median"], places=12)
+        direct = P.track_posterior(table(), acquisition, options=options)
+        self.assertAlmostEqual(out.posterior_D.parameters["D_post_median_um2_s"], direct["median"], places=12)
+        unblurred = analyze_track(table(), Acquisition(.03), options)
+        self.assertNotAlmostEqual(out.posterior_D.parameters["D_post_median_um2_s"],
+                                  unblurred.posterior_D.parameters["D_post_median_um2_s"], places=6)
 
     def test_zero_localization_sd_gives_invalid_input(self):
         zero = table().with_columns(pl.Series("sigma_x_um", np.zeros(5)))
         out = analyze_track(zero, Acquisition(.03))
         self.assertEqual(out.posterior_D.status, "invalid_input")
-        self.assertEqual(out.posterior_alpha.status, "invalid_input")
 
     def test_one_track_matches_direct_call(self):
         t = table()
         direct = analyze_track(t, Acquisition(.03))
         result = analyze_tracks(t, Acquisition(.03))
-        post_D = result.fits.filter(pl.col("model") == "posterior_D").row(0, named=True)
-        post_alpha = result.fits.filter(pl.col("model") == "posterior_alpha").row(0, named=True)
-        self.assertEqual(result.fits.height, 2)
+        post_D = result.fits.row(0, named=True)
+        self.assertEqual(result.fits.height, 1)
+        self.assertEqual(post_D["model"], "posterior_D")
         for name, value in direct.posterior_D.parameters.items():
             self.assertEqual(post_D[name], value)
-        for name, value in direct.posterior_alpha.parameters.items():
-            self.assertEqual(post_alpha[name], value)
 
     def test_info_bits_reported_from_the_log_posterior(self):
         out = analyze_track(table(8), Acquisition(.03))
         bits = out.posterior_D.parameters["D_post_info_bits"]
         self.assertAlmostEqual(bits, P.information_bits(out.log_post_D, P.flat(GridPostOptions().u_D())))
         self.assertGreater(bits, 0.)
-        alpha_bits = out.posterior_alpha.parameters["alpha_post_info_bits"]
-        self.assertAlmostEqual(alpha_bits, P.information_bits(out.log_post_alpha, PA.flat_alpha(GridPostOptions().alphas())))
-        self.assertGreaterEqual(alpha_bits, 0.)
 
     def test_localization_floor_is_mean_sd_squared_over_blurred_step(self):
         acquisition = Acquisition(.03, .02)
@@ -93,9 +87,9 @@ class WorkflowTests(unittest.TestCase):
         short = table(2, track_id=9)
         calls = []
         result = analyze_tracks(pl.concat([good, gap, short]), Acquisition(.03), progress=lambda *x: calls.append(x))
-        self.assertEqual(result.fits.height, 6)
-        self.assertEqual(result.fits.filter(pl.col("track_id") == 8)["status"].to_list(), ["invalid_input"]*2)
-        self.assertEqual(result.fits.filter(pl.col("track_id") == 9)["status"].to_list(), ["excluded"]*2)
+        self.assertEqual(result.fits.height, 3)
+        self.assertEqual(result.fits.filter(pl.col("track_id") == 8)["status"].to_list(), ["invalid_input"])
+        self.assertEqual(result.fits.filter(pl.col("track_id") == 9)["status"].to_list(), ["excluded"])
         self.assertEqual(calls, [(0, 3), (1, 3), (2, 3), (3, 3)])
 
     def test_options_level_controls_interval_width(self):
@@ -109,19 +103,14 @@ class WorkflowTests(unittest.TestCase):
     def test_options_grid_is_the_one_used(self):
         """A custom D range reaches every posterior: none falls back to a default grid."""
         t = table(12)
-        options = GridPostOptions(D_min_um2_s=1e-3, D_max_um2_s=2., n_D=101, alpha_min=.2, alpha_max=1.8,
-                                  n_alpha=17)
+        options = GridPostOptions(D_min_um2_s=1e-3, D_max_um2_s=2., n_D=101)
         out = analyze_track(t, Acquisition(.03), options)
         self.assertEqual(out.log_post_D.shape, (101,))
-        self.assertEqual(out.log_post_alpha.shape, (17,))
         u = options.u_D()
         expected = P.summary(P.posterior(P.track_loglik(t, Acquisition(.03), u), P.flat(u)), u, options.level)
         self.assertAlmostEqual(out.posterior_D.parameters["D_post_median_um2_s"], expected["median"], places=12)
         self.assertAlmostEqual(np.exp(out.log_post_D).sum(), 1., places=12)
         self.assertEqual(P.track_posterior(t, Acquisition(.03), options=options), expected)
-        alpha = PA.track_alpha_posterior(t, Acquisition(.03), options=options)
-        self.assertAlmostEqual(out.posterior_alpha.parameters["alpha_post_median"], alpha["median"], places=12)
-        self.assertGreaterEqual(alpha["lo"], .2)
 
     def test_narrow_grid_moves_the_summary_and_says_so(self):
         """An upper edge below where the data put D cuts the posterior: the median sits
@@ -140,21 +129,10 @@ class WorkflowTests(unittest.TestCase):
         short = table(2, track_id=9)
         result = analyze_tracks(pl.concat([good, short]), Acquisition(.03), keep_posteriors=True)
         post = result.posteriors
-        self.assertEqual(post.D_track_ids.tolist(), [7])
-        self.assertEqual(post.alpha_track_ids.tolist(), [7])
+        self.assertEqual(post.track_ids.tolist(), [7])
         self.assertEqual(post.log_post_D.shape, (1, result.options.n_D))
-        self.assertEqual(post.log_post_alpha.shape, (1, result.options.n_alpha))
         np.testing.assert_allclose(post.log_post_D[0], analyze_track(good, Acquisition(.03)).log_post_D)
         self.assertIsNone(analyze_tracks(good, Acquisition(.03)).posteriors)
-
-    def test_keep_posteriors_keeps_the_joint_posterior_alpha_sums(self):
-        result = analyze_tracks(pl.concat([table(), table(9, track_id=8)]), Acquisition(.03, .01),
-                                keep_posteriors=True)
-        post, options = result.posteriors, result.options
-        self.assertEqual(post.log_post_joint.shape, (2, options.n_alpha, len(options.u_joint_D())))
-        np.testing.assert_allclose(logsumexp(post.log_post_joint, axis=2), post.log_post_alpha, atol=1e-12)
-        empty = analyze_tracks(table(2), Acquisition(.03), GridPostOptions(n_D=11), keep_posteriors=True)
-        self.assertEqual(empty.posteriors.log_post_joint.shape, (0, GridPostOptions().n_alpha, 1))
 
     def test_thread_pool_map_matches_serial(self):
         """A caller's executor map gives the serial result, rows and progress in track order."""
@@ -170,36 +148,17 @@ class WorkflowTests(unittest.TestCase):
                                       progress=lambda done, total: calls.append(done))
         self.assertTrue(serial.fits.equals(threaded.fits))
         self.assertIn("invalid_input", serial.fits["status"].to_list())
-        np.testing.assert_array_equal(serial.posteriors.log_post_alpha, threaded.posteriors.log_post_alpha)
-        np.testing.assert_array_equal(serial.posteriors.alpha_track_ids, threaded.posteriors.alpha_track_ids)
+        np.testing.assert_array_equal(serial.posteriors.log_post_D, threaded.posteriors.log_post_D)
+        np.testing.assert_array_equal(serial.posteriors.track_ids, threaded.posteriors.track_ids)
         self.assertEqual(calls, list(range(7)))
-
-    def test_alpha_method_is_recorded_per_track(self):
-        """"auto" gives short tracks the exact likelihood and long ones Whittle, and says which."""
-        tracks = pl.concat([table(8, track_id=1), table(45, track_id=2)])
-        options = GridPostOptions(alpha_whittle_min_frames=40)
-        fits = analyze_tracks(tracks, Acquisition(.03, .01), options).fits.filter(pl.col("model") == "posterior_alpha")
-        self.assertEqual(fits.sort("track_id")["method"].to_list(),
-                         ["grid_posterior_marginal_D", "grid_posterior_marginal_D_whittle"])
-        exact = analyze_tracks(tracks, Acquisition(.03, .01), GridPostOptions(alpha_method="exact")).fits
-        self.assertEqual(set(exact.filter(pl.col("model") == "posterior_alpha")["method"]),
-                         {"grid_posterior_marginal_D"})
 
     def test_keep_posteriors_empty_keeps_grid_width(self):
         result = analyze_tracks(table(2), Acquisition(.03), GridPostOptions(n_D=11), keep_posteriors=True)
         self.assertEqual(result.posteriors.log_post_D.shape, (0, 11))
 
-    def test_compute_alpha_false_excludes_alpha(self):
-        out = analyze_track(table(), Acquisition(.03), GridPostOptions(compute_alpha=False))
-        self.assertEqual(out.posterior_D.status, "ok")
-        self.assertEqual(out.posterior_alpha.status, "excluded")
-        self.assertIn("not requested", out.posterior_alpha.message)
-        self.assertIsNone(out.log_post_alpha)
-
     def test_invalid_grid_options_raise(self):
         for bad in (dict(D_min_um2_s=0.), dict(D_min_um2_s=1., D_max_um2_s=.5), dict(D_max_um2_s=np.inf),
-                    dict(n_D=1), dict(alpha_min=0.), dict(alpha_max=2.), dict(n_alpha=1),
-                    dict(level=1.), dict(joint_D_bin=0), dict(joint_D_bin=7)):
+                    dict(n_D=1), dict(level=1.), dict(level=0.)):
             with self.subTest(**bad), self.assertRaises(ValueError):
                 GridPostOptions(**bad)
 

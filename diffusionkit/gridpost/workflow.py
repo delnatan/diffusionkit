@@ -1,30 +1,23 @@
-"""Functional single-track and table workflows for the D and alpha grid posteriors."""
+"""Functional single-track and table workflows for the D grid posterior."""
 import functools
 from collections.abc import Callable, Iterable
 
 import numpy as np
 import polars as pl
-from scipy.special import logsumexp
 
 from ..data import Acquisition
 from ..io import validate_table_schema, validated_track_frame
 from ..validation import validate_acquisition
 from . import posterior as posterior_mod
-from . import posterior_alpha as posterior_alpha_mod
 from .likelihood import _loglik, _prepared, _whiten
-from .data import GridPosteriorAnalysis, GridPosteriors, GridPostOptions, PosteriorAlpha, PosteriorD, TrackPosterior
+from .data import GridPosteriorAnalysis, GridPosteriors, GridPostOptions, PosteriorD, TrackPosterior
 
 FIT_SCHEMA = {
     "track_id": pl.Int64, "n_frames": pl.Int64, "model": pl.String,
     "method": pl.String, "status": pl.String, "message": pl.String,
     "uncertainty_method": pl.String,
     **{name: pl.Float64 for name in PosteriorD.PARAMETERS},
-    **{name: pl.Float64 for name in PosteriorAlpha.PARAMETERS},
 }
-
-
-# `fits.method` for an alpha row, by the likelihood that produced it.
-_ALPHA_METHOD_NAMES = {"exact": PosteriorAlpha.method, "whittle": PosteriorAlpha.method + "_whittle"}
 
 
 def _edge_message(p: np.ndarray, options: GridPostOptions) -> str:
@@ -55,36 +48,14 @@ def _posterior_D_or_invalid(track: pl.DataFrame, acquisition: Acquisition,
                       "ok", _edge_message(p, options)), lp
 
 
-def _posterior_alpha_or_invalid(track: pl.DataFrame, acquisition: Acquisition, options: GridPostOptions
-                                ) -> tuple[PosteriorAlpha, np.ndarray | None, np.ndarray | None]:
-    """The alpha summary, its log posterior, and the joint (alpha, ln D cell) log posterior it sums."""
-    try:
-        alphas, u = options.alphas(), options.u_D()
-        track = _prepared(track, acquisition)
-        likelihood = options.alpha_likelihood(track.height)
-        ll = posterior_alpha_mod._JOINT_LOGLIK[likelihood](track, acquisition, alphas, u)
-        joint = posterior_alpha_mod.log_joint_posterior(ll, posterior_mod.flat(u), options.joint_D_bin)
-    except ValueError as exc:  # e.g. a zero localization SD
-        return PosteriorAlpha(dict.fromkeys(PosteriorAlpha.PARAMETERS), "invalid_input", str(exc)), None, None
-    lp = logsumexp(joint, axis=1)  # == log_alpha_posterior(ll, flat(u)), by construction
-    s = posterior_alpha_mod.summary(np.exp(lp), alphas, options.level)
-    bits = posterior_mod.information_bits(lp, posterior_alpha_mod.flat_alpha(alphas))
-    return PosteriorAlpha({"alpha_post_median": s["median"], "alpha_post_lo": s["lo"],
-                           "alpha_post_hi": s["hi"], "alpha_post_info_bits": bits}, "ok", "",
-                          method=_ALPHA_METHOD_NAMES[likelihood]), lp, joint
-
-
 def analyze_track(track: pl.DataFrame, acquisition: Acquisition,
                   options: GridPostOptions = GridPostOptions()) -> TrackPosterior:
-    """Grid posteriors over D and alpha for one track's rows, on `options`' grids.
+    """The grid posterior over D for one track's rows, on `options.u_D()`.
 
-    Invalid input raises; short tracks are explicit results. Both posteriors
-    model `acquisition.exposure_s` as box-shutter blur; the alpha posterior is
-    excluded only with `options.compute_alpha=False`. An "ok" D posterior cut by a grid edge
-    (`posterior.edge_ratios`) says so in its message. The result carries each
-    "ok" posterior's normalized log weights (`log_post_D`, `log_post_alpha`),
-    and with alpha's the joint (alpha, ln D cell) posterior it sums
-    (`log_post_joint`).
+    Invalid input raises; short tracks are explicit results. The posterior models
+    `acquisition.exposure_s` as box-shutter blur. An "ok" posterior cut by a grid edge
+    (`posterior.edge_ratios`) says so in its message. The result carries an "ok"
+    posterior's normalized log weights (`log_post_D`).
     """
     validate_acquisition(acquisition, allow_exposure=True)
     track = validated_track_frame(track, acquisition, require_localization=True)
@@ -94,17 +65,9 @@ def analyze_track(track: pl.DataFrame, acquisition: Acquisition,
         message = f"{n} frames; min_frames={options.min_frames}"
         return TrackPosterior(track_id, n,
                               PosteriorD(dict.fromkeys(PosteriorD.PARAMETERS), "excluded", message),
-                              PosteriorAlpha(dict.fromkeys(PosteriorAlpha.PARAMETERS), "excluded", message),
                               acquisition, options)
     posterior_D, log_post_D = _posterior_D_or_invalid(track, acquisition, options)
-    log_post_alpha = log_post_joint = None
-    if not options.compute_alpha:
-        posterior_alpha = PosteriorAlpha(dict.fromkeys(PosteriorAlpha.PARAMETERS), "excluded",
-                                         "The alpha posterior was not requested (compute_alpha=False)")
-    else:
-        posterior_alpha, log_post_alpha, log_post_joint = _posterior_alpha_or_invalid(track, acquisition, options)
-    return TrackPosterior(track_id, n, posterior_D, posterior_alpha, acquisition, options,
-                          log_post_D, log_post_alpha, log_post_joint)
+    return TrackPosterior(track_id, n, posterior_D, acquisition, options, log_post_D)
 
 
 def _analyze_group(group: pl.DataFrame, acquisition: Acquisition, options: GridPostOptions) -> TrackPosterior:
@@ -115,7 +78,6 @@ def _analyze_group(group: pl.DataFrame, acquisition: Acquisition, options: GridP
         message = str(exc)
         return TrackPosterior(int(group["track_id"][0]), group.height,
                               PosteriorD(dict.fromkeys(PosteriorD.PARAMETERS), "invalid_input", message),
-                              PosteriorAlpha(dict.fromkeys(PosteriorAlpha.PARAMETERS), "invalid_input", message),
                               acquisition, options)
 
 
@@ -124,12 +86,10 @@ def analyze_tracks(table: pl.DataFrame, acquisition: Acquisition,
                    progress: Callable[[int, int], None] | None = None,
                    keep_posteriors: bool = False,
                    map_fn: Callable[..., Iterable] = map) -> GridPosteriorAnalysis:
-    """Two fit rows per input track (posterior_D, posterior_alpha), including
-    exclusions and invalid tracks.
+    """One fit row per input track (model posterior_D), including exclusions and invalid tracks.
 
     With `keep_posteriors`, `result.posteriors` also holds every "ok" track's
-    normalized log posteriors on `options`' grids, the joint (alpha, ln D
-    cell) one included (`GridPosteriors`).
+    normalized log posterior on `options.u_D()` (`GridPosteriors`).
 
     Schema/configuration errors raise before work starts. Invalid individual
     tracks get status='invalid_input' and do not prevent other tracks fitting.
@@ -146,29 +106,23 @@ def analyze_tracks(table: pl.DataFrame, acquisition: Acquisition,
     validate_table_schema(table)
     groups = table.sort("track_id", "frame").partition_by("track_id", maintain_order=True)
     fit_rows = []
-    D_ids, log_post_D, alpha_ids, log_post_alpha, log_post_joint = [], [], [], [], []
+    D_ids, log_post_D = [], []
     if progress is not None:
         progress(0, len(groups))
     results = map_fn(functools.partial(_analyze_group, acquisition=acquisition, options=options), groups)
     for done, result in enumerate(results, 1):
         track_id = result.track_id
-        for post in (result.posterior_D, result.posterior_alpha):
-            fit_rows.append({"track_id": track_id, "n_frames": result.n_frames, "model": post.model,
-                             "method": post.method, "status": post.status, "message": post.message,
-                             "uncertainty_method": post.uncertainty_method, **post.parameters})
+        post = result.posterior_D
+        fit_rows.append({"track_id": track_id, "n_frames": result.n_frames, "model": post.model,
+                         "method": post.method, "status": post.status, "message": post.message,
+                         "uncertainty_method": post.uncertainty_method, **post.parameters})
         if keep_posteriors and result.log_post_D is not None:
             D_ids.append(track_id)
             log_post_D.append(result.log_post_D)
-        if keep_posteriors and result.log_post_alpha is not None:
-            alpha_ids.append(track_id)
-            log_post_alpha.append(result.log_post_alpha)
-            log_post_joint.append(result.log_post_joint)
         if progress is not None:
             progress(done, len(groups))
     posteriors = None
     if keep_posteriors:
-        posteriors = GridPosteriors(
-            np.array(D_ids, dtype=np.int64), np.array(log_post_D).reshape(len(D_ids), options.n_D),
-            np.array(alpha_ids, dtype=np.int64), np.array(log_post_alpha).reshape(len(alpha_ids), options.n_alpha),
-            np.array(log_post_joint).reshape(len(alpha_ids), options.n_alpha, len(options.u_joint_D())))
+        posteriors = GridPosteriors(np.array(D_ids, dtype=np.int64),
+                                    np.array(log_post_D).reshape(len(D_ids), options.n_D))
     return GridPosteriorAnalysis(pl.DataFrame(fit_rows, schema=FIT_SCHEMA), acquisition, options, posteriors)

@@ -12,7 +12,6 @@ from diffusionkit import Acquisition
 from diffusionkit.gridpost import deconvolve as D
 from diffusionkit.gridpost import posterior as P
 from diffusionkit.gridpost.data import GridPostOptions
-from diffusionkit.gridpost.likelihood import fgn_motion_covariance
 from diffusionkit.gridpost.workflow import analyze_tracks
 
 DT = .033
@@ -57,25 +56,6 @@ def simulated_table(D_values, rng, frames=(5, 13), track_id0=0):
         pos = simulate(d, sd[:, 0], DT, rng, n_frames=n)
         tables.append(track_table(track_id0 + i, np.arange(n), pos, sd))
     return pl.concat(tables)
-
-
-def joint_bumps(rng, alphas, u, n):
-    """(n, len(alphas), len(u)) Gaussian log-likelihood bumps around two populations' centres."""
-    centres = np.where(rng.random(n)[:, None] < .4, [.4, -3.], [1.1, -1.])
-    centres = centres + rng.normal(0, [.15, .4], (n, 2))
-    width = rng.uniform(.2, .6, (n, 2))
-    return -.5 * (((alphas[None, :, None] - centres[:, 0, None, None]) / width[:, 0, None, None]) ** 2
-                  + ((u[None, None, :] - centres[:, 1, None, None]) / width[:, 1, None, None]) ** 2)
-
-
-def fbm_table(track_id, n, alpha, D_app, acquisition, rng):
-    """One blurred fBm track whose apparent D (Brownian D with the same blurred step variance) is D_app."""
-    dt, te = acquisition.dt_s, acquisition.exposure_s
-    K = D_app * 2 * (dt - te / 3) / fgn_motion_covariance(1, dt, alpha, te)[0, 0]
-    L = np.linalg.cholesky(K * fgn_motion_covariance(n - 1, dt, alpha, te))
-    sd = rng.uniform(.02, .035, (n, 2))
-    pos = np.vstack([np.zeros(2), np.cumsum(L @ rng.standard_normal((n - 1, 2)), axis=0)])
-    return track_table(track_id, np.arange(n), pos + sd * rng.standard_normal((n, 2)), sd)
 
 
 class DeconvolveTests(unittest.TestCase):
@@ -227,10 +207,9 @@ class DeconvolveTests(unittest.TestCase):
         lam = [D.deconvolve(track_lls(d, rng), U, prior, n_samples=10).lam for d in (narrow, broad)]
         self.assertGreater(lam[1], 30 * lam[0])
 
-    def test_flat_likelihoods_leave_the_alpha_distribution_unchanged(self):
-        # On the alpha grid, as the per-track posteriors are used: a track with no
-        # information has a flat likelihood and must not add mass at the prior's median.
-        alphas = GridPostOptions().alphas()
+    def test_flat_likelihoods_leave_the_distribution_unchanged(self):
+        # A track with no information has a flat likelihood and must not add mass at the prior's median.
+        alphas = np.linspace(.05, 1.95, 39)  # any evenly spaced grid
         rng = np.random.default_rng(9)
         centers = rng.choice([.3, 1.4], 200) + .1 * rng.standard_normal(200)
         informative = -.5 * ((alphas[None] - centers[:, None]) / .15) ** 2
@@ -250,128 +229,6 @@ class DeconvolveTests(unittest.TestCase):
             D.deconvolve(np.zeros((3, 4)), np.array([0., 1., 3., 4.]))
         with self.assertRaises(ValueError):
             D.deconvolve(np.zeros((3, 4)), np.arange(4.), np.array([0., 0., -np.inf, -np.inf]))
-
-    # ------------------------------------------------------------------
-    # The joint (alpha, ln D) distribution: deconvolve_joint
-    # ------------------------------------------------------------------
-
-    def test_joint_tangent_matches_dense_projection(self):
-        rng = np.random.default_rng(20)
-        m = D._LogG2(rng.uniform(.1, 1, (6, 20)), 4, .5, .2)
-        np.testing.assert_allclose(m.P.T @ m.P, np.eye(19), atol=1e-12)
-        np.testing.assert_allclose(m.P.T @ np.ones(20), 0, atol=1e-12)
-        M = rng.standard_normal((20, 20))
-        M = M + M.T
-        np.testing.assert_allclose(m._tangent(M), m.P.T @ M @ m.P, atol=1e-12)
-
-    def test_joint_gradient_and_hessian_match_finite_differences(self):
-        rng = np.random.default_rng(21)
-        m = D._LogG2(rng.uniform(.01, 1, (40, 20)), 4, .5, .2)
-        Q = m.Q((.3, .05))
-        x = .1 * rng.standard_normal(m.K)
-        F, gt, H = m.local(x, Q)
-        self.assertAlmostEqual(F, m.value(x, Q))
-
-        def f(z):
-            return m.value(x + m.P @ z, Q)
-
-        E = np.eye(m.K - 1)
-        g_fd = np.array([(f(1e-5 * e) - f(-1e-5 * e)) / 2e-5 for e in E])
-        np.testing.assert_allclose(g_fd, gt, atol=1e-6 * np.abs(gt).max())
-        h = 1e-4
-        H_fd = -np.array([[(f(h * a + h * b) - f(h * a - h * b) - f(-h * a + h * b) + f(-h * a - h * b))
-                           / (4 * h * h) for b in E] for a in E])
-        np.testing.assert_allclose(H_fd, H, atol=1e-5 * np.abs(H).max())
-
-    def test_joint_prior_normalization_is_the_tangent_pseudo_determinant(self):
-        """The Kronecker-sum eigenvalue formula against a dense log-determinant on the tangent space."""
-        m = D._LogG2(np.ones((2, 30)), 5, .4, .3)
-        for lam in ((1., 1.), (1e-3, 10.), (50., 1e-4)):
-            Qt = m.P.T @ m.Q(lam) @ m.P
-            self.assertAlmostEqual(m.log_prior_norm(lam), .5 * np.linalg.slogdet(Qt)[1], places=6)
-
-    def test_joint_laplace_evidence_matches_importance_sampling(self):
-        # 3 x 3 cells: prior normalization and determinants included, as in the 1D test. The
-        # gap is Laplace's own error (up to 0.13 nats here, varying with lam; two importance
-        # proposals agree to 0.01), not a missing constant, which would show at every lam.
-        rng = np.random.default_rng(22)
-        a, d = np.meshgrid(np.arange(3.), np.arange(3.), indexing="ij")
-        centres = rng.normal([1, 1], .7, (300, 2))
-        lls = -.5 * ((a[None] - centres[:, 0, None, None]) ** 2 + (d[None] - centres[:, 1, None, None]) ** 2)
-        F = lls.reshape(300, -1)
-        m = D._LogG2(np.exp(F - F.max(axis=1, keepdims=True)), 3, 1., 1.)
-        for lam in ((1., 1.), (10., .1)):
-            mode = m.fit(lam, np.zeros(m.K))
-            Q = m.Q(lam)
-            prop = multivariate_t(loc=np.zeros(m.K - 1), shape=1.5 * np.linalg.inv(mode.C @ mode.C.T), df=5)
-            z = prop.rvs(100_000, random_state=rng)
-            X = mode.x[:, None] + m.P @ z.T
-            ll = np.sum(np.log(m.L @ D._softmax(X)), axis=0)
-            Zc = m.P.T @ X
-            Qt = m.P.T @ Q @ m.P
-            log_prior = (-.5 * np.einsum("in,ij,jn->n", Zc, Qt, Zc) + .5 * np.linalg.slogdet(Qt)[1]
-                         - (m.K - 1) / 2 * np.log(2 * np.pi))
-            lw = ll + log_prior - prop.logpdf(z)
-            self.assertAlmostEqual(mode.log_evidence, logsumexp(lw) - np.log(len(lw)), delta=.2)
-
-    def test_joint_search_is_at_least_as_good_as_a_grid(self):
-        rng = np.random.default_rng(23)
-        alphas, u = np.linspace(.1, 1.7, 9), np.linspace(-6, 1, 12)
-        lls = joint_bumps(rng, alphas, u, 300)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            fit = D.deconvolve_joint(lls, alphas, u, n_samples=50)
-        F = lls.reshape(len(lls), -1)
-        m = D._LogG2(np.exp(F - F.max(axis=1, keepdims=True)), len(alphas), u[1] - u[0], alphas[1] - alphas[0])
-        grid = [m.fit((10. ** a, 10. ** b), np.zeros(m.K)).log_evidence
-                for a in np.arange(3, -7, -2.) for b in np.arange(3, -7, -2.)]
-        self.assertGreaterEqual(fit.log_evidence[:, 2].max(), max(grid) - .05)
-
-    def test_joint_flat_rows_leave_it_unchanged(self):
-        """A track with no information about (alpha, D) must not move the distribution."""
-        rng = np.random.default_rng(24)
-        alphas, u = np.linspace(.1, 1.7, 9), np.linspace(-6, 1, 12)
-        informative = joint_bumps(rng, alphas, u, 200)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            alone = D.deconvolve_joint(informative, alphas, u, n_samples=100)
-            mixed = D.deconvolve_joint(np.vstack([informative, np.zeros((300, 9, 12))]), alphas, u, n_samples=100)
-        np.testing.assert_allclose(mixed.weights, alone.weights, atol=1e-8)
-        np.testing.assert_allclose(mixed.lam, alone.lam, rtol=1e-6)
-        np.testing.assert_allclose(mixed.samples.mean(axis=0), alone.samples.mean(axis=0), atol=.02)
-
-    def test_joint_recovers_two_populations_from_simulated_tracks(self):
-        """Caged (alpha 0.3, D 0.02) and Brownian (alpha 1, D 0.3) tracks, exposure blur modelled."""
-        rng = np.random.default_rng(25)
-        acquisition = Acquisition(DT, .02)
-        options = GridPostOptions(n_D=101, joint_D_bin=5, n_alpha=9, alpha_min=.1, alpha_max=1.7)
-        caged = rng.random(300) < .35
-        table = pl.concat([fbm_table(i, rng.integers(10, 31), *((.3, .02) if c else (1., .3)), acquisition, rng)
-                           for i, c in enumerate(caged)])
-        post = analyze_tracks(table, acquisition, options, keep_posteriors=True).posteriors
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")  # no bound or convergence warning
-            fit = D.deconvolve_joint(post.log_post_joint, options.alphas(), options.u_joint_D(), n_samples=500)
-        low = options.alphas() < .65
-        mass = fit.samples[:, low, :].sum(axis=(1, 2))
-        self.assertLess(abs(fit.weights[low].sum() - caged.mean()), .07)
-        lo, hi = np.quantile(mass, [.0005, .9995])
-        self.assertTrue(lo < caged.mean() < hi)
-        np.testing.assert_allclose(fit.samples.sum(axis=(1, 2)), 1, atol=1e-12)
-
-    def test_joint_rejects_bad_shapes_and_uneven_grids(self):
-        alphas, u = np.linspace(.1, 1.7, 9), np.linspace(-6, 1, 12)
-        with self.assertRaisesRegex(ValueError, "log_post"):
-            D.deconvolve_joint(np.zeros((3, 12, 9)), alphas, u)
-        with self.assertRaisesRegex(ValueError, "evenly"):
-            D.deconvolve_joint(np.zeros((3, 9, 12)), alphas, np.r_[u[:-1], 5.])
-
-    def test_import_does_not_load_bayes_or_plotting(self):
-        import subprocess
-        import sys
-        code = ("import diffusionkit.gridpost, sys; "
-                "assert not any(x in sys.modules for x in ('jax','numpyro','matplotlib'))")
-        subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
 
 
 if __name__ == "__main__":
