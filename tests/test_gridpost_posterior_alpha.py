@@ -3,6 +3,7 @@ import unittest
 
 import numpy as np
 import polars as pl
+from scipy.special import logsumexp
 from scipy.stats import multivariate_normal
 
 from diffusionkit import Acquisition
@@ -36,14 +37,20 @@ def simulate(K, alpha, sd, dt, rng, n_frames=None, exposure=0.):
     return true + sd[:, None] * rng.standard_normal((n, 2))
 
 
+def K_per_D(alpha, exposure=0.):
+    """K per unit apparent D: Berglund's blurred Brownian step variance, 2 (dt - te/3) per axis,
+    over the fBm one per unit K. dt^(1-alpha) without blur."""
+    return 2 * (DT - exposure / 3) / fgn_motion_covariance(1, DT, alpha, exposure)[0, 0]
+
+
 def dense_loglik(track, alpha, D, exposure=0.):
     """Independent oracle: dense per-axis fGn + localization covariance, SciPy density.
 
-    D is the apparent diffusivity at the frame interval, K = D dt^(1-alpha)."""
+    D is the apparent diffusivity, the Brownian D with the same blurred step variance."""
     delta = np.diff(track.select("x_um", "y_um").to_numpy(), axis=0)
     sd = track.select("sigma_x_um", "sigma_y_um").to_numpy()
     m = delta.shape[0]
-    A = D * DT ** (1 - alpha) * fgn_motion_covariance(m, DT, alpha, exposure)
+    A = D * K_per_D(alpha, exposure) * fgn_motion_covariance(m, DT, alpha, exposure)
     return sum(multivariate_normal(np.zeros(m), A + B).logpdf(delta[:, axis])
               for axis, B in enumerate(localization_covariance(sd)))
 
@@ -118,6 +125,34 @@ class PosteriorAlphaTests(unittest.TestCase):
                                                         in_ms.u_D(), method), PD.flat(in_ms.u_D()))
                 np.testing.assert_allclose(ms, s, rtol=1e-7, atol=1e-12)
 
+    def test_apparent_D_gives_every_alpha_the_brownian_blurred_step_variance(self):
+        """The scale's definition: per unit D, one blurred step has Brownian's variance at any alpha."""
+        for exposure in (0., .01, DT):
+            for alpha in (.05, .5, 1., 1.6):
+                step = (PA._scale_per_D(np.array([alpha]), DT, exposure)[0]
+                        * fgn_motion_covariance(1, DT, alpha, exposure)[0, 0])
+                self.assertAlmostEqual(step, 2 * (DT - exposure / 3), places=12)
+        np.testing.assert_allclose(PA._scale_per_D(ALPHA, DT, 0.), DT ** (1 - ALPHA), rtol=1e-12)
+
+    def test_joint_cells_tile_the_grid(self):
+        """Summed over D the cells are the alpha posterior; at alpha=1 they bin the D likelihood."""
+        rng = np.random.default_rng(15)
+        n, acquisition = 9, Acquisition(DT, .02)
+        sd = rng.uniform(.02, .05, (n, 2))
+        t = track_table(1, np.arange(n), simulate(.05, .7, sd[:, 0], DT, rng, n, .02), sd)
+        alphas = np.array([.3, 1., 1.5])
+        ll = PA.joint_loglik(t, acquisition, alphas, U_D)
+        joint = PA.log_joint_posterior(ll, PD.flat(U_D), 10)
+        self.assertEqual(joint.shape, (3, 50))
+        self.assertAlmostEqual(logsumexp(joint), 0., places=12)
+        np.testing.assert_allclose(logsumexp(joint, axis=1), PA.log_alpha_posterior(ll, PD.flat(U_D)), atol=1e-12)
+        d = PD.track_loglik(t, acquisition, U_D)
+        cells = np.log([np.trapezoid(np.exp(d[j * 10:(j + 1) * 10 + 1] - d.max())) for j in range(50)])
+        np.testing.assert_allclose(joint[1] - logsumexp(joint[1]), cells - logsumexp(cells), atol=1e-10)
+        np.testing.assert_allclose(OPTIONS.u_joint_D(), (U_D[:-1:10] + U_D[10::10]) / 2)
+        with self.assertRaisesRegex(ValueError, "D_bin"):
+            PA.log_joint_posterior(ll, PD.flat(U_D), 7)
+
     def test_flat_alpha_prior_is_uniform_over_grid(self):
         np.testing.assert_array_equal(PA.flat_alpha(ALPHA), np.zeros_like(ALPHA))
 
@@ -189,7 +224,7 @@ class PosteriorAlphaTests(unittest.TestCase):
 
     def test_whittle_matches_a_dense_expected_periodogram(self):
         """The FFT-built debiased Whittle surface against its definition, evaluated densely:
-        S(w) = f(w)^H (D dt^(1-alpha) A + B) f(w) / m, f(w)_t = exp(-i w t)."""
+        S(w) = f(w)^H (D K_per_D A + B) f(w) / m, f(w)_t = exp(-i w t)."""
         rng = np.random.default_rng(10)
         n, exposure = 12, .02
         sd = rng.uniform(.02, .05, (n, 2))
@@ -202,7 +237,7 @@ class PosteriorAlphaTests(unittest.TestCase):
         I = np.abs(F @ delta.T).T ** 2 / m
         B = localization_covariance(sd)
         for i, alpha in enumerate(alphas):
-            A = DT ** (1 - alpha) * fgn_motion_covariance(m, DT, alpha, exposure)
+            A = K_per_D(alpha, exposure) * fgn_motion_covariance(m, DT, alpha, exposure)
             for k, D in enumerate(np.exp(u)):
                 S = np.stack([np.einsum("ji,il,jl->j", F.conj(), D * A + B[axis], F).real / m for axis in range(2)])
                 direct = -.5 * np.sum(np.log(S) + I / S) - m * np.log(2 * np.pi)

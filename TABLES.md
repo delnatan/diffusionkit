@@ -84,7 +84,7 @@ joint fit:
 
 | Column | Meaning |
 | --- | --- |
-| `alpha_post_median` | Posterior 0.5 quantile (median) of the fBm exponent alpha, its scale (D at `dt_s`, on the D grid) marginalized out |
+| `alpha_post_median` | Posterior 0.5 quantile (median) of the fBm exponent alpha, its scale (the apparent D: the Brownian D with the same blurred one-frame step variance, on the D grid) marginalized out |
 | `alpha_post_lo`, `alpha_post_hi` | Posterior quantiles at `(1-level)/2` and `(1+level)/2` |
 | `alpha_post_info_bits` | Information the track gave about alpha: KL(posterior \|\| prior) in bits, prior flat over the alpha grid. Near 0, the posterior is the prior, and its median sits at the grid's midpoint (1 on the default grid) whatever the motion. Comparable only on the same `[alpha_min, alpha_max]` |
 
@@ -103,3 +103,23 @@ is cut by a grid edge (edge weight above 5% of the peak) says so in
 | `ok` | Finite numerical estimate passed the implemented checks |
 | `excluded` | Fewer frames than `GridPostOptions.min_frames`; `posterior_alpha` rows also when `GridPostOptions.compute_alpha=False` |
 | `invalid_input` | A batch track failed validation, or a localization SD is zero |
+
+### Joint posterior file -- one row per track (`gridpost.joint`)
+
+`write_joint_posteriors` writes, and `read_joint_posteriors` reads, each `ok`
+track's joint posterior over (alpha, ln D) cells: `GridPostOptions.alphas()`
+by `u_joint_D()` (39 x 50 by default; ln of the apparent D at cell centres).
+Its sum over D is the alpha posterior; its alpha=1 row is the D posterior
+binned to cells (see [docs/gridpost.md](docs/gridpost.md#the-joint-alpha-d-posterior-per-track)).
+
+| Column | Meaning |
+| --- | --- |
+| `sample` | Label of the sample (movie) the track came from; `(sample, track_id)` is unique in a pooled file |
+| `track_id`, `n_frames` | Track identity and observation count |
+| `log_post_peak` | The track's largest cell: its normalized log posterior (natural log) |
+| `log_post_q` | `Array(UInt16, (n_alpha, n_D))`: each cell's distance below `log_post_peak` in thousandths of a nat, saturating at 65535 (65.5 nats). Cell log posterior = `log_post_peak - 0.001 * log_post_q`, then renormalized per track |
+
+The file's key-value metadata holds, under `diffusionkit.joint_posterior`, a
+JSON object with the format version (`diffusionkit.joint_posterior/1`), the
+quantum, the acquisition (`dt_s`, `exposure_s`) and every `GridPostOptions`
+field, so a file reads back on its own grid.

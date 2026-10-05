@@ -93,9 +93,12 @@ each track's full log posterior (`result.posteriors`). There is no lag window. T
 per-track information to report for `D`: a short, uninformative track
 produces a wide posterior rather than a falsely confident point estimate (see
 [docs/gridpost.md](docs/gridpost.md)). `alpha` (the fBm exponent) gets its own grid posterior with the
-generalized diffusion coefficient `K` marginalized out as a nuisance
-parameter -- `D` and `alpha` are two independent per-track measurements, not
-a joint fit, which sidesteps the well-known `K`/`alpha` MLE degeneracy.
+motion's scale marginalized out as a nuisance parameter -- `D` and `alpha` are
+reported as two per-track measurements, not a joint point estimate, which
+sidesteps the well-known `K`/`alpha` MLE degeneracy. The scale is the
+apparent D (the Brownian D with the same blurred one-frame step variance), so
+the D posterior is the `alpha = 1` slice of each track's joint (alpha, D)
+posterior, which is kept for population reads (below).
 
 The D posterior's interval is a genuine credible interval under a flat
 prior, but its calibration is a simulation check under the model (see
@@ -142,9 +145,10 @@ object. Plain dataclasses hold only per-analysis metadata and results:
 `GridPostOptions`, `PosteriorD`, `PosteriorAlpha` (gridpost). Standalone
 functions validate the table, compute MSD or the grid posteriors, and fit or
 summarize them. `diffusionkit.io.validated_track_frame` is the single
-validation boundary every per-track algorithm calls first. No GUI, file
-writing, global JAX settings, or worker creation is part of `classic` or
-`gridpost`.
+validation boundary every per-track algorithm calls first. No GUI, global JAX
+settings, or worker creation is part of `classic` or `gridpost`; the one file
+`gridpost` writes is the per-track joint posterior (`gridpost.joint`), so that
+whatever produces it and whatever reads it share one format.
 
 See [WORKFLOW.md](WORKFLOW.md) for table examples, [TABLES.md](TABLES.md) for
 output semantics, [docs/classical.md](docs/classical.md) for the MSD
@@ -163,6 +167,55 @@ distribution, so any band or mass comes with an interval
 (`result.band(.68, cumulative=True)`). See
 [docs/gridpost.md](docs/gridpost.md#distribution-of-d-across-tracks-deconvolve).
 
+## Distribution of alpha and D across tracks
+
+```python
+import numpy as np
+from concurrent.futures import ThreadPoolExecutor
+from diffusionkit.gridpost import (GridPostOptions, analyze_tracks, deconvolve_joint, joint_posteriors,
+                                   pool_joint_posteriors, read_joint_posteriors, write_joint_posteriors)
+from diffusionkit.gridpost.deconvolve import deconvolve
+
+options = GridPostOptions()
+with ThreadPoolExecutor(8) as pool:
+    result = analyze_tracks(tracks, acquisition, options, keep_posteriors=True, map_fn=pool.map)
+
+# 1D reads: D (the alpha = 1 model) and alpha, each from its own per-track posteriors
+post = result.posteriors
+D_pop = deconvolve(post.log_post_D, options.u_D())
+alpha_pop = deconvolve(post.log_post_alpha, options.alphas())
+
+# Each track's joint (alpha, ln D) posterior, as one compact file per sample
+wt = joint_posteriors(result, sample="wt")
+write_joint_posteriors("wt_joint.parquet", wt)
+
+# The joint read of one sample
+pop = deconvolve_joint(wt.log_post, wt.alphas, wt.u)
+pop.weights                                            # (n_alpha, n_D), sums to 1
+region = wt.alphas < .4                                # any region you define, e.g. one mode
+mass = pop.samples[:, region].sum(axis=(1, 2))          # its mass, one value per draw
+np.quantile(mass, [.05, .5, .95])
+raw = np.exp(wt.log_post).mean(axis=0)                 # raw pooled posterior, before deconvolution
+
+# ... or of several samples pooled
+both = pool_joint_posteriors([read_joint_posteriors("wt_joint.parquet"),
+                              read_joint_posteriors("ko_joint.parquet")])
+pooled = deconvolve_joint(both.log_post, both.alphas, both.u)
+```
+
+`deconvolve_joint` keeps what the two 1D reads lose: which D goes with which
+alpha. A 3-frame track says little about alpha but much about D, so it takes
+the alpha mix of the tracks with D like its own instead of the whole
+population's. That assumes the alpha mix at a given D does not depend on track
+length: where a low-alpha population makes longer tracks than the mobile one
+(particles that stay in focus), the joint read over-counts it, by ~0.12 in
+simulation. Below the localization floor alpha is not identified, and
+immobile particles end up in the lowest alpha cells there, so read low-alpha
+mass together with its D. Pooling requires the same cells, and dt and
+exposure equal to 0.1%. The D axis is the apparent D, so on it the `alpha = 1`
+row is the ordinary D. See
+[docs/gridpost.md](docs/gridpost.md#distribution-of-alpha-d-across-tracks-deconvolve_joint).
+
 ## Validation
 
 ```bash
@@ -170,6 +223,7 @@ python -m unittest discover -s tests -v
 python scripts/validate_classic.py --output /tmp/classic_validation.json
 python scripts/validate_posterior.py --output /tmp/posterior_validation.json
 python scripts/validate_deconvolve.py --output /tmp/deconvolve_validation.json
+python scripts/validate_deconvolve_joint.py --output /tmp/deconvolve_joint_validation.json
 ```
 
 Tests include an independent pair-sum oracle, nonlinear objective checks,

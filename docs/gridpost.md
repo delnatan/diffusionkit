@@ -77,9 +77,10 @@ does the spread grow with time". Per axis, the same m = n-1 displacements
 are Gaussian under the fBm model:
 
 ```
-Sigma(D, alpha) = D dt^(1-alpha) A(alpha) + B
+Sigma(D, alpha) = D c(alpha) A(alpha) + B
 A(alpha)_k = G((k+1) dt) - 2 G(k dt) + G((k-1) dt)   (lag k)
 G(x) = E|x + u - v|^alpha,   u, v ~ Uniform(0, exposure_s)
+c(alpha) = 2 (dt - exposure_s/3) / A(alpha)_0
 ```
 
 with B the same localization-noise covariance as the D posterior. The true
@@ -108,21 +109,36 @@ Blur matters for alpha. It correlates neighbouring displacements positively
 which is what alpha is read from: fitted without it, simulated alpha=0.5
 tracks come out near 0.7 and alpha=1 near 1.14.
 
-The scale D is the apparent diffusivity at the frame interval,
-MSD(dt) / (4 dt) = K dt^(alpha-1), not fBm's generalized coefficient K
-(um^2/s^alpha). The two describe the same motion, but a grid and a flat prior
-over ln K do not describe the same prior: K's unit depends on alpha, so a
-fixed K range admits different motions at each alpha, and which ones depends
-on whether time is in seconds or milliseconds. On a gelled-bead movie (dt 44
-ms, D ~ 0.001 um^2/s at dt) the K grid's 1e-4 floor removed low-alpha
-hypotheses, since there K = D dt^(1-alpha) falls below 1e-4 as alpha drops:
-5-9 frame tracks, which carry ~0.06 bits about alpha, reported a median of
-1.15 with the scale on K and 0.79 with it on D at dt; on 40-frame tracks the
-two agreed. With D at dt, alpha's nuisance scale is the D posterior's own
-grid and prior (`GridPostOptions.u_D`, flat in ln D), a grid edge means the
-same thing for both posteriors, the alpha posterior is unchanged by a change
-of time unit (tested), and at alpha=1 its likelihood is exactly the D
-posterior's.
+The scale D is the apparent diffusivity: the Brownian D whose blurred
+one-frame displacement has the same variance, 2 D (dt - exposure_s/3) per
+axis, i.e. the motion's part of the measured MSD(dt) divided by
+4 (dt - exposure_s/3). `c(alpha)` converts it to fBm's generalized
+coefficient, K = c(alpha) D (um^2/s^alpha); c(1) = 1, and without blur
+c(alpha) = dt^(1-alpha), so D is then MSD(dt) / (4 dt) = K dt^(alpha-1).
+
+A grid and a flat prior over ln K would not describe the same prior at each
+alpha: K's unit depends on alpha, so a fixed K range admits different motions
+at each alpha, and which ones depends on whether time is in seconds or
+milliseconds. On a gelled-bead movie (dt 44 ms, D ~ 0.001 um^2/s) the K
+grid's 1e-4 floor removed low-alpha hypotheses, since there K falls below
+1e-4 as alpha drops: 5-9 frame tracks, which carry ~0.06 bits about alpha,
+reported a median of 1.15 with the scale on K and 0.79 with it anchored at
+dt (the earlier, unblurred anchor below); on 40-frame tracks the two agreed. Anchored at dt, alpha's nuisance scale
+is the D posterior's own grid and prior (`GridPostOptions.u_D`, flat in
+ln D), a grid edge means the same thing for both posteriors, the alpha
+posterior is unchanged by a change of time unit (tested), and at alpha=1 its
+likelihood is exactly the D posterior's.
+
+The anchor is the blurred step rather than the unblurred MSD(dt) / (4 dt),
+which an earlier version used; the two agree without blur. With it they part
+as alpha falls, because the exposure averages away more of a low-alpha,
+noise-like motion: at exposure = dt the blurred step variance per unit
+K dt^(alpha-1) is 0.10 of Brownian's at alpha = 0.05. On the unblurred scale
+a track's (alpha, ln D) posterior was a ridge bending toward large D at low
+alpha (median within-track correlation -0.75 on GEM tracks of >= 11 frames,
+20 ms frames and exposure), and caged particles showed at a nominal D of
+1-10 um^2/s; on this scale the correlation is -0.05 and a low-alpha track
+sits at the D its steps show.
 
 For any *fixed* alpha this is linear in D, like the D posterior's model, so
 the same whitening trick applies -- but A(alpha) itself
@@ -148,7 +164,7 @@ S(w)  = D S_A(w; alpha) + S_B(w)
 The *debiased* version (Sykulski, Olhede, Guillaumin, Lilly & Early 2019,
 Biometrika 106:251) takes S to be the expected periodogram of the exact
 finite-m covariance, not the process's spectral density: S_A is the FFT of
-the tapered exact blurred autocovariance (1 - k/m) dt^(1-alpha) gamma(k), and S_B comes
+the tapered exact blurred autocovariance (1 - k/m) c(alpha) gamma(k), and S_B comes
 from the per-frame localization SDs. That removes the leakage and aliasing
 bias of plain Whittle, so the only approximation left is treating the
 periodogram ordinates as independent. S is linear in D, so the D
@@ -176,8 +192,9 @@ alpha. `analyze_tracks(..., map_fn=pool.map)` spreads tracks over a
 caller's thread pool (the linear algebra releases the GIL).
 
 The alpha posterior is the 1D marginal of the 2D (alpha, ln D) log-likelihood
-surface, integrating the nuisance D out under the flat ln D prior via
-`logsumexp` -- `posterior_alpha.summary` reports the median and credible
+surface, integrating the nuisance D out under the flat ln D prior (a
+`logsumexp` with the trapezoid rule's half weights at the grid ends) --
+`posterior_alpha.summary` reports the median and credible
 interval (`alpha_post_median`, `alpha_post_lo`, `alpha_post_hi`). D and alpha
 are reported as two per-track measurements, not a joint (D, alpha) point:
 `D` comes from the alpha=1 model, `alpha` from the fBm model with its scale
@@ -190,6 +207,39 @@ the default grid) whatever the motion is, so read alpha medians together
 with their bits. `deconvolve.deconvolve` accepts these posteriors as
 likelihood rows on the alpha grid (flat alpha prior); see its docstring for
 what that distribution inherits from the scale's prior.
+
+## The joint (alpha, D) posterior per track
+
+The surface the alpha posterior is summed from is kept as data too: each
+track's posterior over (alpha, ln D) cells (`posterior_alpha.log_joint_posterior`),
+on `GridPostOptions.alphas()` and cells of `joint_D_bin` steps of the D grid
+(`u_joint_D()`; by default 39 x 50 cells, each 0.1 decade of D). A cell's
+mass integrates the likelihood times the flat prior over the cell by the
+trapezoid rule, so the cells tile the grid, and the two 1D posteriors are
+read off it:
+
+- its sum over D is the alpha posterior, exactly (`fits` and
+  `GridPosteriors.log_post_alpha` are computed that way);
+- its alpha=1 row is the D posterior's likelihood, binned to cells.
+
+So the standard D posterior is a slice of the joint one, at alpha = 1, not
+its margin. On the apparent-D scale above the two are close for most tracks;
+they part where a track rules alpha = 1 out (a caged track's D posterior
+answers "if it were Brownian").
+
+`analyze_tracks(..., keep_posteriors=True)` keeps it
+(`GridPosteriors.log_post_joint`), and `gridpost.joint` collects it
+(`joint_posteriors(result, sample=...)`), writes and reads it as one parquet
+file per sample (`write_joint_posteriors`, `read_joint_posteriors`), and
+pools samples (`pool_joint_posteriors`). On disk each track stores its peak
+log posterior and a UInt16 array of each cell's distance below the peak in
+thousandths of a nat, saturating at 65.5 nats; the grid and acquisition are in
+the file's metadata. 2218 GEM tracks take 7.6 MB, read back to 0.0006 nats.
+Pooling requires the same cells, and dt and exposure equal to 0.1%, because
+the apparent D and the blur model are defined at each movie's own dt.
+Averaging `exp(log_post)` over tracks gives the raw pooled posterior. Short
+tracks spread their weight over the whole grid, so it is a first look, not
+the population distribution; that is the next section's read.
 
 ## Distribution of D across tracks: `deconvolve`
 
@@ -230,6 +280,65 @@ values apart. For a spike the evidence may run to the rough end of
 (`deconvolve.deconvolve(lls, alphas)`); a track with a flat likelihood leaves
 the result unchanged.
 
+## Distribution of (alpha, D) across tracks: `deconvolve_joint`
+
+`deconvolve.deconvolve_joint(log_post, alphas, u)` fits the population's
+distribution over the (alpha, ln D) cells from every track's joint posterior,
+with the same log-density model as `deconvolve`, g = softmax(eta), and a
+second-order smoothness prior along each axis with its own lam:
+`(lam_D/2) int int eta_uu^2 du dalpha + (lam_alpha/2) int int eta_alphaalpha^2 du dalpha`.
+The penalty's null space is {1, alpha} x {1, ln D}; the three tilts get the
+negligible precision `EPS`, as in 1D. (lam_D, lam_alpha) maximizes the Laplace
+evidence, by Nelder-Mead in log lam, started from the lam `deconvolve` picks
+for each margin and then probed two decades out along each axis, and
+`samples` are HMC draws with lam integrated over a 3 x 3 grid around the
+maximum. On ~2000-track GEM movies (39 x 50 cells) that is 40-60 mode fits and
+35-50 s, about half of it HMC; against a 7 x 7 grid of lam the search found a higher evidence
+on both movies tried.
+
+What it adds to the two 1D reads is which D goes with which alpha. A 3-frame
+track says little about alpha but much about D, so in the joint fit it takes
+the alpha mix of tracks with D like its own -- which is also where it goes
+wrong when that mix depends on track length (below). Two limits of the model
+itself:
+
+- Below the localization floor alpha is not identified, yet an immobile
+  track's likelihood still leans toward low alpha (the alpha posterior's mass
+  at alpha <= 0.2 is 0.16 on simulated immobile GEM tracks against 0.10 for a
+  flat posterior): noise-like motion fits a little excess jitter best. A
+  deconvolution of many such tracks puts them at the lowest alpha cells,
+  below the floor in D. Read low-alpha mass together with its D.
+- A peak's width is resolution-limited, as in 1D.
+
+`scripts/validate_deconvolve_joint.py` (recorded in
+`audit/deconvolve_joint_validation.json`) simulates GEM-like movies: 1500
+tracks, dt = exposure = 20 ms, localization SDs 15-30 nm, most tracks 3-6
+frames, with caged (alpha 0.1, D ~ 0.03), mobile (alpha ~ 0.9, D ~ 0.3) and
+immobile particles, and caged or immobile tracks longer than mobile ones in
+some scenarios. The table scores the mass at alpha < 0.4, the gap between
+the simulation's own classes (alpha 0.1 against >= 0.5); it is a scoring
+boundary for known truth, not a classification threshold for real data:
+
+| population (1500 tracks, 3 datasets each) | truth | joint read | its 90% interval covers | of it below the floor | pooled 1D alpha read |
+|---|---|---|---|---|---|
+| all mobile | 0 | 0.000 | -- | 0.000 | 0.000 |
+| 25% caged, same track lengths | 0.24 | 0.245 | 3 of 3 | 0.19 | 0.00 |
+| 25% caged, caged tracks longer | 0.26 | 0.376 | 0 of 3 | 0.25 | 0.43 |
+| 30% immobile, immobile tracks longer | 0 caged | 0.360 | -- | 0.34 | 0.26 |
+
+The caged population here (D ~ 0.03) sits near the localization floor (~0.04
+for these SDs), where a 1D alpha read loses it entirely: with lengths
+independent of the population the pooled alpha posteriors find none of it,
+while the joint read recovers it. Two biases remain:
+
+- **Track length.** When the low-alpha population's tracks are longer than
+  the mobile ones, as for particles that stay in focus, the joint read
+  over-counts it by ~0.12. The model treats every track as drawn from g
+  whatever its length, so a short mobile track with a low D takes the alpha
+  mix of the long caged tracks around that D. Track length is not modelled.
+- **Immobile particles** land at the lowest alpha cells, below the floor in
+  D, as described above: 0.34 of the 0.36 here.
+
 ## What is reported, and what is not
 
 Under this model a track's information is its displacement covariance
@@ -249,7 +358,9 @@ fluctuation under several names, each inviting a different story
 tracks.
 
 The package therefore reports D and alpha, each with an interval and its
-information in bits, plus D's localization floor as a scale. Confinement
+information in bits, plus D's localization floor as a scale; the joint
+posterior they come from is kept as data for population reads, not
+summarized per track. Confinement
 and subdiffusion are readings of low alpha, not separate outputs. A ratio of
 D at two timescales (`gridpost.timescale`) and a Brownian-versus-noise
 likelihood ratio (`D_motion_lrt`) were implemented and removed for this

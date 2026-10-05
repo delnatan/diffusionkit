@@ -5,6 +5,7 @@ import unittest
 
 import numpy as np
 import polars as pl
+from scipy.special import logsumexp
 
 from diffusionkit import Acquisition
 from diffusionkit.gridpost import GridPostOptions, analyze_track, analyze_tracks
@@ -146,6 +147,15 @@ class WorkflowTests(unittest.TestCase):
         np.testing.assert_allclose(post.log_post_D[0], analyze_track(good, Acquisition(.03)).log_post_D)
         self.assertIsNone(analyze_tracks(good, Acquisition(.03)).posteriors)
 
+    def test_keep_posteriors_keeps_the_joint_posterior_alpha_sums(self):
+        result = analyze_tracks(pl.concat([table(), table(9, track_id=8)]), Acquisition(.03, .01),
+                                keep_posteriors=True)
+        post, options = result.posteriors, result.options
+        self.assertEqual(post.log_post_joint.shape, (2, options.n_alpha, len(options.u_joint_D())))
+        np.testing.assert_allclose(logsumexp(post.log_post_joint, axis=2), post.log_post_alpha, atol=1e-12)
+        empty = analyze_tracks(table(2), Acquisition(.03), GridPostOptions(n_D=11), keep_posteriors=True)
+        self.assertEqual(empty.posteriors.log_post_joint.shape, (0, GridPostOptions().n_alpha, 1))
+
     def test_thread_pool_map_matches_serial(self):
         """A caller's executor map gives the serial result, rows and progress in track order."""
         from concurrent.futures import ThreadPoolExecutor
@@ -189,7 +199,7 @@ class WorkflowTests(unittest.TestCase):
     def test_invalid_grid_options_raise(self):
         for bad in (dict(D_min_um2_s=0.), dict(D_min_um2_s=1., D_max_um2_s=.5), dict(D_max_um2_s=np.inf),
                     dict(n_D=1), dict(alpha_min=0.), dict(alpha_max=2.), dict(n_alpha=1),
-                    dict(level=1.)):
+                    dict(level=1.), dict(joint_D_bin=0), dict(joint_D_bin=7)):
             with self.subTest(**bad), self.assertRaises(ValueError):
                 GridPostOptions(**bad)
 

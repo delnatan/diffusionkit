@@ -81,12 +81,12 @@ wide interval is expected, not a failure.
 from diffusionkit.gridpost import posterior_alpha as PA
 
 s = PA.track_alpha_posterior(one, Acquisition(dt_s=.033))
-s["median"], s["lo"], s["hi"]   # alpha_post_median/lo/hi, flat prior over K by default
+s["median"], s["lo"], s["hi"]   # alpha_post_median/lo/hi; the scale integrated out, flat in ln D
 ```
 
 A separate per-track measurement from the D posterior, not a joint fit:
-`D` comes from the alpha=1 model, `alpha` from the fBm model with the
-generalized diffusion coefficient K marginalized out entirely -- this
+`D` comes from the alpha=1 model, `alpha` from the fBm model with its scale
+(the apparent D, the D posterior's own grid) marginalized out entirely -- this
 answers "how correlated are consecutive steps" independently of "how big
 are the steps", sidestepping the well-known K/alpha MLE degeneracy. Set
 `exposure_s` to the camera exposure here too: blur correlates neighbouring
@@ -122,6 +122,10 @@ track's likelihood rather than its point estimate. Its smoothness is chosen
 by the data, not set by hand; a peak narrower than the tracks can resolve
 comes out as wide as that resolution, and below the localization floor the
 bands widen because the tracks cannot tell those D values apart.
+
+For the distribution of alpha and D together -- each track's joint posterior,
+its compact file, pooling samples and `deconvolve_joint` -- see the README's
+"Distribution of alpha and D across tracks".
 
 ## Inspect or change the classical analysis
 

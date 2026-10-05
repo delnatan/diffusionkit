@@ -39,6 +39,10 @@ class GridPostOptions:
     # (scripts/validate_alpha_whittle.py, audit/alpha_whittle_validation.json).
     alpha_method: str = "auto"
     alpha_whittle_min_frames: int = 40
+    # The per-track joint (alpha, ln D) posterior integrates the D grid over
+    # cells of this many steps (default 10: 50 cells of 0.1 decade), keeping
+    # alpha's grid -- 39 x 50 numbers per track instead of 39 x 501.
+    joint_D_bin: int = 10
 
     ALPHA_METHODS: ClassVar[tuple[str, ...]] = ("auto", "exact", "whittle")
 
@@ -57,6 +61,9 @@ class GridPostOptions:
             raise ValueError(f"alpha_method must be one of {self.ALPHA_METHODS}, got {self.alpha_method!r}")
         if self.alpha_whittle_min_frames < 3:
             raise ValueError(f"alpha_whittle_min_frames must be at least 3, got {self.alpha_whittle_min_frames}")
+        if self.joint_D_bin < 1 or (self.n_D - 1) % self.joint_D_bin:
+            raise ValueError(f"joint_D_bin must divide the D grid's n_D - 1 = {self.n_D - 1} steps, "
+                             f"got {self.joint_D_bin}")
 
     def u_D(self) -> np.ndarray:
         """The ln D grid (D in um^2/s): the D posterior's, and the alpha posterior's nuisance scale."""
@@ -71,6 +78,12 @@ class GridPostOptions:
     def alphas(self) -> np.ndarray:
         """The alpha grid the alpha posterior is evaluated on."""
         return np.linspace(self.alpha_min, self.alpha_max, self.n_alpha)
+
+    def u_joint_D(self) -> np.ndarray:
+        """Centres in ln D of the joint posterior's cells, `joint_D_bin` steps of `u_D()` each."""
+        u = self.u_D()
+        edges = u[::self.joint_D_bin]
+        return (edges[:-1] + edges[1:]) / 2
 
 
 @dataclass(frozen=True)
@@ -106,10 +119,12 @@ class TrackPosterior:
     posterior_alpha: PosteriorAlpha
     acquisition: Acquisition
     options: GridPostOptions
-    # Normalized log posteriors on `options.u_D()` / `options.alphas()`, None
-    # unless that posterior's status is "ok".
+    # Normalized log posteriors on `options.u_D()` / `options.alphas()`, and
+    # the joint one on (`options.alphas()`, `options.u_joint_D()`) cells, None
+    # unless that posterior's status is "ok" (the joint goes with alpha's).
     log_post_D: np.ndarray | None = field(default=None, compare=False, repr=False)
     log_post_alpha: np.ndarray | None = field(default=None, compare=False, repr=False)
+    log_post_joint: np.ndarray | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -117,14 +132,16 @@ class GridPosteriors:
     """Every "ok" track's normalized log posterior, one row per track.
 
     `log_post_D` rows are on `options.u_D()`, in the order of `D_track_ids`;
-    `log_post_alpha` rows on `options.alphas()`, in the order of
-    `alpha_track_ids`. The per-track vectors a population read (summed,
-    pooled or deconvolved) is built from.
+    `log_post_alpha` rows on `options.alphas()`, and `log_post_joint`
+    surfaces on (`options.alphas()`, `options.u_joint_D()`) cells, both in the
+    order of `alpha_track_ids`. The per-track posteriors a population read
+    (summed, pooled or deconvolved) is built from.
     """
     D_track_ids: np.ndarray
     log_post_D: np.ndarray  # (len(D_track_ids), n_D)
     alpha_track_ids: np.ndarray
     log_post_alpha: np.ndarray  # (len(alpha_track_ids), n_alpha)
+    log_post_joint: np.ndarray  # (len(alpha_track_ids), n_alpha, n_joint_D)
 
 
 @dataclass(frozen=True)

@@ -16,16 +16,29 @@ posterior's Berglund box-shutter average at alpha=1) and B the known
 per-frame localization-noise covariance (`likelihood.localization_covariance`,
 same as `gridpost.posterior`).
 
-The scale is D = K dt^(alpha-1), the apparent diffusivity MSD(dt) / (4 dt)
-at the frame interval, not fBm's K (um^2/s^alpha). Both describe the same
-motion, but a grid and prior over ln K do not: K's unit depends on alpha, so
-a fixed K range cuts different motions at each alpha, and which ones depends
-on the unit of time. On a gelled-bead movie (dt 44 ms, D ~ 0.001 um^2/s) the
-K grid's floor removed the low-alpha hypotheses, and tracks carrying almost no
-information about alpha reported a median of 1.15 instead of 0.79. With D at
-dt the nuisance grid is the D posterior's own (`GridPostOptions.u_D`) under
-the same flat prior, the result does not depend on the unit of time, and at
+The scale is the apparent diffusivity D: the Brownian D whose blurred
+one-frame displacement has the same variance, i.e. the motion's part of the
+measured MSD(dt) divided by 4 (dt - exposure/3) (`_scale_per_D`). It is not
+fBm's K (um^2/s^alpha). Both describe the same motion, but a grid and prior
+over ln K do not: K's unit depends on alpha, so a fixed K range cuts
+different motions at each alpha, and which ones depends on the unit of time.
+On a gelled-bead movie (dt 44 ms, D ~ 0.001 um^2/s) the K grid's floor
+removed the low-alpha hypotheses, and tracks carrying almost no information
+about alpha reported a median of 1.15 instead of 0.79. With the apparent D
+the nuisance grid is the D posterior's own (`GridPostOptions.u_D`) under the
+same flat prior, the result does not depend on the unit of time, and at
 alpha=1 the likelihood is exactly the D posterior's.
+
+The apparent D is matched to the blurred step rather than to the unblurred
+MSD(dt) / (4 dt) = K dt^(alpha-1), which an earlier version used. The two
+agree without blur. With it they part as alpha falls, because a box exposure
+averages away more of a low-alpha (noise-like) motion: at exposure = dt the
+blurred step variance per unit K dt^(alpha-1) is 0.10 times Brownian's at
+alpha = 0.05. On that scale a track's (alpha, ln D) posterior was a ridge
+bending toward large D at low alpha (median within-track correlation -0.75 on
+GEM tracks of >= 11 frames, 20 ms frames and exposure); on this one it is
+nearly square to the axes (-0.05), so a low-alpha track sits at the D its
+steps show.
 
 For any *fixed* alpha the model is linear in D, so the same whitening trick
 as `gridpost.posterior` applies -- but A(alpha) itself changes shape with
@@ -43,7 +56,11 @@ the two ("auto": exact for short tracks, Whittle from
 
 The alpha posterior is the 1D marginal of the 2D (alpha, ln D) log-likelihood
 surface: integrating a nuisance parameter out is exactly `logsumexp` over its
-axis, under `log_D_prior` (`gridpost.posterior.flat` by default).
+axis, under `log_D_prior` (`gridpost.posterior.flat` by default). The surface
+itself, integrated over cells of `D_bin` grid steps (`log_joint_posterior`),
+is the per-track joint posterior: its alpha=1 row is the D posterior, its sum
+over ln D the alpha posterior, and `deconvolve.deconvolve_joint` reads a
+population's (alpha, D) distribution from it.
 """
 from __future__ import annotations
 
@@ -66,9 +83,17 @@ from .posterior import _grid_quantile, flat
 _BATCH_ELEMENTS = 1 << 22
 
 
-def _K_per_D(alphas: np.ndarray, dt_s: float) -> np.ndarray:
-    """K = D dt^(1-alpha): converts `fgn_motion_covariance` (per unit K) to per unit D at dt."""
-    return dt_s ** (1 - np.asarray(alphas, dtype=float))
+def _scale_per_D(alphas: np.ndarray, dt_s: float, exposure_s: float) -> np.ndarray:
+    """K per unit apparent D: converts `fgn_motion_covariance` (per unit K) to per unit D.
+
+    The apparent D gives the blurred one-frame displacement the variance a
+    Brownian D would, 2 D (dt - exposure/3) per axis, so this is that
+    variance's ratio to the fBm one per unit K. 1 at alpha=1; dt^(1-alpha)
+    without blur.
+    """
+    alphas = np.asarray(alphas, dtype=float)
+    brownian = fgn_autocovariance(1, dt_s, 1., exposure_s)[0]
+    return brownian / fgn_autocovariance(1, dt_s, alphas, exposure_s)[..., 0]
 
 
 def _alpha_whitening(track: pl.DataFrame, acquisition: Acquisition, alphas: np.ndarray):
@@ -91,7 +116,7 @@ def _alpha_whitening(track: pl.DataFrame, acquisition: Acquisition, alphas: np.n
     chunk = max(1, _BATCH_ELEMENTS // (2 * m * m))
     for start in range(0, len(alphas), chunk):
         part = slice(start, start + chunk)
-        A = (_K_per_D(alphas[part], dt)[:, None, None]
+        A = (_scale_per_D(alphas[part], dt, exposure)[:, None, None]
              * fgn_motion_covariance(m, dt, alphas[part], exposure))  # (n_chunk, m, m)
         M = L_inv[None] @ A[:, None] @ L_inv.transpose(0, 2, 1)[None]  # (n_chunk, 2, m, m)
         lam, Q = np.linalg.eigh((M + M.transpose(0, 1, 3, 2)) / 2)
@@ -150,7 +175,8 @@ def _whittle_joint_loglik(track: pl.DataFrame, acquisition: Acquisition, alphas:
     chunk = max(1, _BATCH_ELEMENTS // (len(u) * 2 * m))
     for start in range(0, len(alphas), chunk):
         part = slice(start, start + chunk)
-        c = taper * _K_per_D(alphas[part], dt)[:, None] * fgn_autocovariance(m, dt, alphas[part], exposure)
+        c = (taper * _scale_per_D(alphas[part], dt, exposure)[:, None]
+             * fgn_autocovariance(m, dt, alphas[part], exposure))
         S_A = 2 * np.fft.fft(c, axis=1).real - c[:, :1]  # sum_{|k|<m} (1 - |k|/m) gamma(k) e^{-iwk}
         S = D * S_A[:, None, None, :] + S_B[None, None]  # (n_chunk, n_D, 2, m)
         out[part] = -.5 * np.sum(np.log(S) + periodogram / S, axis=(2, 3)) - m * np.log(2 * np.pi)
@@ -162,7 +188,7 @@ _JOINT_LOGLIK = {"exact": _joint_loglik, "whittle": _whittle_joint_loglik}
 
 def track_loglik_given_alpha(track: pl.DataFrame, acquisition: Acquisition, alpha: float,
                              u: np.ndarray, method: str = "exact") -> np.ndarray:
-    """(len(u),) log-likelihood of one track's displacements at D = exp(u) (at dt), fixed alpha."""
+    """(len(u),) log-likelihood of one track's displacements at apparent D = exp(u), fixed alpha."""
     return joint_loglik(track, acquisition, np.array([alpha]), u, method)[0]
 
 
@@ -170,7 +196,9 @@ def joint_loglik(track: pl.DataFrame, acquisition: Acquisition, alphas: np.ndarr
                  u: np.ndarray, method: str = "exact") -> np.ndarray:
     """(len(alphas), len(u)) log-likelihood surface over (alpha, ln D), exposure blur modelled.
 
-    D is the apparent diffusivity at the frame interval, K dt^(alpha-1).
+    D is the apparent diffusivity (`_scale_per_D`): the Brownian D with the
+    same blurred one-frame step variance, so the alpha=1 row is the D
+    posterior's likelihood.
 
     `method` "exact" is the Gaussian likelihood; "whittle" its debiased
     Whittle approximation (`_whittle_joint_loglik`), for long tracks.
@@ -181,7 +209,7 @@ def joint_loglik(track: pl.DataFrame, acquisition: Acquisition, alphas: np.ndarr
 
 
 # --------------------------------------------------------------------------
-# Posterior over alpha: marginalize the nuisance ln D
+# Posterior over (alpha, ln D) cells, and over alpha with ln D integrated out
 # --------------------------------------------------------------------------
 
 
@@ -190,16 +218,48 @@ def flat_alpha(alphas: np.ndarray) -> np.ndarray:
     return np.zeros_like(alphas)
 
 
+def _n_cells(n_u: int, D_bin: int) -> int:
+    if D_bin < 1 or (n_u - 1) % D_bin:
+        raise ValueError(f"the D grid's {n_u - 1} steps are not a multiple of D_bin={D_bin}")
+    return (n_u - 1) // D_bin
+
+
+def log_joint_posterior(joint_ll: np.ndarray, log_D_prior: np.ndarray, D_bin: int,
+                        log_alpha_prior: np.ndarray | None = None) -> np.ndarray:
+    """(len(alphas), n_cells) normalized log posterior mass of each (alpha, ln D cell).
+
+    Cell j spans u[j D_bin] .. u[(j+1) D_bin] (centres:
+    `GridPostOptions.u_joint_D`), and its mass integrates
+    exp(ll + log prior) over that span by the trapezoid rule, so the cells
+    tile the grid and their sum over ln D is `log_alpha_posterior` exactly.
+    The alpha=1 row is the D posterior's likelihood binned to cells. With the
+    flat prior a cell's mass is proportional to its mean likelihood, which is
+    what `deconvolve.deconvolve_joint` needs: exact for a population density
+    constant within each cell.
+    """
+    k = _n_cells(joint_ll.shape[1], D_bin)
+    nodes = np.arange(k)[:, None] * D_bin + np.arange(D_bin + 1)[None, :]  # (k, D_bin + 1), ends shared
+    half_ends = np.zeros(D_bin + 1)
+    half_ends[[0, -1]] = np.log(.5)
+    cells = logsumexp((joint_ll + log_D_prior[None, :])[:, nodes] + half_ends, axis=2)
+    if log_alpha_prior is not None:
+        cells = cells + log_alpha_prior[:, None]
+    return cells - logsumexp(cells)
+
+
 def log_alpha_posterior(joint_ll: np.ndarray, log_D_prior: np.ndarray,
                         log_alpha_prior: np.ndarray | None = None) -> np.ndarray:
     """(len(alphas),) normalized log posterior over alpha: add priors, integrate ln D out.
 
     `joint_ll` is (len(alphas), len(u)) from `joint_loglik`. Integrating a
-    nuisance parameter out is exactly `logsumexp` over its axis (a Riemann
-    sum in ln D; the grid step is an additive constant that normalization
-    removes).
+    nuisance parameter out is a `logsumexp` over its axis, here with the
+    trapezoid rule's half weights at the grid's two ends (the grid step is an
+    additive constant that normalization removes), so that it is exactly the
+    sum over D of `log_joint_posterior`'s cells.
     """
-    log_mass = logsumexp(joint_ll + log_D_prior[None, :], axis=1)
+    half_ends = np.zeros(joint_ll.shape[1])
+    half_ends[[0, -1]] = np.log(.5)
+    log_mass = logsumexp(joint_ll + log_D_prior[None, :] + half_ends, axis=1)
     if log_alpha_prior is not None:
         log_mass = log_mass + log_alpha_prior
     return log_mass - logsumexp(log_mass)
@@ -229,7 +289,7 @@ def track_alpha_posterior(track: pl.DataFrame, acquisition: Acquisition, log_D_p
                           options: GridPostOptions = GridPostOptions()) -> dict[str, float]:
     """Posterior median and `options.level` credible interval of alpha for one track.
 
-    Evaluated on `options.alphas()`, with D at dt integrated out over
+    Evaluated on `options.alphas()`, with the apparent D integrated out over
     `options.u_D()`, by the likelihood `options.alpha_likelihood` picks for
     the track's length. `log_D_prior` (on that grid) defaults to `flat` --
     the D posterior's own prior, no empirical-Bayes fitting across tracks.
