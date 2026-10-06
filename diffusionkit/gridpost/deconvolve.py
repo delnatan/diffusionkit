@@ -88,6 +88,12 @@ class Deconvolution:
         lo, hi = np.quantile(s, [q, 1 - q], axis=0)
         return lo, hi
 
+    def mass(self, lo: float = 0., hi: float = np.inf) -> np.ndarray:
+        """(n_samples,) draws of the mass with lo <= D < hi (the parameter's own units, not ln), whole grid cells."""
+        with np.errstate(divide="ignore"):
+            inside = (self.u >= np.log(lo)) & (self.u < np.log(hi))
+        return self.samples[:, inside].sum(axis=1)
+
 
 @dataclass(frozen=True)
 class PopulationDistribution(Deconvolution):
@@ -95,7 +101,7 @@ class PopulationDistribution(Deconvolution):
 
     n_tracks: int  # tracks that contributed a likelihood
     n_excluded: int  # too short (< options.min_frames) or invalid input
-    acquisition: Acquisition
+    acquisition: Acquisition | None  # None when pooled across experiments with different acquisitions
 
 
 @dataclass

@@ -56,7 +56,9 @@ the actual row count. Those columns are not otherwise required.
 Batch analysis keeps two fit rows per track, including invalid or excluded
 tracks. A malformed table schema raises before fitting. An empty input with
 valid column types returns typed empty result tables. There is no minimum
-population size and no ensemble calculation.
+population size. Per-track results are not ensemble results: for replicates
+and samples, wrap each movie in an `Experiment` and use the batch functions
+below.
 
 ## The D posterior
 
@@ -146,3 +148,41 @@ library. Join fit rows on both `track_id` and `model`, and keep
 motion class. Persist `result.acquisition` and `result.options` alongside
 exported tables (e.g. `dataclasses.asdict`); the tables alone are not a
 complete run record.
+
+## A batch of experiments
+
+```python
+from diffusionkit import Acquisition, Experiment, classic, gridpost
+
+acq = Acquisition(dt_s=.02, exposure_s=.01)
+experiments = [Experiment(name, table, acq, sample=sample)
+               for name, sample, table in movies]          # track_id need only be unique within a movie
+
+batch = gridpost.analyze_experiments(experiments)           # labelled fits + stacked posteriors
+batch.fits.group_by("sample").agg(pl.col("D_post_median_um2_s").median())   # per-track table, grouped any way
+pops = batch.populations("sample")                          # D distribution per sample, with bands
+reps = batch.populations("experiment")                      # per replicate
+
+cbatch = classic.analyze_experiments(experiments)           # needs exposure_s = 0 (else no MSD rows)
+ens = classic.ensemble_msd(cbatch, by="sample")             # ensemble MSD vs lag, with bootstrap resamples
+
+# textbook route, no SD columns: the intercept of the linear MSD fit is the localization offset (4 sigma^2),
+# subtracted before the log-log fit for alpha and K; the window is always chosen by you
+opts = classic.MSDOptions(max_lag=None, lag_fraction=.4, localization="ignore")   # per-track window: 40% of each curve
+ens = classic.ensemble_msd(classic.analyze_experiments(experiments, opts), by="sample")
+ens.fit(5)                                                  # first 5 lags; ens.fit(n_points=...) is required
+ens.fit(5, offset="provided")                               # supplied SDs instead of the intercept
+```
+
+Steps are separable: `analyze_experiments` is the expensive part, and what
+you do after it (groupings, populations, comparisons, plots) only reads its
+result, so a different grouping never refits a track. Save `batch.fits`,
+`batch.options` and `batch.acquisitions` together; the kept posteriors
+(`batch.posteriors`) are the large part and can be recomputed.
+
+To compare samples, draw each population's mass over a range with
+`pop.mass(lo, hi)` and difference the draws, or use
+`gridpost.cdf_distance` against the replicate-to-replicate distances. The
+pooled `fits` table's `D_post_median_um2_s` is a per-track summary; a histogram
+of those medians is not the population (a short track's median sits near its
+prior), which is what `populations` is for.

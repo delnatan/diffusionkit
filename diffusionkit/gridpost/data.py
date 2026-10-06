@@ -76,6 +76,6 @@ class GridPosteriors:
 @dataclass(frozen=True)
 class GridPosteriorAnalysis:
     fits: pl.DataFrame  # one row per track (model posterior_D)
-    acquisition: Acquisition
+    acquisition: Acquisition | None  # None for a selection pooled across experiments with different acquisitions
     options: GridPostOptions
     posteriors: GridPosteriors | None = field(default=None, compare=False, repr=False)  # keep_posteriors=True

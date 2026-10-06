@@ -10,18 +10,41 @@ from ..validation import validate_acquisition
 from .data import MSDCurve, MSDOptions
 
 
+MIN_LAGS = 3  # both textbook fits have two parameters; a third point is the first with a residual
+
+
+def window_lags(n_available: int, fraction: float = .3, min_lags: int = MIN_LAGS) -> int:
+    """How many of a curve's first lags to fit: `fraction` of the `n_available`, at least `min_lags`.
+
+    The usual rule is to fit the first 25-40% of the curve: the MSD estimates at long lags rest on few,
+    heavily overlapping pairs and are the noisiest. It is a heuristic window, not an optimized one. The
+    result never exceeds `n_available`. The same rule serves a track (n_available = n_frames - 1) and an
+    ensemble curve (its number of lags).
+    """
+    if not 0 < fraction <= 1:
+        raise ValueError(f"fraction must be in (0, 1], got {fraction}")
+    return int(min(n_available, max(min_lags, round(fraction * n_available))))
+
+
 def validate_options(options: MSDOptions) -> None:
-    for name, lower in (("max_lag", 1), ("min_frames", 2), ("max_nfev", 1)):
+    for name, lower in (("min_frames", 2), ("max_nfev", 1)):
         value = getattr(options, name)
         if isinstance(value, bool) or not isinstance(value, Integral) or value < lower:
             raise ValueError(f"{name} must be an integer >= {lower}")
+    if (options.max_lag is None) == (options.lag_fraction is None):
+        raise ValueError("set exactly one of max_lag and lag_fraction (use max_lag=None with lag_fraction)")
+    if options.max_lag is not None and (isinstance(options.max_lag, bool) or not isinstance(options.max_lag, Integral)
+                                        or options.max_lag < 1):
+        raise ValueError("max_lag must be an integer >= 1")
+    if options.lag_fraction is not None and not 0 < options.lag_fraction <= 1:
+        raise ValueError("lag_fraction must be in (0, 1]")
     if options.localization not in ("provided", "ignore"):
         raise ValueError("localization must be 'provided' or 'ignore'")
 
 
 def compute_msd(track: pl.DataFrame, acquisition: Acquisition,
                 options: MSDOptions = MSDOptions()) -> MSDCurve:
-    """Compute only requested lags. Negative corrected MSD values are retained.
+    """One track's time-averaged MSD at the requested lags only. Negative corrected values are retained.
 
     At lag l, subtract mean_i sum_axis(s_i² + s_(i+l)²). This assumes
     independent, zero-mean localization errors with the supplied SDs.
@@ -34,7 +57,9 @@ def compute_msd(track: pl.DataFrame, acquisition: Acquisition,
     positions = track.select("x_um", "y_um").to_numpy()
     variances = (track.select("sigma_x_um", "sigma_y_um").to_numpy()**2 if require_localization
                  else np.zeros_like(positions))
-    lags = np.arange(1, min(options.max_lag, n_frames - 1) + 1)
+    n_lags = (min(options.max_lag, n_frames - 1) if options.lag_fraction is None
+              else window_lags(n_frames - 1, options.lag_fraction))
+    lags = np.arange(1, n_lags + 1)
     observed, offsets = [], []
     for lag in lags:
         displacement = positions[lag:] - positions[:-lag]

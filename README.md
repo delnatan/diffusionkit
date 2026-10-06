@@ -3,19 +3,20 @@
 Small, data-oriented tools for analyzing 2D single-particle tracks. Trajectory
 data is threaded through as `polars.DataFrame`s end to end; explicit inputs,
 per-observation localization errors, and inspectable fit results are the
-design center. Three independent analysis paths are supported:
+design center. The package is a set of independent modules that share one
+table format and one `Acquisition`; use any one without the others.
 
-- `diffusionkit.gridpost`, the recommended one: an exact-likelihood grid
-  posterior over `D` per track, the distribution of `D` across tracks, and
-  that distribution split by track length;
-- `diffusionkit.classic`: linear MSD fits, D and the power-law exponent alpha
-  (the only place alpha is reported);
-- `diffusionkit.bayes`: per-track NUTS via NumPyro, as a diagnostic.
+| module | question it answers | per track | across experiments | extra deps |
+|---|---|---|---|---|
+| `gridpost` (recommended) | how fast is each track, and how is `D` distributed? | exact grid posterior over `D`, information, localization floor | pooled posteriors; `D` distribution per sample or replicate with bands; split by track length | none |
+| `classic` | what do MSD fits say? | MSD curve, linear `D` and power-law `K`/alpha (the only place alpha is reported) | ensemble MSD vs lag per sample, fitted, with a cluster-bootstrap interval | none |
+| `drift` | what motion do all tracks share? | | one drift field per movie, subtracted before the above | none |
+| `bayes` | what does one weak track's full posterior look like? | NUTS via NumPyro, a diagnostic | not provided | `bayes` |
 
-`diffusionkit.drift` estimates the drift every track shares, from the tracks
-themselves, for correction before any of them. The napari plugin
-[napari-gemscape2](https://github.com/delnatan/napari-gemscape2) runs
-`gridpost` on its tracks. No workflow carries a calibration claim on
+Everything that is not per-track is built from per-track results or tables,
+never from a pooled re-fit that forgets which track a number came from. The
+napari plugin [napari-gemscape2](https://github.com/delnatan/napari-gemscape2)
+runs `gridpost` on its tracks. No workflow carries a calibration claim on
 experimental tracks: the intervals are checked in simulation under the model.
 
 ## Install
@@ -28,7 +29,19 @@ pip install -e ".[bayes,plots]"      # NumPyro/JAX Bayesian pipeline and plottin
 Python >=3.11. `classic`, `gridpost` and `drift` do not import JAX, NumPyro, or
 plotting libraries; `gridpost.viz` and `bayes.viz` need the `plots` extra.
 
-## Classical analysis
+## Classical analysis: time-averaged and ensemble-averaged MSD
+
+Two curves, as in any diffusion textbook, and they are kept apart:
+
+- **time-averaged MSD (TA-MSD):** one track's mean squared displacement at
+  each lag, averaged over time along that track. This section fits it per track.
+- **ensemble-averaged MSD (EA-MSD):** the TA-MSDs averaged over tracks (a
+  sample, a replicate, everything). See
+  [Ensemble MSD](#ensemble-averaged-msd-over-experiments) below.
+
+For Brownian motion they agree. Where they differ (non-ergodic motion, a
+mixture of slow and fast tracks) the difference is informative. The same two
+fits and the same options apply to either curve.
 
 ```python
 from diffusionkit import Acquisition, AcquisitionParams, load_tracks
@@ -57,10 +70,39 @@ Two estimators:
   with `K >= 0` and `0 <= alpha <= 2`. Fits at the boundaries are flagged.
   Negative corrected MSD points remain in the fit; there is no log(MSD).
 
-The MSD fits use equal weights across the selected lags. `max_lag=3` is an explicit
-comparison window, not an optimized choice or an accuracy guarantee.
-`status="ok"` means the numerical fit passed its checks, not that the motion
-model is established or the parameters are precise.
+The MSD fits use equal weights across the selected lags. The window is part of
+the analysis: `max_lag=3` is an explicit comparison window, not an optimized
+choice. Alternatively `MSDOptions(max_lag=None, lag_fraction=.3)` fits the first
+fraction of each track's own curve (`window_lags`; 25-40% is the usual rule,
+since long-lag MSDs rest on few, heavily overlapping pairs), so long tracks use
+more of their data and short ones keep the three-lag minimum. Exactly one of the
+two is set. `status="ok"` means the numerical fit passed its checks, not that
+the motion model is established or the parameters are precise.
+
+**The textbook pair.** Two plain functions fit the same `MSDCurve` (a track's
+`compute_msd`, or an ensemble curve) and compose by passing a number:
+
+```python
+from diffusionkit.classic import compute_msd, fit_linear_msd, fit_loglog_msd
+
+curve = compute_msd(track, acquisition, MSDOptions(max_lag=None, lag_fraction=.3, localization="ignore"))
+lin = fit_linear_msd(curve)          # raw MSD = 4 D tau + b: D, and the offset b = 4 sigma^2 (localization_sd_um)
+log = fit_loglog_msd(curve, lin.parameters["offset_um2"])   # log(MSD - b) vs log(tau): alpha, K
+```
+
+No SD columns are needed. `fit_linear_msd` uses a free intercept, which is
+the classical way to read localization error off an MSD plot; a negative
+intercept is flagged `nonphysical`, and it is up to you not to subtract it
+(`fit_textbook` clips it at 0). `fit_loglog_msd` subtracts the offset first,
+then drops lags whose corrected MSD is not positive (the row's `message`
+counts them, and the dropped short lags bias alpha upward), and does not hold alpha
+to [0, 2] (outside it the row is `nonphysical`). The intercept is
+poorly determined on one short track and well determined on an ensemble curve;
+confinement and motion blur also move it, so it is an empirical offset.
+The log of a noisy, correlated mean is biased, which is why the constrained
+linear-space fit above (`fit_anomalous_msd`) stays the per-track default and the
+log-log line is for illustration and cross-checks. `EnsembleMSD.fit` does exactly this composition on an ensemble curve (and on every bootstrap resample); for a single track
+you write the two lines.
 
 **The MSD fits use no priors.** Supplied localization SDs are treated as
 known measurement-error inputs. Their uncertainty is not inferred or
@@ -144,6 +186,102 @@ which can differ a lot (a GEM movie: 52% of tracks but 67% of detections below
 0.035 um^2/s). `gridpost.viz.plot_by_track_length` draws it. See
 [docs/gridpost.md](docs/gridpost.md#distribution-of-d-across-tracks-deconvolve).
 
+## Batches of experiments: replicates and samples
+
+```python
+from diffusionkit import Acquisition, Experiment
+from diffusionkit import classic, gridpost
+
+experiments = [
+    Experiment("wt_1", tracks_wt1, Acquisition(dt_s=.02, exposure_s=.01), sample="wt"),
+    Experiment("wt_2", tracks_wt2, Acquisition(dt_s=.02, exposure_s=.01), sample="wt"),
+    Experiment("mut_1", tracks_mut1, Acquisition(dt_s=.02, exposure_s=.01), sample="mut"),
+]
+```
+
+An `Experiment` is one movie: its track table, its `Acquisition`, and the
+`sample` its replicates share (default: its own name, i.e. no replicates).
+Nothing is renumbered or merged: `track_id` only has to be unique within a
+movie, dt and exposure may differ between movies, and every result table
+carries leading `sample`, `experiment` and `track_id` columns. Tables are
+validated for every experiment before any work starts. `progress(done, total)`
+counts tracks over the whole batch.
+
+**D posteriors, per track, then combined.**
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+from diffusionkit.gridpost import analyze_experiments, by_track_length, cdf_distance
+
+with ThreadPoolExecutor(8) as pool:                      # one pool serves every movie
+    batch = analyze_experiments(experiments, map_fn=pool.map)
+
+batch.fits                                  # every track of every movie, labelled
+pops = batch.populations("sample")          # {"wt": PopulationDistribution, "mut": ...}
+reps = batch.populations("experiment")      # one per movie: do the replicates agree?
+pooled = batch.populations("all")[None]     # everything, one distribution
+
+pops["wt"].mass(0, .035)                    # draws of the mass below 0.035 um^2/s: any interval
+pops["wt"].mass(0, .035) - pops["mut"].mass(0, .035)   # the difference, with its uncertainty
+cdf_distance(pops["wt"], pops["mut"])       # draws of the W1 distance in ln D
+sel = batch.select(sample="wt")             # a GridPosteriorAnalysis: feed it to by_track_length etc.
+by_track_length(sel.posteriors, batch.options.u_D(), pops["wt"])
+```
+
+`batch.select(...)` is the seam: it returns the same `GridPosteriorAnalysis`
+a single movie does, so every function that reads one (`deconvolve_tracks`,
+`by_track_length`, the plots) reads a sample or a replicate unchanged. What
+is combined is the kept per-track log posteriors, which are the tracks'
+likelihoods on the one `D` grid; every movie must therefore use the same
+`GridPostOptions`, and the `D_post_info_bits` are comparable. Replicates of a
+sample are pooled by summing their tracks' likelihoods in a single fit, so
+each track counts once whatever movie it came from; run `by="experiment"`
+for the per-replicate view. `cdf_distance` between two samples means little
+alone, because two draws of the same population are still apart: compare it with the
+replicate-to-replicate distances inside a sample.
+`gridpost.viz.plot_populations(pops)` overlays the distributions and their bands.
+
+### Ensemble-averaged MSD over experiments
+
+```python
+opts = classic.MSDOptions(max_lag=None, lag_fraction=.4, localization="ignore")
+cbatch = classic.analyze_experiments(experiments, opts)       # per-track TA-MSD fits, labelled
+ens = classic.ensemble_msd(cbatch, by="sample", n_boot=200)   # EA-MSD of each sample, with resamples kept
+
+ens.curves                   # per group and lag: n_units, n_pairs, msd, offset, bootstrap SE
+n = classic.window_lags(len(ens.curve("wt").lag), .3)   # a rule of thumb for the window (or choose it)
+ens.fit(n)                   # textbook fits of the first n lags: D, localization SD, alpha, K, with _lo/_hi
+ens.fit(n + 2)               # a different window refits; nothing is resampled again
+```
+
+The EA-MSD at each lag is a weighted mean of the tracks' TA-MSDs.
+`weight="pairs"` (default) is the standard ensemble estimator: every squared
+displacement counts once, so long tracks dominate. `weight="tracks"` is the
+plain mean of the TA-MSDs, one vote per track. Supplied localization offsets
+are averaged with the same weights. Building the curve and fitting it are
+separate steps, and **`fit(n_points)` requires the window**: the number of
+lags used changes D and alpha, so it is never a hidden default. Each fit is the
+textbook pair above: a free-intercept line for D and the offset
+(`offset="fit"`, default), then the log-log line on the offset-subtracted curve;
+`offset="provided"` uses the supplied SDs instead. Every bootstrap resample is
+fitted the same way, so the offset estimate is inside the interval.
+
+The intervals come from resampling tracks (`resample="track"`) or whole movies
+(`resample="experiment"`, the only choice that sees replicate-to-replicate
+variation, and it needs several replicates per sample): overlapping pairs are
+correlated, so pairs are never the resampling unit. The intervals assume
+correct localization SDs and no drift shared by a movie's tracks; correct
+drift first. A group pools lags by index, so it must share one dt (pool
+experiments with different dt separately), and its high lags rest on fewer
+tracks (`n_units`). Movies with `exposure_s > 0` have no MSD fits and so no
+ensemble curve. For the constrained fit on an ensemble curve, pass
+`ens.curve(group).head(n)` to `fit_anomalous_msd`.
+
+The two views answer different questions and do not have to agree: an
+ensemble MSD is a (pair-weighted) average over everything seen, the `D`
+distribution is how the tracks are spread. A population that is a mixture of
+slow and fast tracks has an ensemble `D` in between that belongs to neither.
+
 ## Localization and acquisition contract
 
 The table uses `track_id`, `frame`, `x_um`, `y_um`, and normally
@@ -194,14 +332,17 @@ which no global field removes, biases D by only ~2e-5 um^2/s. See [docs/drift.md
 Trajectory data is a `polars.DataFrame` (`track_id`, `frame`, `x_um`, `y_um`,
 `sigma_x_um`, `sigma_y_um`) end to end; there is no intermediate per-track
 object. Plain dataclasses hold only per-analysis metadata and results:
-`Acquisition`, `MSDOptions`, `MSDCurve`, `MSDFit` (classic),
-`GridPostOptions`, `PosteriorD`, `PopulationDistribution`, `LengthComposition`
-(gridpost) and `Drift` (drift). Standalone
+`Acquisition` and `Experiment` (shared), `MSDOptions`, `MSDCurve`, `MSDFit`,
+`ClassicBatch`, `EnsembleMSD` (classic), `GridPostOptions`, `PosteriorD`,
+`PopulationDistribution`, `LengthComposition`, `GridPostBatch` (gridpost) and
+`Drift` (drift). Standalone
 functions validate the table, compute MSD or the grid posteriors, and fit or
 summarize them. `diffusionkit.io.validated_track_frame` is the single
-validation boundary every per-track algorithm calls first. No GUI, file
+validation boundary every per-track algorithm calls first. The batch layer sits on top: `analyze_experiments` calls the per-movie
+`analyze_tracks` and labels its tables, and the combined reads take its tables
+or kept posteriors; nothing in it re-reads raw tracks. No GUI, file
 writing, global JAX settings, or worker creation is part of `classic`,
-`gridpost` or `drift`.
+`gridpost` or `drift` (a pool is passed in as `map_fn`, and owned by the caller).
 
 See [WORKFLOW.md](WORKFLOW.md) for table examples, [TABLES.md](TABLES.md) for
 output semantics, [docs/classical.md](docs/classical.md) for the MSD
@@ -217,7 +358,8 @@ python scripts/validate_posterior.py --output /tmp/posterior_validation.json
 python scripts/validate_deconvolve.py --output /tmp/deconvolve_validation.json
 ```
 
-Tests include an independent pair-sum oracle, nonlinear objective checks,
+Tests include batch-equals-single-movie checks, ensemble-MSD recovery with
+its intervals, an independent pair-sum oracle, nonlinear objective checks,
 Brownian recovery with varying localization error, and data/status contracts.
 The recovery study uses an independent position-space simulator at 5, 10,
 and 20 frames. See [FINDINGS.md](FINDINGS.md) for the current evidence and

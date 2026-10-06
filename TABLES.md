@@ -93,3 +93,46 @@ is cut by a grid edge (edge weight above 5% of the peak) says so in
 | `ok` | Finite numerical estimate passed the implemented checks |
 | `excluded` | Fewer frames than `GridPostOptions.min_frames` |
 | `invalid_input` | A batch track failed validation, or a localization SD is zero |
+
+## Batches: `GridPostBatch`, `ClassicBatch`, `EnsembleMSD`
+
+`gridpost.analyze_experiments` and `classic.analyze_experiments` return the
+per-movie tables above, concatenated, with `sample` and `experiment` as the
+first two columns; a track is identified by (`experiment`, `track_id`), and
+`track_id` repeats across movies. Alongside: `options`, `acquisitions` (by
+experiment name) and `samples` (experiment -> sample). `GridPostBatch.posteriors`
+holds the kept per-track log posteriors with `sample` and `experiment` name
+arrays aligned to its rows.
+
+### EnsembleMSD.curves -- one row per group and lag
+
+| Column | Meaning |
+| --- | --- |
+| `group` | sample, experiment, or `all`, as `by` says |
+| `lag`, `tau_s` | Frame separation and its time; a group has one dt |
+| `n_units` | Resampling units (tracks, or experiments) contributing at this lag |
+| `n_pairs` | Displacement pairs over all tracks; not an independent sample count |
+| `msd_um2` | Weighted mean MSD (`weight`: pairs or tracks), raw |
+| `localization_offset_um2` | The same weighted mean of the tracks' supplied-SD offsets; 0 when ignored |
+| `msd_se_um2` | Bootstrap SD of `msd_um2` over resamples; null without `n_boot` |
+
+### EnsembleMSD.fit(n_points, offset="fit", level=.9) -- one row per group and model
+
+`n_points` (required) lags are fitted. `model` is `linear` (`offset="fit"`, free
+intercept; `method` `msd_ols_intercept`) or `brownian` (`offset="provided"`),
+and `power_law` (`method` `msd_loglog`, after subtracting the offset). Columns:
+`group`, `model`, `method`, `status`, `message`, `n_lags` (points actually used),
+`n_points`, `n_units`, and the parameters, each with `_lo`/`_hi`:
+
+| Parameter | Meaning |
+| --- | --- |
+| `D_um2_s` | Slope / 4 of the linear fit (or the through-origin D with `offset="provided"`) |
+| `offset_um2` | The linear fit's intercept b, the localization offset subtracted before the log-log fit |
+| `localization_sd_um` | `sqrt(b / 4)`; null for a negative intercept |
+| `K_um2_s_alpha`, `alpha` | Log-log fit; alpha is not constrained to [0, 2] (outside it: `nonphysical`) |
+
+`_lo`/`_hi` are the equal-tailed `level` interval over bootstrap refits of the
+same window (including the offset estimate), null when `n_boot=0` or fewer
+than two refits produced the parameter. `uncertainty_method` is
+`cluster_bootstrap_track`, `cluster_bootstrap_experiment`, or `not_estimated`.
+The interval does not cover miscalibrated localization SDs or shared drift.

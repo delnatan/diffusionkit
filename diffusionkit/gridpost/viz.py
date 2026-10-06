@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .composition import LengthComposition
+from .deconvolve import Deconvolution
 
 FLOOR = dict(color="0.35", alpha=.13, lw=0)
 
@@ -63,4 +64,28 @@ def plot_by_track_length(comp: LengthComposition, floor_um2_s: np.ndarray | None
         ax.set(xlabel="log10 D (um$^2$/s)", ylabel="track length (frames)",
                title="each group's own distribution (peak = 1); tracks / detections")
     fig.tight_layout()
+    return fig
+
+
+def plot_populations(populations: dict, floor_um2_s: np.ndarray | None = None, level: float = .68,
+                     cumulative: bool = True, ax=None) -> plt.Figure:
+    """Distributions of D side by side: each population's posterior mode with its `level` band, on log10 D.
+
+    `populations` maps a label to a `Deconvolution` on one grid (e.g. `GridPostBatch.populations(...)`);
+    by default the CDF is drawn, which reads differences between samples better than the density does.
+    A band that two populations' curves both sit inside is no evidence that they differ.
+    """
+    fig, ax = (plt.subplots(figsize=(5.5, 3.8)) if ax is None else (ax.figure, ax))
+    for i, (name, pop) in enumerate(populations.items()):
+        x = pop.u / np.log(10)
+        mode = np.cumsum(pop.weights) if cumulative else pop.weights / (x[1] - x[0])
+        lo, hi = pop.band(level, cumulative=cumulative)
+        if not cumulative:
+            lo, hi = lo / (x[1] - x[0]), hi / (x[1] - x[0])
+        ax.fill_between(x, lo, hi, color=f"C{i}", alpha=.25, lw=0)
+        ax.plot(x, mode, color=f"C{i}", label=str(name))
+    if floor_um2_s is not None:
+        _floor_band(ax, floor_um2_s)
+    ax.set(xlabel="log10 D (um$^2$/s)", ylabel="cumulative fraction of tracks" if cumulative else "fraction of tracks per decade")
+    ax.legend(fontsize=8)
     return fig

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "diffusionkit"
 version = "0.1.0"
-description = "Classical single-particle track analysis with explicit localization errors"
+description = "Single-particle track analysis: per-track D posteriors, MSD fits, drift, and their combination over experiments"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

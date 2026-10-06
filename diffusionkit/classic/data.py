@@ -10,7 +10,11 @@ from ..data import Acquisition
 
 @dataclass(frozen=True)
 class MSDOptions:
-    max_lag: int = 3  # explicit comparison window, not an optimized cutoff
+    # The lag window per track: a fixed number of lags (an explicit comparison window, not an optimized
+    # cutoff), or a fraction of the track's longest lag (`window_lags`; 0.25-0.4 is the usual rule, so
+    # longer tracks use more of their curve). Exactly one is set.
+    max_lag: int | None = 3
+    lag_fraction: float | None = None
     min_frames: int = 5
     localization: Literal["provided", "ignore"] = "provided"
     max_nfev: int = 200
@@ -18,11 +22,19 @@ class MSDOptions:
 
 @dataclass(frozen=True)
 class MSDCurve:
+    """An MSD at increasing lags: one track's time average, or an average over tracks (the ensemble)."""
     lag: np.ndarray
     tau_s: np.ndarray
     n_pairs: np.ndarray
     msd_um2: np.ndarray
     localization_offset_um2: np.ndarray
+
+    def head(self, n_points: int) -> "MSDCurve":
+        """The first `n_points` lags: the fitting window."""
+        if isinstance(n_points, bool) or int(n_points) != n_points or not 1 <= n_points <= len(self.lag):
+            raise ValueError(f"n_points must be an integer in [1, {len(self.lag)}], got {n_points!r}")
+        return MSDCurve(*(a[:int(n_points)] for a in (self.lag, self.tau_s, self.n_pairs, self.msd_um2,
+                                                     self.localization_offset_um2)))
 
 
 @dataclass(frozen=True)
