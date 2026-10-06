@@ -106,7 +106,7 @@ def analyze_tracks(table: pl.DataFrame, acquisition: Acquisition,
     validate_table_schema(table)
     groups = table.sort("track_id", "frame").partition_by("track_id", maintain_order=True)
     fit_rows = []
-    D_ids, log_post_D = [], []
+    D_ids, D_frames, log_post_D = [], [], []
     if progress is not None:
         progress(0, len(groups))
     results = map_fn(functools.partial(_analyze_group, acquisition=acquisition, options=options), groups)
@@ -118,11 +118,12 @@ def analyze_tracks(table: pl.DataFrame, acquisition: Acquisition,
                          "uncertainty_method": post.uncertainty_method, **post.parameters})
         if keep_posteriors and result.log_post_D is not None:
             D_ids.append(track_id)
+            D_frames.append(result.n_frames)
             log_post_D.append(result.log_post_D)
         if progress is not None:
             progress(done, len(groups))
     posteriors = None
     if keep_posteriors:
-        posteriors = GridPosteriors(np.array(D_ids, dtype=np.int64),
+        posteriors = GridPosteriors(np.array(D_ids, dtype=np.int64), np.array(D_frames, dtype=np.int64),
                                     np.array(log_post_D).reshape(len(D_ids), options.n_D))
     return GridPosteriorAnalysis(pl.DataFrame(fit_rows, schema=FIT_SCHEMA), acquisition, options, posteriors)

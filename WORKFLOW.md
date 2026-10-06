@@ -87,9 +87,10 @@ with ThreadPoolExecutor(8) as pool:
 
 ```python
 import numpy as np
-from diffusionkit.gridpost import deconvolve_tracks
+from diffusionkit.gridpost import analyze_tracks, by_track_length, deconvolve_tracks
 
-pop = deconvolve_tracks(tracks, Acquisition(dt_s=.033, exposure_s=.03))
+result = analyze_tracks(tracks, Acquisition(dt_s=.033, exposure_s=.03), keep_posteriors=True)
+pop = deconvolve_tracks(result)       # built from the kept per-track posteriors
 pop.u, pop.weights                    # ln D grid, distribution (sums to 1)
 lo, hi = pop.band(.68)                # pointwise band on the weights
 lo, hi = pop.band(.95, cumulative=True)
@@ -101,6 +102,26 @@ track's likelihood rather than its point estimate. Its smoothness is chosen
 by the data, not set by hand; a peak narrower than the tracks can resolve
 comes out as wide as that resolution, and below the localization floor the
 bands widen because the tracks cannot tell those D values apart.
+
+### Split by track length
+
+```python
+comp = by_track_length(result.posteriors, result.options.u_D(), pop, weight="detections")
+comp.labels(), comp.n_tracks, comp.n_detections   # the groups: '3', '5-6', '25+', ...
+comp.pooled                  # (groups, grid): flat-prior posteriors summed per group
+comp.deconvolved             # (draws, groups, grid): each track's posterior under a draw of pop
+comp.deconvolved[:, :, comp.u < np.log(.035)].sum(2)   # mass below 0.035 per group, one row per draw
+
+from diffusionkit.gridpost.viz import plot_by_track_length   # needs the plots extra
+fig = plot_by_track_length(comp, result.fits["D_floor_um2_s"].drop_nulls().to_numpy())
+```
+
+Fast particles leave the focal depth within a few frames, so short tracks come
+mostly from fast particles and long tracks from slow ones. The groups add up to
+the whole distribution. With `weight="tracks"` they are fractions of tracks, and
+the deconvolved groups add up to about the population. With
+`weight="detections"` each track counts once per frame, which gives the
+composition of the spots seen in focus.
 
 ## Inspect or change the classical analysis
 

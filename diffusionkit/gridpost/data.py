@@ -21,9 +21,9 @@ class GridPostOptions:
     """
     min_frames: int = 3  # the whitening step's own hard minimum (>= 3 frames -> >= 2 displacements)
     level: float = .9  # credible-interval mass
-    D_min_um2_s: float = 1e-4
+    D_min_um2_s: float = 1e-5
     D_max_um2_s: float = 10.
-    n_D: int = 501  # ~2.3% steps in D over the default range
+    n_D: int = 601  # ~2.3% steps in D over the default range
 
     def __post_init__(self):
         if not (np.isfinite(self.D_min_um2_s) and np.isfinite(self.D_max_um2_s)
@@ -66,8 +66,10 @@ class TrackPosterior:
 @dataclass(frozen=True)
 class GridPosteriors:
     """Every "ok" track's normalized log posterior on `options.u_D()`, one row per track in the order of
-    `track_ids`: what a population read (summed, pooled or deconvolved) is built from."""
+    `track_ids`: what a population read (summed, pooled or deconvolved) is built from. The prior is
+    flat in ln D, so each row is also the track's log-likelihood up to a constant."""
     track_ids: np.ndarray
+    n_frames: np.ndarray  # (len(track_ids),) frames per track: a track's detections
     log_post_D: np.ndarray  # (len(track_ids), n_D)
 
 

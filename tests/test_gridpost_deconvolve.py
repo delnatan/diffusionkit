@@ -18,6 +18,10 @@ DT = .033
 U = GridPostOptions().u_D()
 
 
+def fitted(table, options=GridPostOptions()):
+    return analyze_tracks(table, Acquisition(DT), options, keep_posteriors=True)
+
+
 def track_table(track_id, frames, positions, sd):
     return pl.DataFrame({
         "track_id": [track_id] * len(frames), "frame": frames,
@@ -68,11 +72,22 @@ class DeconvolveTests(unittest.TestCase):
         zero_sd = track_table(101, np.arange(n), simulate(.05, sd[:, 0], DT, rng, n_frames=n),
                               np.zeros_like(sd))
         table = pl.concat([good, short, zero_sd])
-        result = D.deconvolve_tracks(table, Acquisition(DT))
+        result = D.deconvolve_tracks(fitted(table))
         self.assertEqual(result.n_tracks, 3)
         self.assertEqual(result.n_excluded, 2)
         self.assertAlmostEqual(result.weights.sum(), 1., places=8)
         self.assertEqual(len(result.weights), len(result.u))
+
+    def test_built_from_the_kept_posteriors_as_likelihoods(self):
+        rng = np.random.default_rng(8)
+        table = simulated_table([.02, .05, .2, .5], rng, track_id0=0)
+        with self.assertRaises(ValueError):
+            D.deconvolve_tracks(analyze_tracks(table, Acquisition(DT)))  # posteriors not kept
+        result = D.deconvolve_tracks(fitted(table), n_samples=100)
+        lls = np.array([P.track_loglik(g, Acquisition(DT), U) for g in table.partition_by("track_id", maintain_order=True)])
+        direct = D.deconvolve(lls, U, n_samples=100)
+        np.testing.assert_allclose(result.weights, direct.weights, atol=1e-10)
+        self.assertEqual(result.lam, direct.lam)
 
     def test_empty_after_exclusion_raises(self):
         rng = np.random.default_rng(2)
@@ -80,29 +95,29 @@ class DeconvolveTests(unittest.TestCase):
         sd = rng.uniform(.03, .045, (n, 2))
         short = track_table(0, np.arange(n), simulate(.05, sd[:, 0], DT, rng, n_frames=n), sd)
         with self.assertRaises(ValueError):
-            D.deconvolve_tracks(short, Acquisition(DT))
+            D.deconvolve_tracks(fitted(short))
 
     def test_min_frames_option_is_respected(self):
         rng = np.random.default_rng(3)
         table = simulated_table([.05] * 3, rng, frames=(5, 6), track_id0=0)  # all 5-frame tracks
         with self.assertRaises(ValueError):  # all excluded by the raised min_frames
-            D.deconvolve_tracks(table, Acquisition(DT), options=GridPostOptions(min_frames=6))
+            D.deconvolve_tracks(fitted(table, GridPostOptions(min_frames=6)))
         table2 = pl.concat([table, simulated_table([.05], rng, frames=(9, 10), track_id0=3)])
-        result = D.deconvolve_tracks(table2, Acquisition(DT), options=GridPostOptions(min_frames=6))
+        result = D.deconvolve_tracks(fitted(table2, GridPostOptions(min_frames=6)))
         self.assertEqual(result.n_tracks, 1)
         self.assertEqual(result.n_excluded, 3)
 
     def test_default_log_prior_is_flat(self):
         rng = np.random.default_rng(4)
         table = simulated_table([.05] * 5, rng, track_id0=0)
-        result = D.deconvolve_tracks(table, Acquisition(DT))
+        result = D.deconvolve_tracks(fitted(table))
         np.testing.assert_array_equal(result.u, U)
 
     def test_options_grid_is_the_one_used(self):
         rng = np.random.default_rng(7)
         table = simulated_table([.05] * 5, rng, track_id0=0)
         options = GridPostOptions(D_min_um2_s=1e-3, D_max_um2_s=1., n_D=101)
-        result = D.deconvolve_tracks(table, Acquisition(DT), options=options)
+        result = D.deconvolve_tracks(fitted(table, options))
         np.testing.assert_array_equal(result.u, options.u_D())
         self.assertEqual(len(result.weights), 101)
 
@@ -172,7 +187,7 @@ class DeconvolveTests(unittest.TestCase):
         np.testing.assert_allclose(G.std(axis=0), sd, rtol=.15, atol=.01 * sd.max())
 
     def test_bands_stay_off_grid_edges_no_track_reaches(self):
-        # Default 1e-4..10 grid, all tracks at D = 0.05: the posterior puts no mass past the
+        # Default 1e-5..10 grid, all tracks at D = 0.05: the posterior puts no mass past the
         # data. Laplace draws here pile the mass into an empty edge cell (module docstring).
         rng = np.random.default_rng(11)
         result = D.deconvolve(track_lls(np.full(500, .05), rng), U, n_samples=500)
@@ -187,7 +202,7 @@ class DeconvolveTests(unittest.TestCase):
         table = simulated_table(D_values, rng, frames=(8, 21))
         with warnings.catch_warnings():
             warnings.simplefilter("error")  # no edge or convergence warning
-            result = D.deconvolve_tracks(table, Acquisition(DT), log_prior=P.log_uniform(1e-3, 1., U))
+            result = D.deconvolve_tracks(fitted(table), log_prior=P.log_uniform(1e-3, 1., U))
         mid = np.log(np.sqrt(.02 * .2))
         upper = result.u > mid
         truth = np.mean(D_values > np.sqrt(.02 * .2))

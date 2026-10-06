@@ -130,6 +130,7 @@ class WorkflowTests(unittest.TestCase):
         result = analyze_tracks(pl.concat([good, short]), Acquisition(.03), keep_posteriors=True)
         post = result.posteriors
         self.assertEqual(post.track_ids.tolist(), [7])
+        self.assertEqual(post.n_frames.tolist(), [good.height])
         self.assertEqual(post.log_post_D.shape, (1, result.options.n_D))
         np.testing.assert_allclose(post.log_post_D[0], analyze_track(good, Acquisition(.03)).log_post_D)
         self.assertIsNone(analyze_tracks(good, Acquisition(.03)).posteriors)

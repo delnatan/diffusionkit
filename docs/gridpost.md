@@ -33,12 +33,15 @@ in u is log-uniform in D (scale-invariant), and the posterior weights are
 `exp(ln L + ln prior)`, normalized. The production default is a flat prior
 over the whole grid -- the least-informative choice, no empirical-Bayes
 fitting across tracks. The grid's range, `[D_min_um2_s, D_max_um2_s]`
-(default 1e-4 to 10 um^2/s, 501 points), is therefore the prior's support:
+(default 1e-5 to 10 um^2/s, 601 points), is therefore the prior's support:
 a posterior that has not died out by an edge is cut there, and its median
 and interval move with the edge. The workflow flags such tracks in
 `message` (`posterior.edge_ratios`); localization-limited, near-immobile
 tracks reach the lower edge this way, since their data only bound D from
-above. No module-level grid exists to fall back on: the workflow reads the
+above. The default lower edge sits well below any localization floor so
+that such tracks fall into a low tail, read as upper bounds, rather than into
+a separate D = 0 class: immobile, tightly confined and jittering spots cannot
+be told apart from their steps. No module-level grid exists to fall back on: the workflow reads the
 grids from `GridPostOptions`, and the lower-level functions take them as
 required arguments.
 
@@ -71,8 +74,8 @@ supersedes its point-estimate role.
 
 ## Distribution of D across tracks: `deconvolve`
 
-`deconvolve_tracks(table, acquisition)` estimates how D is distributed across
-a table of tracks -- a population-level comparator to an ensemble MSD fit,
+`deconvolve_tracks(analysis)` estimates how D is distributed across
+the tracks of `analyze_tracks(..., keep_posteriors=True)` -- a population-level comparator to an ensemble MSD fit,
 not a replacement for the per-track posteriors. It uses each track's
 likelihood on the D grid, not its posterior or a point estimate, so the prior
 is not counted once per track and a short track's uncertainty is not averaged
@@ -94,19 +97,48 @@ localization floor -- 40 datasets of 1000 tracks each, on the default grid:
 
 | population | lam (median) | W1 in ln D | CDF coverage 68% / 95% |
 |---|---|---|---|
-| spike at 0.05 | 3e-5 | 0.058 | (CDF is 0 or 1) |
-| 0.02 / 0.2, sd .15 | 1.5e-3 | 0.048 | 0.82 / 0.96 |
-| log-normal 0.05, sd .8 | 0.28 | 0.042 | 0.72 / 0.96 |
-| .3 at 0.01 / .7 at 0.1, sd .4 | 0.026 | 0.058 | 0.76 / 0.99 |
-| .4 at 0.002 / .6 at 0.1 | 0.033 | 0.114 | 0.69 / 0.94 |
+| spike at 0.05 | 4e-5 | 0.062 | (CDF is 0 or 1) |
+| 0.02 / 0.2, sd .15 | 1.8e-3 | 0.063 | 0.69 / 0.89 |
+| log-normal 0.05, sd .8 | 0.33 | 0.041 | 0.69 / 0.98 |
+| .3 at 0.01 / .7 at 0.1, sd .4 | 0.026 | 0.064 | 0.71 / 0.96 |
+| .4 at 0.002 / .6 at 0.1 | 0.036 | 0.109 | 0.73 / 0.97 |
 
 A mode narrower than the per-track resolution comes out as wide as that
-resolution allows, so a peak's width is not a measurement. Below the
+resolution allows, so a peak's width is not a measurement; the two narrow
+modes are where the 95% band covers least. Below the
 localization floor the bands widen, because the tracks cannot tell those D
 values apart. For a spike the evidence may run to the rough end of
 `LAM_GRID`, which warns. A track with a flat likelihood leaves the result
-unchanged. `deconvolve.deconvolve(lls, u)` is the same fit on any evenly spaced
-grid of per-track log-likelihood rows.
+unchanged. The kept posteriors serve as the likelihood rows: their prior is
+flat in ln D, so each row differs from the track's log-likelihood only by a
+constant, which the fit ignores. `deconvolve.deconvolve(lls, u)` is the same fit
+on any evenly spaced grid of per-track log-likelihood rows.
+
+### Split by track length: `by_track_length`
+
+Track length is observed, and it depends on D. A fast particle crosses the
+focal depth in a few frames and makes short tracks; a slow one stays in focus
+and makes one long track. `by_track_length(posteriors, u, population)` splits a
+distribution of D into groups of track length (`LENGTH_EDGES`, lower edges 3, 4,
+5, 7, 10, 15, 25, 50 frames, trimmed at the longest track). Each track i
+contributes w_i p_i(D), and the contributions are summed per group and divided
+by the total weight, so the groups add up to the whole distribution:
+
+- `pooled`: p_i is the track's flat-prior posterior. This describes the tracks
+  without a population model, and a short track spreads wide.
+- `deconvolved`: p_i(D | g), proportional to L_i(D) g(D), the track's posterior
+  with the population as its prior. It is computed once per draw of g, so the
+  groups carry the population's uncertainty. This is partial pooling, and it is
+  labelled as such.
+
+`weight="tracks"` counts each track once, and the deconvolved groups then add
+up to about g. `weight="detections"` counts each frame, so the result is the
+composition of the spots seen. The two differ when fast particles make many short
+tracks: in a 49-frame GEM movie (wt_2), D < 0.035 holds 52% of tracks and 67%
+of detections. Per detection, the excluded tracks shorter than `min_frames`
+(mostly single spots, likely fast) are missing, which pushes the slow share up.
+`viz.plot_by_track_length` stacks the groups and shows each group's own
+distribution, with the localization floor as a band.
 
 ## What is reported, and what is not
 

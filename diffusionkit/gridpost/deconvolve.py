@@ -24,7 +24,7 @@ the Cholesky factor of the Hessian at the mode), not from the Laplace Gaussian
 itself: where the data rule a grid cell out, its mass at the mode is ~0, so the
 local curvature in log g is ~0 while the true posterior has a cliff (mass m there
 costs ~n m nats). Gaussian draws then cross the cliff and pile the mass into
-empty cells -- on the default 1e-4..10 grid, past any track. The evidence is
+empty cells -- on the default 1e-5..10 grid, past any track. The evidence is
 less affected: importance sampling put its error at under 1 nat and nearly
 constant across the lam that matter.
 
@@ -35,9 +35,10 @@ fixed or cross-validated Gaussian blur per step, which it replaces: no single
 blur width suited every truth, while the evidence moved lam over four decades
 to follow them. On the default grid (scripts/validate_deconvolve.py,
 audit/deconvolve_validation.json) the 68%/95% bands covered the population CDF
-in 69-82%/94-99% of datasets, and the 97.5% quantile of the mass above
-1 um^2/s, where no track was, stayed under 0.003. For a spike, the evidence can
-run to the rough end of `LAM_GRID` (3 of 40 datasets), which warns. Two limits
+in 69-73%/89-98% of datasets (89% for two modes narrower than a track can
+resolve), and the 97.5% quantile of the mass above 1 um^2/s, where no track
+was, stayed at or under 0.003. For a spike, the evidence can run to the rough
+end of `LAM_GRID`, which warns. Two limits
 remain:
 
 - A mode narrower than the per-track resolution comes out as wide as the
@@ -56,16 +57,12 @@ from dataclasses import dataclass, fields
 from warnings import warn
 
 import numpy as np
-import polars as pl
 from scipy.linalg import solve_triangular
 from scipy.optimize import minimize_scalar
-from scipy.special import logsumexp
 
 from ..data import Acquisition
-from ..io import validate_table_schema, validated_track_frame
-from ..validation import validate_acquisition
-from .data import GridPostOptions
-from .posterior import flat, track_loglik
+from .data import GridPosteriorAnalysis
+from .posterior import flat
 
 EPS = 1e-6  # prior precision on log g's unpenalized linear tilt: there only so the evidence is proper
 LAM_GRID = np.geomspace(1e4, 1e-8, 37)  # scanned from smooth to rough, flat prior in log lam
@@ -326,41 +323,26 @@ def deconvolve(lls: np.ndarray, u: np.ndarray, log_prior: np.ndarray | None = No
 
 
 def deconvolve_tracks(
-    table: pl.DataFrame,
-    acquisition: Acquisition,
+    analysis: GridPosteriorAnalysis,
     log_prior: np.ndarray | None = None,
-    options: GridPostOptions = GridPostOptions(),
     n_samples: int = 1000,
     rng: np.random.Generator | None = None,
 ) -> PopulationDistribution:
-    """Distribution of D across every track in `table`, on `options.u_D()`.
+    """Distribution of D across the tracks of `analyze_tracks(..., keep_posteriors=True)`, on its grid.
 
-    `log_prior` (on that grid) defaults to `flat`, matching `track_posterior`'s own default.
-    Tracks shorter than `options.min_frames` or with invalid input (schema,
-    non-contiguous frames, non-positive localization SD) are skipped and
-    counted in `n_excluded`, mirroring `analyze_tracks`'s tolerance for bad
-    individual tracks; a malformed table itself still raises.
+    Built from the per-track posteriors the analysis kept: their prior is flat in ln D, so each
+    row is the track's likelihood up to a constant, which the fit ignores. `log_prior` (on
+    `analysis.options.u_D()`) only sets the support, and defaults to the whole grid. Tracks
+    without an "ok" posterior (too short, invalid input) are counted in `n_excluded`.
     """
-    validate_acquisition(acquisition, allow_exposure=True)
-    validate_table_schema(table)
-    u = options.u_D()
-    prior = flat(u) if log_prior is None else log_prior
-    groups = table.sort("track_id", "frame").partition_by("track_id", maintain_order=True)
-
-    lls, n_excluded = [], 0
-    for group in groups:
-        try:
-            track = validated_track_frame(group, acquisition, require_localization=True)
-            if track.height < options.min_frames:
-                n_excluded += 1
-                continue
-            lls.append(track_loglik(track, acquisition, u))
-        except ValueError:
-            n_excluded += 1
-
-    if not lls:
+    if analysis.posteriors is None:
+        raise ValueError("deconvolve_tracks needs the per-track posteriors: analyze_tracks(..., keep_posteriors=True)")
+    lls = analysis.posteriors.log_post_D
+    if not len(lls):
         raise ValueError("no track had enough frames and valid input to contribute")
-
-    fit = deconvolve(np.array(lls), u, prior, n_samples=n_samples, rng=rng)
+    u = analysis.options.u_D()
+    prior = flat(u) if log_prior is None else log_prior
+    fit = deconvolve(lls, u, prior, n_samples=n_samples, rng=rng)
     return PopulationDistribution(**{f.name: getattr(fit, f.name) for f in fields(fit)},
-                                  n_tracks=len(lls), n_excluded=n_excluded, acquisition=acquisition)
+                                  n_tracks=len(lls), n_excluded=analysis.fits.height - len(lls),
+                                  acquisition=analysis.acquisition)

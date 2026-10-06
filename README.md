@@ -76,7 +76,7 @@ tracks = load_tracks(
 result = analyze_tracks(
     tracks,
     Acquisition(dt_s=0.035, exposure_s=0.020),  # the posterior models the exposure's motion blur
-    GridPostOptions(min_frames=3, level=.9, D_min_um2_s=1e-4, D_max_um2_s=10., n_D=501),
+    GridPostOptions(min_frames=3, level=.9, D_min_um2_s=1e-5, D_max_um2_s=10., n_D=601),
 )
 
 result.fits  # one row per track: the D posterior's median, interval, information and localization floor
@@ -166,14 +166,17 @@ the grid posteriors'.
 
 ## Distribution of D across tracks
 
-`gridpost.deconvolve_tracks(table, acquisition)` is a population-level
+`gridpost.deconvolve_tracks(analyze_tracks(table, acquisition, keep_posteriors=True))` is a population-level
 comparator to an ensemble MSD fit, not a replacement for the per-track
 posteriors: it estimates how `D` is distributed across a table of tracks from
 each track's likelihood, without averaging away each track's own uncertainty
 first. The estimate is a smooth log density whose smoothness is chosen by the
 data (Laplace evidence), and `samples` are posterior draws of the whole
 distribution, so any band or mass comes with an interval
-(`result.band(.68, cumulative=True)`). See
+(`result.band(.68, cumulative=True)`). `gridpost.by_track_length` splits the
+pooled and the deconvolved distribution into track-length groups, per track or
+per detection, to show which tracks each part of the distribution comes from
+(`gridpost.viz.plot_by_track_length` draws it). See
 [docs/gridpost.md](docs/gridpost.md#distribution-of-d-across-tracks-deconvolve).
 
 ## Validation

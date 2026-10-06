@@ -2,7 +2,7 @@
 
 Five populations (log-normal mixtures in D, truncated to [1e-3, 1] um^2/s), 1000
 tracks each of 5-20 frames, dt 35 ms, localization SD 30-45 nm, on the default
-GridPostOptions grid (flat in ln D over 1e-4..10). Independent position-space
+GridPostOptions grid (flat in ln D over 1e-5..10). Independent position-space
 simulator; no production likelihood code generates the ground truth. Per replicate
 it records the evidence's lam and whether its maximum was interior, the
 Wasserstein-1 distance in ln D to the population CDF, and whether the 68%/95% bands
@@ -24,7 +24,7 @@ import polars as pl
 from scipy.stats import norm
 
 from diffusionkit import Acquisition
-from diffusionkit.gridpost import GridPostOptions, deconvolve_tracks
+from diffusionkit.gridpost import GridPostOptions, analyze_tracks, deconvolve_tracks
 
 DT, N_TRACKS, LO, HI = .035, 1000, np.log(1e-3), np.log(1.)
 CHECK_D = (.003, .01, .03, .1, .3)
@@ -91,7 +91,8 @@ def covered(draws, truth, level):
 def replicate(comps, cut, rng):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        r = deconvolve_tracks(simulate(sample_D(comps, N_TRACKS, rng), rng), Acquisition(DT), rng=rng)
+        tracks = simulate(sample_D(comps, N_TRACKS, rng), rng)
+        r = deconvolve_tracks(analyze_tracks(tracks, Acquisition(DT), keep_posteriors=True), rng=rng)
     u0 = np.log(CHECK_D)
     truth = true_cdf(comps, u0)
     fine = np.linspace(LO - 1, HI + 1, 2001)

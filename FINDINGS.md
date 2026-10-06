@@ -14,9 +14,9 @@ The distribution of D across tracks (`gridpost.deconvolve_tracks`) has a
 coverage study in `scripts/validate_deconvolve.py`, recorded in
 [audit/deconvolve_validation.json](audit/deconvolve_validation.json): five
 simulated populations, 40 datasets of 1000 tracks each, on the default grid.
-Its 68%/95% bands covered the population CDF in 69-82%/94-99% of datasets,
-and no meaningful mass appeared past the tracks (97.5% quantile above
-1 um^2/s under 0.003). See docs/gridpost.md for the table and limits.
+On the 1e-5..10 grid, its 68%/95% bands covered the population CDF in
+69-73%/89-98% of datasets, and no meaningful mass appeared past the tracks
+(97.5% quantile above 1 um^2/s at most 0.003). See docs/gridpost.md for the table and limits.
 
 Drift (`diffusionkit.drift`) is tested in `tests/test_drift.py`:
 - a simulated rigid path is recovered to < 4 nm rms;
