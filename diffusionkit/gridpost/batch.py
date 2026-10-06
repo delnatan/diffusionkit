@@ -9,14 +9,14 @@ replicate) to the same functions a single movie uses (`deconvolve_tracks`, `by_t
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
 import polars as pl
 
 from ..data import Acquisition
-from ..experiments import Experiment, label, select_rows, validate_experiments
+from ..experiments import Experiment, label, label_as, select_rows, validate_experiments
 from .data import GridPosteriorAnalysis, GridPosteriors, GridPostOptions
 from .deconvolve import PopulationDistribution, deconvolve_tracks
 from .workflow import analyze_tracks
@@ -39,6 +39,36 @@ class GridPostBatch:
     samples: dict[str, str]  # experiment name -> sample name
     options: GridPostOptions
     posteriors: BatchPosteriors | None = field(default=None, compare=False, repr=False)
+
+    @classmethod
+    def from_analyses(cls, analyses: Mapping[str, GridPosteriorAnalysis],
+                      samples: Mapping[str, str] | None = None) -> GridPostBatch:
+        """A batch from per-experiment analyses however they were obtained: fresh from `analyze_tracks`, or
+        restored from disk. `analyses` maps experiment name to its `GridPosteriorAnalysis` (with kept
+        posteriors, on one `GridPostOptions` for all); `samples` maps experiment name to sample name
+        (default: the experiment's own name). Each analysis needs an `acquisition`.
+        """
+        if not analyses:
+            raise ValueError("no analyses given")
+        first = next(iter(analyses.values()))
+        samples = {name: (samples or {}).get(name, name) for name in analyses}
+        for name, a in analyses.items():
+            if a.posteriors is None:
+                raise ValueError(f"experiment {name!r} kept no posteriors: analyze_tracks(..., keep_posteriors=True)")
+            if a.options != first.options:
+                raise ValueError(f"experiment {name!r} was analyzed with different GridPostOptions; "
+                                 "pooling needs one D grid")
+            if a.acquisition is None:
+                raise ValueError(f"experiment {name!r} has no acquisition")
+        parts = [a.posteriors for a in analyses.values()]
+        fits = pl.concat([label_as(a.fits, n, samples[n]) for n, a in analyses.items()], how="diagonal_relaxed")
+        names = np.concatenate([np.full(len(p.track_ids), n, dtype=object) for n, p in zip(analyses, parts)]).astype(str)
+        sample_of = np.concatenate([np.full(len(p.track_ids), samples[n], dtype=object)
+                                    for n, p in zip(analyses, parts)]).astype(str)
+        posteriors = BatchPosteriors(np.concatenate([p.track_ids for p in parts]),
+                                     np.concatenate([p.n_frames for p in parts]),
+                                     np.vstack([p.log_post_D for p in parts]), sample_of, names)
+        return cls(fits, {n: a.acquisition for n, a in analyses.items()}, samples, first.options, posteriors)
 
     def select(self, sample: str | None = None, experiment: str | None = None) -> GridPosteriorAnalysis:
         """One sample's, one experiment's, or (no arguments) every track's analysis, as `analyze_tracks` returns it.
@@ -99,26 +129,17 @@ def analyze_experiments(experiments: Sequence[Experiment], options: GridPostOpti
     experiments = validate_experiments(experiments)
     totals = [e.tracks["track_id"].n_unique() for e in experiments]
     total, before = sum(totals), 0
-    fits, ids, frames, logs, names, samples = [], [], [], [], [], []
+    analyses = {}
     for e, n in zip(experiments, totals):
         inner = None if progress is None else (lambda done, _n, b=before: progress(b + done, total))
-        result = analyze_tracks(e.tracks, e.acquisition, options, progress=inner,
-                                keep_posteriors=keep_posteriors, map_fn=map_fn)
+        analyses[e.name] = analyze_tracks(e.tracks, e.acquisition, options, progress=inner,
+                                          keep_posteriors=keep_posteriors, map_fn=map_fn)
         before += n
-        fits.append(label(result.fits, e))
-        if keep_posteriors:
-            post = result.posteriors
-            ids.append(post.track_ids)
-            frames.append(post.n_frames)
-            logs.append(post.log_post_D)
-            names += [e.name] * len(post.track_ids)
-            samples += [e.sample_name] * len(post.track_ids)
-    posteriors = None
+    samples = {e.name: e.sample_name for e in experiments}
     if keep_posteriors:
-        posteriors = BatchPosteriors(np.concatenate(ids), np.concatenate(frames), np.vstack(logs),
-                                     np.array(samples, dtype=str), np.array(names, dtype=str))
-    return GridPostBatch(pl.concat(fits), {e.name: e.acquisition for e in experiments},
-                         {e.name: e.sample_name for e in experiments}, options, posteriors)
+        return GridPostBatch.from_analyses(analyses, samples)
+    fits = pl.concat([label(analyses[e.name].fits, e) for e in experiments])
+    return GridPostBatch(fits, {e.name: e.acquisition for e in experiments}, samples, options)
 
 
 def cdf_distance(a: PopulationDistribution, b: PopulationDistribution) -> np.ndarray:

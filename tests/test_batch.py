@@ -77,6 +77,19 @@ class GridPostBatchTests(unittest.TestCase):
         self.assertGreater(d.mean(), 1.)  # ~ln(20) apart
         self.assertEqual(set(self.batch.populations("all", n_samples=50)), {None})
 
+    def test_from_analyses_restored_pieces_match(self):
+        analyses = {e.name: gridpost.analyze_tracks(e.tracks, e.acquisition, self.batch.options, keep_posteriors=True)
+                    for e in self.exps}
+        rebuilt = gridpost.GridPostBatch.from_analyses(analyses, {"a1": "slow", "a2": "slow", "b1": "fast"})
+        self.assertEqual(rebuilt.fits.to_dicts(), self.batch.fits.to_dicts())
+        np.testing.assert_array_equal(rebuilt.posteriors.log_post_D, self.batch.posteriors.log_post_D)
+        other = gridpost.analyze_tracks(self.exps[0].tracks, ACQ, gridpost.GridPostOptions(n_D=61), keep_posteriors=True)
+        with self.assertRaisesRegex(ValueError, "different GridPostOptions"):
+            gridpost.GridPostBatch.from_analyses({"a1": analyses["a1"], "x": other})
+        bare = gridpost.analyze_tracks(self.exps[0].tracks, ACQ, self.batch.options)
+        with self.assertRaisesRegex(ValueError, "kept no posteriors"):
+            gridpost.GridPostBatch.from_analyses({"a1": bare})
+
     def test_without_posteriors(self):
         batch = gridpost.analyze_experiments(self.exps[:1], keep_posteriors=False)
         with self.assertRaisesRegex(ValueError, "keep_posteriors"):

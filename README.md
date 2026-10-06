@@ -240,6 +240,9 @@ for the per-replicate view. `cdf_distance` between two samples means little
 alone, because two draws of the same population are still apart: compare it with the
 replicate-to-replicate distances inside a sample.
 `gridpost.viz.plot_populations(pops)` overlays the distributions and their bands.
+A batch need not come from `analyze_experiments`: `GridPostBatch.from_analyses({name: analysis}, {name: sample})`
+assembles one from per-experiment `GridPosteriorAnalysis`es obtained any way, such as posteriors restored from
+disk (they must share one `GridPostOptions`), so pooling never forces a refit.
 
 ### Ensemble-averaged MSD over experiments
 

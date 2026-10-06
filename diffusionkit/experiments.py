@@ -47,10 +47,15 @@ def validate_experiments(experiments: Sequence[Experiment]) -> list[Experiment]:
     return experiments
 
 
+def label_as(table: pl.DataFrame, experiment: str, sample: str) -> pl.DataFrame:
+    """`table` with leading `sample` and `experiment` columns holding those names."""
+    return table.select(pl.lit(sample, dtype=pl.String).alias("sample"),
+                        pl.lit(experiment, dtype=pl.String).alias("experiment"), pl.all())
+
+
 def label(table: pl.DataFrame, experiment: Experiment) -> pl.DataFrame:
     """`table` with leading `sample` and `experiment` columns for `experiment`."""
-    return table.select(pl.lit(experiment.sample_name).alias("sample"),
-                        pl.lit(experiment.name).alias("experiment"), pl.all())
+    return label_as(table, experiment.name, experiment.sample_name)
 
 
 def select_rows(table: pl.DataFrame, sample: str | None = None, experiment: str | None = None) -> pl.DataFrame:
