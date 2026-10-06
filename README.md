@@ -3,12 +3,20 @@
 Small, data-oriented tools for analyzing 2D single-particle tracks. Trajectory
 data is threaded through as `polars.DataFrame`s end to end; explicit inputs,
 per-observation localization errors, and inspectable fit results are the
-design center. Three independent analysis paths are supported: classical
-linear MSD fits (`diffusionkit.classic`, D and the power-law exponent alpha),
-the exact-likelihood grid posterior over `D` (`diffusionkit.gridpost`, the
-recommended per-track information to extract), and Bayesian NUTS via NumPyro for per-track
-diagnostics (`diffusionkit.bayes`). No workflow currently carries a
-production-readiness or short-track confidence-interval calibration claim.
+design center. Three independent analysis paths are supported:
+
+- `diffusionkit.gridpost`, the recommended one: an exact-likelihood grid
+  posterior over `D` per track, the distribution of `D` across tracks, and
+  that distribution split by track length;
+- `diffusionkit.classic`: linear MSD fits, D and the power-law exponent alpha
+  (the only place alpha is reported);
+- `diffusionkit.bayes`: per-track NUTS via NumPyro, as a diagnostic.
+
+`diffusionkit.drift` estimates the drift every track shares, from the tracks
+themselves, for correction before any of them. The napari plugin
+[napari-gemscape2](https://github.com/delnatan/napari-gemscape2) runs
+`gridpost` on its tracks. No workflow carries a calibration claim on
+experimental tracks: the intervals are checked in simulation under the model.
 
 ## Install
 
@@ -17,8 +25,8 @@ pip install -e .                    # numpy, polars, scipy -- classic and gridpo
 pip install -e ".[bayes,plots]"      # NumPyro/JAX Bayesian pipeline and plotting modules
 ```
 
-Python >=3.11. `classic` and `gridpost` do not import JAX, NumPyro, or
-plotting libraries.
+Python >=3.11. `classic`, `gridpost` and `drift` do not import JAX, NumPyro, or
+plotting libraries; `gridpost.viz` and `bayes.viz` need the `plots` extra.
 
 ## Classical analysis
 
@@ -97,17 +105,51 @@ produces a wide posterior rather than a falsely confident point estimate (see
 docs/gridpost.md, "What is reported"), and the MSD fits remain the place for a
 power-law exponent.
 
+The default range, 1e-5 to 10 um^2/s, sits well below any localization
+floor, so tracks that can't be told from still fall into a low tail, read as
+upper bounds, instead of into a separate D = 0 class.
+
 The D posterior's interval is a genuine credible interval under a flat
 prior, but its calibration is a simulation check under the model (see
-`scripts/validate_posterior.py`), not a claim about experimental tracks.
+`scripts/validate_posterior.py`), not a claim about experimental tracks. It
+conditions on the reported localization SDs: noise beyond them reads as motion.
+In simulation, 40 nm of unreported per-frame noise (what fast GEMs appear to
+carry, likely from the spot smearing during the exposure) turns D = 0.3 into
+~0.43 um^2/s.
+
+## Distribution of D across tracks, and by track length
+
+```python
+from diffusionkit.gridpost import analyze_tracks, by_track_length, deconvolve_tracks
+
+result = analyze_tracks(tracks, acquisition, keep_posteriors=True)
+pop = deconvolve_tracks(result)          # how D is distributed across the tracks
+comp = by_track_length(result.posteriors, result.options.u_D(), pop, weight="detections")
+```
+
+`deconvolve_tracks` is a population-level comparator to an ensemble MSD fit,
+not a replacement for the per-track posteriors: it estimates how `D` is
+distributed across the tracks from each track's likelihood, without averaging
+away each track's own uncertainty first. The estimate is a smooth log density
+whose smoothness is chosen by the data (Laplace evidence), and `samples` are
+posterior draws of the whole distribution, so any band or mass comes with an
+interval (`pop.band(.68, cumulative=True)`).
+
+`by_track_length` splits the pooled and the deconvolved distribution into
+track-length groups. Fast particles leave the focal depth within a few frames,
+so short tracks come mostly from fast particles and long tracks from slow ones.
+Counted per track, the groups add up to the distribution; counted per detection
+(each track once per frame), they give the make-up of the spots seen in focus,
+which can differ a lot (a GEM movie: 52% of tracks but 67% of detections below
+0.035 um^2/s). `gridpost.viz.plot_by_track_length` draws it. See
+[docs/gridpost.md](docs/gridpost.md#distribution-of-d-across-tracks-deconvolve).
 
 ## Localization and acquisition contract
 
 The table uses `track_id`, `frame`, `x_um`, `y_um`, and normally
 `sigma_x_um`, `sigma_y_um`. The sigma columns contain position standard
 errors in micrometers, not spot/PSF widths. Spotsolve's `se_x`/`se_y` map to
-these columns after pixel conversion; the current spt-pipeline adapter
-already makes that conversion.
+these columns after pixel conversion; napari-gemscape2 makes that conversion.
 
 For a pair of positions i and j, the expected noise contribution to squared
 2D displacement is:
@@ -143,41 +185,28 @@ neighbour_correlation(corrected)   # motion still shared between neighbours = lo
 
 The drift field every track shares (stage drift, slow tissue motion) is estimated from the tracks themselves. It is a
 generalized-least-squares fit on displacements, with each track's own Brownian covariance and its D marginalized by EM,
-so still spots carry the estimate without any classification. Correct before any per-track analysis: uncorrected
-drift of ~17 nm/frame moves a D ~ 1e-3 um^2/s population to 0.01-0.05. See [docs/drift.md](docs/drift.md).
+so still spots carry the estimate without any classification. Correct before any per-track analysis when the sample
+drifts: uncorrected drift of ~17 nm/frame moves a D ~ 1e-3 um^2/s population to 0.01-0.05. Local flow of ~1 nm/frame,
+which no global field removes, biases D by only ~2e-5 um^2/s. See [docs/drift.md](docs/drift.md).
 
 ## Data and algorithms
 
 Trajectory data is a `polars.DataFrame` (`track_id`, `frame`, `x_um`, `y_um`,
 `sigma_x_um`, `sigma_y_um`) end to end; there is no intermediate per-track
 object. Plain dataclasses hold only per-analysis metadata and results:
-`Acquisition`, `MSDOptions`, `MSDCurve`, `MSDFit` (classic) and
-`GridPostOptions`, `PosteriorD` (gridpost). Standalone
+`Acquisition`, `MSDOptions`, `MSDCurve`, `MSDFit` (classic),
+`GridPostOptions`, `PosteriorD`, `PopulationDistribution`, `LengthComposition`
+(gridpost) and `Drift` (drift). Standalone
 functions validate the table, compute MSD or the grid posteriors, and fit or
 summarize them. `diffusionkit.io.validated_track_frame` is the single
 validation boundary every per-track algorithm calls first. No GUI, file
-writing, global JAX settings, or worker creation is part of `classic` or
-`gridpost`.
+writing, global JAX settings, or worker creation is part of `classic`,
+`gridpost` or `drift`.
 
 See [WORKFLOW.md](WORKFLOW.md) for table examples, [TABLES.md](TABLES.md) for
 output semantics, [docs/classical.md](docs/classical.md) for the MSD
-estimators' equations and scope, and [docs/gridpost.md](docs/gridpost.md) for
-the grid posteriors'.
-
-## Distribution of D across tracks
-
-`gridpost.deconvolve_tracks(analyze_tracks(table, acquisition, keep_posteriors=True))` is a population-level
-comparator to an ensemble MSD fit, not a replacement for the per-track
-posteriors: it estimates how `D` is distributed across a table of tracks from
-each track's likelihood, without averaging away each track's own uncertainty
-first. The estimate is a smooth log density whose smoothness is chosen by the
-data (Laplace evidence), and `samples` are posterior draws of the whole
-distribution, so any band or mass comes with an interval
-(`result.band(.68, cumulative=True)`). `gridpost.by_track_length` splits the
-pooled and the deconvolved distribution into track-length groups, per track or
-per detection, to show which tracks each part of the distribution comes from
-(`gridpost.viz.plot_by_track_length` draws it). See
-[docs/gridpost.md](docs/gridpost.md#distribution-of-d-across-tracks-deconvolve).
+estimators' equations and scope, [docs/gridpost.md](docs/gridpost.md) for
+the grid posteriors', and [docs/drift.md](docs/drift.md) for drift.
 
 ## Validation
 
@@ -192,8 +221,8 @@ Tests include an independent pair-sum oracle, nonlinear objective checks,
 Brownian recovery with varying localization error, and data/status contracts.
 The recovery study uses an independent position-space simulator at 5, 10,
 and 20 frames. See [FINDINGS.md](FINDINGS.md) for the current evidence and
-limits. These checks are not a general calibration of alpha on experimental
-tracks.
+limits. These checks are simulations under the model, not a calibration on
+experimental tracks.
 
 `diffusionkit.bayes` (NumPyro) fits the same exact displacement likelihood
 directly, without an MSD curve, via `fit_track` -- a per-track diagnostic
