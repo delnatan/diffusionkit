@@ -59,23 +59,54 @@ class TrackPosterior:
     posterior_D: PosteriorD
     acquisition: Acquisition
     options: GridPostOptions
-    # The normalized log posterior on `options.u_D()`, None unless the status is "ok".
-    log_post_D: np.ndarray | None = field(default=None, compare=False, repr=False)
+    # The normalized log-likelihood on `options.u_D()` (`GridLikelihoods`), None unless the status is "ok".
+    loglik_D: np.ndarray | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
-class GridPosteriors:
-    """Every "ok" track's normalized log posterior on `options.u_D()`, one row per track in the order of
-    `track_ids`: what a population read (summed, pooled or deconvolved) is built from. The prior is
-    flat in ln D, so each row is also the track's log-likelihood up to a constant."""
+class GridLikelihoods:
+    """Every "ok" track's log-likelihood of D on `options.u_D()`, one row per track in the order of `track_ids`.
+
+    Each row is normalized (its logsumexp over the grid is 0), which makes it also the track's
+    posterior under the flat prior in ln D. It is kept as a likelihood because that is how tracks
+    combine: a population model adds the rows' logs (`lognormal`, `deconvolve`), where adding
+    posteriors would count the prior once per track. The per-row constant never matters.
+    """
     track_ids: np.ndarray
     n_frames: np.ndarray  # (len(track_ids),) frames per track: a track's detections
-    log_post_D: np.ndarray  # (len(track_ids), n_D)
+    loglik_D: np.ndarray  # (len(track_ids), n_D)
+
+
+@dataclass(frozen=True)
+class GridDistribution:
+    """A distribution of the grid parameter across tracks (a population), on `u`, with posterior draws.
+
+    `weights` is a point estimate and each row of `samples` a posterior draw; every one sums to 1
+    over the grid. Any functional's interval is read off the draws: `band` pointwise, `mass` over a
+    range, `samples @ a` for anything linear.
+    """
+
+    u: np.ndarray
+    weights: np.ndarray       # (len(u),)
+    samples: np.ndarray       # (n_samples, len(u))
+
+    def band(self, level: float = .68, cumulative: bool = False) -> tuple[np.ndarray, np.ndarray]:
+        """Pointwise (lower, upper) equal-tailed band of the weights, or of their cumulative sum."""
+        s = np.cumsum(self.samples, axis=1) if cumulative else self.samples
+        q = (1 - level) / 2
+        lo, hi = np.quantile(s, [q, 1 - q], axis=0)
+        return lo, hi
+
+    def mass(self, lo: float = 0., hi: float = np.inf) -> np.ndarray:
+        """(n_samples,) draws of the mass with lo <= D < hi (the parameter's own units, not ln), whole grid cells."""
+        with np.errstate(divide="ignore"):
+            inside = (self.u >= np.log(lo)) & (self.u < np.log(hi))
+        return self.samples[:, inside].sum(axis=1)
 
 
 @dataclass(frozen=True)
 class GridPosteriorAnalysis:
     fits: pl.DataFrame  # one row per track (model posterior_D)
-    acquisition: Acquisition | None  # None for a selection pooled across experiments with different acquisitions
+    acquisition: Acquisition | None  # None for a selection across experiments with different acquisitions
     options: GridPostOptions
-    posteriors: GridPosteriors | None = field(default=None, compare=False, repr=False)  # keep_posteriors=True
+    likelihoods: GridLikelihoods | None = field(default=None, compare=False, repr=False)  # keep_likelihoods=True

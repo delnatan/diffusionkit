@@ -10,7 +10,7 @@ from ..io import validate_table_schema, validated_track_frame
 from ..validation import validate_acquisition
 from . import posterior as posterior_mod
 from .likelihood import _loglik, _prepared, _whiten
-from .data import GridPosteriorAnalysis, GridPosteriors, GridPostOptions, PosteriorD, TrackPosterior
+from .data import GridLikelihoods, GridPosteriorAnalysis, GridPostOptions, PosteriorD, TrackPosterior
 
 FIT_SCHEMA = {
     "track_id": pl.Int64, "n_frames": pl.Int64, "model": pl.String,
@@ -36,6 +36,7 @@ def _posterior_D_or_invalid(track: pl.DataFrame, acquisition: Acquisition,
         u = options.u_D()
         prior = posterior_mod.flat(u)
         w = _whiten(_prepared(track, acquisition), acquisition)
+        # Flat prior: the normalized log posterior is the normalized log-likelihood, kept as `loglik_D`.
         lp = posterior_mod.log_posterior(_loglik(np.exp(u), w["lam"], w["y"][None], w["const"]), prior)
     except ValueError as exc:  # e.g. a zero localization SD
         return PosteriorD(dict.fromkeys(PosteriorD.PARAMETERS), "invalid_input", str(exc)), None
@@ -55,7 +56,7 @@ def analyze_track(track: pl.DataFrame, acquisition: Acquisition,
     Invalid input raises; short tracks are explicit results. The posterior models
     `acquisition.exposure_s` as box-shutter blur. An "ok" posterior cut by a grid edge
     (`posterior.edge_ratios`) says so in its message. The result carries an "ok"
-    posterior's normalized log weights (`log_post_D`).
+    track's normalized log-likelihood on the grid (`loglik_D`).
     """
     validate_acquisition(acquisition, allow_exposure=True)
     track = validated_track_frame(track, acquisition, require_localization=True)
@@ -66,8 +67,8 @@ def analyze_track(track: pl.DataFrame, acquisition: Acquisition,
         return TrackPosterior(track_id, n,
                               PosteriorD(dict.fromkeys(PosteriorD.PARAMETERS), "excluded", message),
                               acquisition, options)
-    posterior_D, log_post_D = _posterior_D_or_invalid(track, acquisition, options)
-    return TrackPosterior(track_id, n, posterior_D, acquisition, options, log_post_D)
+    posterior_D, loglik_D = _posterior_D_or_invalid(track, acquisition, options)
+    return TrackPosterior(track_id, n, posterior_D, acquisition, options, loglik_D)
 
 
 def _analyze_group(group: pl.DataFrame, acquisition: Acquisition, options: GridPostOptions) -> TrackPosterior:
@@ -84,12 +85,13 @@ def _analyze_group(group: pl.DataFrame, acquisition: Acquisition, options: GridP
 def analyze_tracks(table: pl.DataFrame, acquisition: Acquisition,
                    options: GridPostOptions = GridPostOptions(), *,
                    progress: Callable[[int, int], None] | None = None,
-                   keep_posteriors: bool = False,
+                   keep_likelihoods: bool = False,
                    map_fn: Callable[..., Iterable] = map) -> GridPosteriorAnalysis:
     """One fit row per input track (model posterior_D), including exclusions and invalid tracks.
 
-    With `keep_posteriors`, `result.posteriors` also holds every "ok" track's
-    normalized log posterior on `options.u_D()` (`GridPosteriors`).
+    With `keep_likelihoods`, `result.likelihoods` also holds every "ok" track's
+    normalized log-likelihood on `options.u_D()` (`GridLikelihoods`): what tracks
+    are combined from (`fit_shared_D`, `fit_lognormal`, `deconvolve`).
 
     Schema/configuration errors raise before work starts. Invalid individual
     tracks get status='invalid_input' and do not prevent other tracks fitting.
@@ -106,7 +108,7 @@ def analyze_tracks(table: pl.DataFrame, acquisition: Acquisition,
     validate_table_schema(table)
     groups = table.sort("track_id", "frame").partition_by("track_id", maintain_order=True)
     fit_rows = []
-    D_ids, D_frames, log_post_D = [], [], []
+    D_ids, D_frames, loglik_D = [], [], []
     if progress is not None:
         progress(0, len(groups))
     results = map_fn(functools.partial(_analyze_group, acquisition=acquisition, options=options), groups)
@@ -116,14 +118,14 @@ def analyze_tracks(table: pl.DataFrame, acquisition: Acquisition,
         fit_rows.append({"track_id": track_id, "n_frames": result.n_frames, "model": post.model,
                          "method": post.method, "status": post.status, "message": post.message,
                          "uncertainty_method": post.uncertainty_method, **post.parameters})
-        if keep_posteriors and result.log_post_D is not None:
+        if keep_likelihoods and result.loglik_D is not None:
             D_ids.append(track_id)
             D_frames.append(result.n_frames)
-            log_post_D.append(result.log_post_D)
+            loglik_D.append(result.loglik_D)
         if progress is not None:
             progress(done, len(groups))
-    posteriors = None
-    if keep_posteriors:
-        posteriors = GridPosteriors(np.array(D_ids, dtype=np.int64), np.array(D_frames, dtype=np.int64),
-                                    np.array(log_post_D).reshape(len(D_ids), options.n_D))
-    return GridPosteriorAnalysis(pl.DataFrame(fit_rows, schema=FIT_SCHEMA), acquisition, options, posteriors)
+    likelihoods = None
+    if keep_likelihoods:
+        likelihoods = GridLikelihoods(np.array(D_ids, dtype=np.int64), np.array(D_frames, dtype=np.int64),
+                                      np.array(loglik_D).reshape(len(D_ids), options.n_D))
+    return GridPosteriorAnalysis(pl.DataFrame(fit_rows, schema=FIT_SCHEMA), acquisition, options, likelihoods)

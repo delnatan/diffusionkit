@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .composition import LengthComposition
-from .deconvolve import Deconvolution
+from .data import GridDistribution
 
 FLOOR = dict(color="0.35", alpha=.13, lw=0)
 
@@ -22,17 +22,17 @@ def plot_by_track_length(comp: LengthComposition, floor_um2_s: np.ndarray | None
     """Top: the distribution of D per decade, stacked by track-length group. Bottom: each group's
     own distribution (normalized to its peak), with its tracks and detections at right.
 
-    Columns are the pooled flat-prior posteriors and, when `comp` has a population, the
-    deconvolved split (posterior mean over draws; `comp.band` and `comp.deconvolved` hold the
+    Columns are the unpooled flat-prior posteriors and, when `comp` has a population, the
+    partially pooled split (posterior mean over draws; `comp.band` and `comp.partially_pooled` hold the
     uncertainty, best read as masses over a range rather than pointwise on the fine grid).
     `floor_um2_s` (e.g. the fits table's `D_floor_um2_s`) draws the localization floor's 10-90%
     band and median. Read below the floor as unresolved: those tracks only bound D from above.
     """
     x = comp.u / np.log(10)
     dx = x[1] - x[0]
-    columns = [("pooled (flat-prior posteriors)", comp.pooled)]
-    if comp.deconvolved is not None:
-        columns.append(("deconvolved (posterior under the population)", comp.deconvolved.mean(0)))
+    columns = [("unpooled (each track's flat-prior posterior)", comp.unpooled)]
+    if comp.partially_pooled is not None:
+        columns.append(("partially pooled (posterior under the population)", comp.partially_pooled.mean(0)))
     colors = plt.get_cmap(cmap)(np.linspace(.1, .9, len(comp.edges)))
     labels = comp.labels()
     fig, axes = plt.subplots(2, len(columns), figsize=(5.2 * len(columns), 6.4), squeeze=False,
@@ -71,7 +71,7 @@ def plot_populations(populations: dict, floor_um2_s: np.ndarray | None = None, l
                      cumulative: bool = True, ax=None) -> plt.Figure:
     """Distributions of D side by side: each population's posterior mode with its `level` band, on log10 D.
 
-    `populations` maps a label to a `Deconvolution` on one grid (e.g. `GridPostBatch.populations(...)`);
+    `populations` maps a label to a `GridDistribution` on one grid (e.g. `GridPostBatch.populations(...)`);
     by default the CDF is drawn, which reads differences between samples better than the density does.
     A band that two populations' curves both sit inside is no evidence that they differ.
     """

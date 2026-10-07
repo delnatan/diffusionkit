@@ -27,7 +27,7 @@ class WorkflowTests(unittest.TestCase):
     def test_short_track_is_excluded(self):
         out = analyze_track(table(2), Acquisition(.03))
         self.assertEqual(out.posterior_D.status, "excluded")
-        self.assertIsNone(out.log_post_D)
+        self.assertIsNone(out.loglik_D)
 
     def test_exposure_blur_is_modelled(self):
         acquisition, options = Acquisition(.03, .02), GridPostOptions()
@@ -57,7 +57,7 @@ class WorkflowTests(unittest.TestCase):
     def test_info_bits_reported_from_the_log_posterior(self):
         out = analyze_track(table(8), Acquisition(.03))
         bits = out.posterior_D.parameters["D_post_info_bits"]
-        self.assertAlmostEqual(bits, P.information_bits(out.log_post_D, P.flat(GridPostOptions().u_D())))
+        self.assertAlmostEqual(bits, P.information_bits(out.loglik_D, P.flat(GridPostOptions().u_D())))
         self.assertGreater(bits, 0.)
 
     def test_localization_floor_is_mean_sd_squared_over_blurred_step(self):
@@ -105,11 +105,11 @@ class WorkflowTests(unittest.TestCase):
         t = table(12)
         options = GridPostOptions(D_min_um2_s=1e-3, D_max_um2_s=2., n_D=101)
         out = analyze_track(t, Acquisition(.03), options)
-        self.assertEqual(out.log_post_D.shape, (101,))
+        self.assertEqual(out.loglik_D.shape, (101,))
         u = options.u_D()
         expected = P.summary(P.posterior(P.track_loglik(t, Acquisition(.03), u), P.flat(u)), u, options.level)
         self.assertAlmostEqual(out.posterior_D.parameters["D_post_median_um2_s"], expected["median"], places=12)
-        self.assertAlmostEqual(np.exp(out.log_post_D).sum(), 1., places=12)
+        self.assertAlmostEqual(np.exp(out.loglik_D).sum(), 1., places=12)
         self.assertEqual(P.track_posterior(t, Acquisition(.03), options=options), expected)
 
     def test_narrow_grid_moves_the_summary_and_says_so(self):
@@ -124,16 +124,16 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("D_max_um2_s", cut.posterior_D.message)
         self.assertEqual(wide.posterior_D.message, "")
 
-    def test_keep_posteriors_returns_ok_tracks_only(self):
+    def test_keep_likelihoods_returns_ok_tracks_only(self):
         good = table()
         short = table(2, track_id=9)
-        result = analyze_tracks(pl.concat([good, short]), Acquisition(.03), keep_posteriors=True)
-        post = result.posteriors
+        result = analyze_tracks(pl.concat([good, short]), Acquisition(.03), keep_likelihoods=True)
+        post = result.likelihoods
         self.assertEqual(post.track_ids.tolist(), [7])
         self.assertEqual(post.n_frames.tolist(), [good.height])
-        self.assertEqual(post.log_post_D.shape, (1, result.options.n_D))
-        np.testing.assert_allclose(post.log_post_D[0], analyze_track(good, Acquisition(.03)).log_post_D)
-        self.assertIsNone(analyze_tracks(good, Acquisition(.03)).posteriors)
+        self.assertEqual(post.loglik_D.shape, (1, result.options.n_D))
+        np.testing.assert_allclose(post.loglik_D[0], analyze_track(good, Acquisition(.03)).loglik_D)
+        self.assertIsNone(analyze_tracks(good, Acquisition(.03)).likelihoods)
 
     def test_thread_pool_map_matches_serial(self):
         """A caller's executor map gives the serial result, rows and progress in track order."""
@@ -142,20 +142,20 @@ class WorkflowTests(unittest.TestCase):
         zero = tracks.with_columns(pl.when(pl.col("track_id") == 4).then(0.).otherwise(pl.col("sigma_x_um"))
                                    .alias("sigma_x_um"))  # one invalid_input track
         acquisition = Acquisition(.03, .015)
-        serial = analyze_tracks(zero, acquisition, keep_posteriors=True)
+        serial = analyze_tracks(zero, acquisition, keep_likelihoods=True)
         calls = []
         with ThreadPoolExecutor(4) as pool:
-            threaded = analyze_tracks(zero, acquisition, keep_posteriors=True, map_fn=pool.map,
+            threaded = analyze_tracks(zero, acquisition, keep_likelihoods=True, map_fn=pool.map,
                                       progress=lambda done, total: calls.append(done))
         self.assertTrue(serial.fits.equals(threaded.fits))
         self.assertIn("invalid_input", serial.fits["status"].to_list())
-        np.testing.assert_array_equal(serial.posteriors.log_post_D, threaded.posteriors.log_post_D)
-        np.testing.assert_array_equal(serial.posteriors.track_ids, threaded.posteriors.track_ids)
+        np.testing.assert_array_equal(serial.likelihoods.loglik_D, threaded.likelihoods.loglik_D)
+        np.testing.assert_array_equal(serial.likelihoods.track_ids, threaded.likelihoods.track_ids)
         self.assertEqual(calls, list(range(7)))
 
-    def test_keep_posteriors_empty_keeps_grid_width(self):
-        result = analyze_tracks(table(2), Acquisition(.03), GridPostOptions(n_D=11), keep_posteriors=True)
-        self.assertEqual(result.posteriors.log_post_D.shape, (0, 11))
+    def test_keep_likelihoods_empty_keeps_grid_width(self):
+        result = analyze_tracks(table(2), Acquisition(.03), GridPostOptions(n_D=11), keep_likelihoods=True)
+        self.assertEqual(result.likelihoods.loglik_D.shape, (0, 11))
 
     def test_invalid_grid_options_raise(self):
         for bad in (dict(D_min_um2_s=0.), dict(D_min_um2_s=1., D_max_um2_s=.5), dict(D_max_um2_s=np.inf),

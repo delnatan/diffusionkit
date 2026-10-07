@@ -19,7 +19,7 @@ U = GridPostOptions().u_D()
 
 
 def fitted(table, options=GridPostOptions()):
-    return analyze_tracks(table, Acquisition(DT), options, keep_posteriors=True)
+    return analyze_tracks(table, Acquisition(DT), options, keep_likelihoods=True)
 
 
 def track_table(track_id, frames, positions, sd):
@@ -78,11 +78,11 @@ class DeconvolveTests(unittest.TestCase):
         self.assertAlmostEqual(result.weights.sum(), 1., places=8)
         self.assertEqual(len(result.weights), len(result.u))
 
-    def test_built_from_the_kept_posteriors_as_likelihoods(self):
+    def test_built_from_the_kept_likelihoods(self):
         rng = np.random.default_rng(8)
         table = simulated_table([.02, .05, .2, .5], rng, track_id0=0)
         with self.assertRaises(ValueError):
-            D.deconvolve_tracks(analyze_tracks(table, Acquisition(DT)))  # posteriors not kept
+            D.deconvolve_tracks(analyze_tracks(table, Acquisition(DT)))  # likelihoods not kept
         result = D.deconvolve_tracks(fitted(table), n_samples=100)
         lls = np.array([P.track_loglik(g, Acquisition(DT), U) for g in table.partition_by("track_id", maintain_order=True)])
         direct = D.deconvolve(lls, U, n_samples=100)

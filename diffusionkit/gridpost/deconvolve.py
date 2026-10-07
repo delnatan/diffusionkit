@@ -61,7 +61,7 @@ from scipy.linalg import solve_triangular
 from scipy.optimize import minimize_scalar
 
 from ..data import Acquisition
-from .data import GridPosteriorAnalysis
+from .data import GridDistribution, GridPosteriorAnalysis
 from .posterior import flat
 
 EPS = 1e-6  # prior precision on log g's unpenalized linear tilt: there only so the evidence is proper
@@ -71,37 +71,24 @@ TINY = 1e-300
 
 
 @dataclass(frozen=True)
-class Deconvolution:
-    """Distribution of a parameter across tracks on grid `u`; zero off the prior's support."""
+class Deconvolution(GridDistribution):
+    """Distribution of a parameter across tracks on grid `u`; zero off the prior's support.
 
-    u: np.ndarray
-    weights: np.ndarray       # posterior mode at lam, sums to 1
-    samples: np.ndarray       # (n_samples, len(u)) draws of the weights, lam integrated out
+    `weights` is the posterior mode at lam; `samples` are draws of the weights, lam integrated out.
+    """
+
     lam: float                # smoothness at the evidence maximum
     lam_grid: np.ndarray      # scanned lam, descending
     log_evidence: np.ndarray  # Laplace log evidence on lam_grid
 
-    def band(self, level: float = .68, cumulative: bool = False) -> tuple[np.ndarray, np.ndarray]:
-        """Pointwise (lower, upper) equal-tailed band of the weights, or of their cumulative sum."""
-        s = np.cumsum(self.samples, axis=1) if cumulative else self.samples
-        q = (1 - level) / 2
-        lo, hi = np.quantile(s, [q, 1 - q], axis=0)
-        return lo, hi
-
-    def mass(self, lo: float = 0., hi: float = np.inf) -> np.ndarray:
-        """(n_samples,) draws of the mass with lo <= D < hi (the parameter's own units, not ln), whole grid cells."""
-        with np.errstate(divide="ignore"):
-            inside = (self.u >= np.log(lo)) & (self.u < np.log(hi))
-        return self.samples[:, inside].sum(axis=1)
-
 
 @dataclass(frozen=True)
-class PopulationDistribution(Deconvolution):
-    """Distribution of D across a table of tracks, on `u` = ln D."""
+class DeconvolvedPopulation(Deconvolution):
+    """Distribution of D across a table of tracks, on `u` = ln D (`deconvolve_tracks`)."""
 
     n_tracks: int  # tracks that contributed a likelihood
     n_excluded: int  # too short (< options.min_frames) or invalid input
-    acquisition: Acquisition | None  # None when pooled across experiments with different acquisitions
+    acquisition: Acquisition | None  # None when combined across experiments with different acquisitions
 
 
 @dataclass
@@ -333,22 +320,22 @@ def deconvolve_tracks(
     log_prior: np.ndarray | None = None,
     n_samples: int = 1000,
     rng: np.random.Generator | None = None,
-) -> PopulationDistribution:
-    """Distribution of D across the tracks of `analyze_tracks(..., keep_posteriors=True)`, on its grid.
+) -> DeconvolvedPopulation:
+    """Distribution of D across the tracks of `analyze_tracks(..., keep_likelihoods=True)`, on its grid.
 
-    Built from the per-track posteriors the analysis kept: their prior is flat in ln D, so each
-    row is the track's likelihood up to a constant, which the fit ignores. `log_prior` (on
-    `analysis.options.u_D()`) only sets the support, and defaults to the whole grid. Tracks
-    without an "ok" posterior (too short, invalid input) are counted in `n_excluded`.
+    Built from the per-track log-likelihood rows the analysis kept; their per-row constant is
+    ignored. `log_prior` (on `analysis.options.u_D()`) only sets the support, and defaults to the
+    whole grid. Tracks without an "ok" likelihood (too short, invalid input) are counted in
+    `n_excluded`.
     """
-    if analysis.posteriors is None:
-        raise ValueError("deconvolve_tracks needs the per-track posteriors: analyze_tracks(..., keep_posteriors=True)")
-    lls = analysis.posteriors.log_post_D
+    if analysis.likelihoods is None:
+        raise ValueError("deconvolve_tracks needs the per-track likelihoods: analyze_tracks(..., keep_likelihoods=True)")
+    lls = analysis.likelihoods.loglik_D
     if not len(lls):
         raise ValueError("no track had enough frames and valid input to contribute")
     u = analysis.options.u_D()
     prior = flat(u) if log_prior is None else log_prior
     fit = deconvolve(lls, u, prior, n_samples=n_samples, rng=rng)
-    return PopulationDistribution(**{f.name: getattr(fit, f.name) for f in fields(fit)},
+    return DeconvolvedPopulation(**{f.name: getattr(fit, f.name) for f in fields(fit)},
                                   n_tracks=len(lls), n_excluded=analysis.fits.height - len(lls),
                                   acquisition=analysis.acquisition)

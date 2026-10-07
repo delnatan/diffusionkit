@@ -100,8 +100,8 @@ is cut by a grid edge (edge weight above 5% of the peak) says so in
 per-movie tables above, concatenated, with `sample` and `experiment` as the
 first two columns; a track is identified by (`experiment`, `track_id`), and
 `track_id` repeats across movies. Alongside: `options`, `acquisitions` (by
-experiment name) and `samples` (experiment -> sample). `GridPostBatch.posteriors`
-holds the kept per-track log posteriors with `sample` and `experiment` name
+experiment name) and `samples` (experiment -> sample). `GridPostBatch.likelihoods`
+holds the kept per-track log-likelihoods with `sample` and `experiment` name
 arrays aligned to its rows.
 
 ### EnsembleMSD.curves -- one row per group and lag

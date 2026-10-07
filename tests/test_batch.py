@@ -44,10 +44,10 @@ class GridPostBatchTests(unittest.TestCase):
 
     def test_matches_single_movie(self):
         for e in self.exps:
-            direct = gridpost.analyze_tracks(e.tracks, e.acquisition, self.batch.options, keep_posteriors=True)
+            direct = gridpost.analyze_tracks(e.tracks, e.acquisition, self.batch.options, keep_likelihoods=True)
             sel = self.batch.select(experiment=e.name)
             self.assertEqual(sel.fits.drop("sample", "experiment").to_dicts(), direct.fits.to_dicts())
-            np.testing.assert_array_equal(sel.posteriors.log_post_D, direct.posteriors.log_post_D)
+            np.testing.assert_array_equal(sel.likelihoods.loglik_D, direct.likelihoods.loglik_D)
             self.assertEqual(sel.acquisition, e.acquisition)
 
     def test_labels_and_colliding_ids(self):
@@ -77,27 +77,43 @@ class GridPostBatchTests(unittest.TestCase):
         self.assertGreater(d.mean(), 1.)  # ~ln(20) apart
         self.assertEqual(set(self.batch.populations("all", n_samples=50)), {None})
 
+    def test_lognormal_populations_and_shared_D_separate_samples(self):
+        pops = self.batch.populations("sample", n_samples=50, model="lognormal")
+        self.assertEqual(list(pops), ["slow", "fast"])
+        self.assertEqual(pops["slow"].n_tracks, 80)
+        slow, fast = (pops[s].summary(.9)["D_median_um2_s"] for s in ("slow", "fast"))
+        self.assertLess(slow["lo"], .05)
+        self.assertGreater(slow["hi"], .05)
+        self.assertGreater(fast["lo"], .5)
+        self.assertGreater(gridpost.cdf_distance(pops["slow"], pops["fast"]).mean(), 1.)
+        shared = self.batch.shared_D("experiment")
+        self.assertEqual(list(shared), ["a1", "a2", "b1"])
+        self.assertLess(shared["a1"].summary()["lo"], .05)
+        self.assertGreater(shared["a1"].summary()["hi"], .05)
+        with self.assertRaisesRegex(ValueError, "model must be"):
+            self.batch.populations(model="histogram")
+
     def test_from_analyses_restored_pieces_match(self):
-        analyses = {e.name: gridpost.analyze_tracks(e.tracks, e.acquisition, self.batch.options, keep_posteriors=True)
+        analyses = {e.name: gridpost.analyze_tracks(e.tracks, e.acquisition, self.batch.options, keep_likelihoods=True)
                     for e in self.exps}
         rebuilt = gridpost.GridPostBatch.from_analyses(analyses, {"a1": "slow", "a2": "slow", "b1": "fast"})
         self.assertEqual(rebuilt.fits.to_dicts(), self.batch.fits.to_dicts())
-        np.testing.assert_array_equal(rebuilt.posteriors.log_post_D, self.batch.posteriors.log_post_D)
-        other = gridpost.analyze_tracks(self.exps[0].tracks, ACQ, gridpost.GridPostOptions(n_D=61), keep_posteriors=True)
+        np.testing.assert_array_equal(rebuilt.likelihoods.loglik_D, self.batch.likelihoods.loglik_D)
+        other = gridpost.analyze_tracks(self.exps[0].tracks, ACQ, gridpost.GridPostOptions(n_D=61), keep_likelihoods=True)
         with self.assertRaisesRegex(ValueError, "different GridPostOptions"):
             gridpost.GridPostBatch.from_analyses({"a1": analyses["a1"], "x": other})
         bare = gridpost.analyze_tracks(self.exps[0].tracks, ACQ, self.batch.options)
-        with self.assertRaisesRegex(ValueError, "kept no posteriors"):
+        with self.assertRaisesRegex(ValueError, "kept no likelihoods"):
             gridpost.GridPostBatch.from_analyses({"a1": bare})
 
-    def test_without_posteriors(self):
-        batch = gridpost.analyze_experiments(self.exps[:1], keep_posteriors=False)
-        with self.assertRaisesRegex(ValueError, "keep_posteriors"):
+    def test_without_likelihoods(self):
+        batch = gridpost.analyze_experiments(self.exps[:1], keep_likelihoods=False)
+        with self.assertRaisesRegex(ValueError, "keep_likelihoods"):
             batch.select()
 
     def test_by_track_length_takes_a_selection(self):
         sel = self.batch.select(sample="slow")
-        comp = gridpost.by_track_length(sel.posteriors, self.batch.options.u_D())
+        comp = gridpost.by_track_length(sel.likelihoods, self.batch.options.u_D())
         self.assertEqual(comp.n_tracks.sum(), 80)
 
 

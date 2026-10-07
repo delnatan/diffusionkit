@@ -92,7 +92,7 @@ def replicate(comps, cut, rng):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         tracks = simulate(sample_D(comps, N_TRACKS, rng), rng)
-        r = deconvolve_tracks(analyze_tracks(tracks, Acquisition(DT), keep_posteriors=True), rng=rng)
+        r = deconvolve_tracks(analyze_tracks(tracks, Acquisition(DT), keep_likelihoods=True), rng=rng)
     u0 = np.log(CHECK_D)
     truth = true_cdf(comps, u0)
     fine = np.linspace(LO - 1, HI + 1, 2001)

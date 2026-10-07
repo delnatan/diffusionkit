@@ -89,10 +89,12 @@ with ThreadPoolExecutor(8) as pool:
 
 ```python
 import numpy as np
-from diffusionkit.gridpost import analyze_tracks, by_track_length, deconvolve_tracks
+from diffusionkit.gridpost import analyze_tracks, by_track_length, deconvolve_tracks, lognormal_tracks
 
-result = analyze_tracks(tracks, Acquisition(dt_s=.033, exposure_s=.03), keep_posteriors=True)
-pop = deconvolve_tracks(result)       # built from the kept per-track posteriors
+result = analyze_tracks(tracks, Acquisition(dt_s=.033, exposure_s=.03), keep_likelihoods=True)
+logn = lognormal_tracks(result)       # ln D ~ N(mu, sigma) across tracks, from the kept likelihoods
+logn.summary(.9)["sigma_ln_D"]        # the spread; near 0: one shared D describes the tracks
+pop = deconvolve_tracks(result)       # any shape, from the same likelihoods
 pop.u, pop.weights                    # ln D grid, distribution (sums to 1)
 lo, hi = pop.band(.68)                # pointwise band on the weights
 lo, hi = pop.band(.95, cumulative=True)
@@ -108,11 +110,11 @@ bands widen because the tracks cannot tell those D values apart.
 ### Split by track length
 
 ```python
-comp = by_track_length(result.posteriors, result.options.u_D(), pop, weight="detections")
+comp = by_track_length(result.likelihoods, result.options.u_D(), pop, weight="detections")
 comp.labels(), comp.n_tracks, comp.n_detections   # the groups: '3', '5-6', '25+', ...
-comp.pooled                  # (groups, grid): flat-prior posteriors summed per group
-comp.deconvolved             # (draws, groups, grid): each track's posterior under a draw of pop
-comp.deconvolved[:, :, comp.u < np.log(.035)].sum(2)   # mass below 0.035 per group, one row per draw
+comp.unpooled                # (groups, grid): flat-prior posteriors summed per group
+comp.partially_pooled        # (draws, groups, grid): each track's posterior under a draw of pop
+comp.partially_pooled[:, :, comp.u < np.log(.035)].sum(2)   # mass below 0.035 per group, one row per draw
 
 from diffusionkit.gridpost.viz import plot_by_track_length   # needs the plots extra
 fig = plot_by_track_length(comp, result.fits["D_floor_um2_s"].drop_nulls().to_numpy())
@@ -121,7 +123,7 @@ fig = plot_by_track_length(comp, result.fits["D_floor_um2_s"].drop_nulls().to_nu
 Fast particles leave the focal depth within a few frames, so short tracks come
 mostly from fast particles and long tracks from slow ones. The groups add up to
 the whole distribution. With `weight="tracks"` they are fractions of tracks, and
-the deconvolved groups add up to about the population. With
+the partially pooled groups add up to about the population. With
 `weight="detections"` each track counts once per frame, which gives the
 composition of the spots seen in focus.
 
@@ -158,7 +160,7 @@ acq = Acquisition(dt_s=.02, exposure_s=.01)
 experiments = [Experiment(name, table, acq, sample=sample)
                for name, sample, table in movies]          # track_id need only be unique within a movie
 
-batch = gridpost.analyze_experiments(experiments)           # labelled fits + stacked posteriors
+batch = gridpost.analyze_experiments(experiments)           # labelled fits + stacked likelihoods
 batch.fits.group_by("sample").agg(pl.col("D_post_median_um2_s").median())   # per-track table, grouped any way
 pops = batch.populations("sample")                          # D distribution per sample, with bands
 reps = batch.populations("experiment")                      # per replicate
@@ -177,12 +179,12 @@ ens.fit(5, offset="provided")                               # supplied SDs inste
 Steps are separable: `analyze_experiments` is the expensive part, and what
 you do after it (groupings, populations, comparisons, plots) only reads its
 result, so a different grouping never refits a track. Save `batch.fits`,
-`batch.options` and `batch.acquisitions` together; the kept posteriors
-(`batch.posteriors`) are the large part and can be recomputed.
+`batch.options` and `batch.acquisitions` together; the kept likelihoods
+(`batch.likelihoods`) are the large part and can be recomputed.
 
 To compare samples, draw each population's mass over a range with
 `pop.mass(lo, hi)` and difference the draws, or use
 `gridpost.cdf_distance` against the replicate-to-replicate distances. The
-pooled `fits` table's `D_post_median_um2_s` is a per-track summary; a histogram
+batch `fits` table's `D_post_median_um2_s` is a per-track summary; a histogram
 of those medians is not the population (a short track's median sits near its
 prior), which is what `populations` is for.

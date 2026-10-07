@@ -8,13 +8,15 @@ table format and one `Acquisition`; use any one without the others.
 
 | module | question it answers | per track | across experiments | extra deps |
 |---|---|---|---|---|
-| `gridpost` (recommended) | how fast is each track, and how is `D` distributed? | exact grid posterior over `D`, information, localization floor | pooled posteriors; `D` distribution per sample or replicate with bands; split by track length | none |
+| `gridpost` (recommended) | how fast is each track, and how is `D` distributed? | exact grid posterior over `D`, information, localization floor | shared `D`; log-normal or free-shape `D` distribution per sample or replicate, with intervals; split by track length | none |
 | `classic` | what do MSD fits say? | MSD curve, linear `D` and power-law `K`/alpha (the only place alpha is reported) | ensemble MSD vs lag per sample, fitted, with a cluster-bootstrap interval | none |
 | `drift` | what motion do all tracks share? | | one drift field per movie, subtracted before the above | none |
 | `bayes` | what does one weak track's full posterior look like? | NUTS via NumPyro, a diagnostic | not provided | `bayes` |
 
 Everything that is not per-track is built from per-track results or tables,
-never from a pooled re-fit that forgets which track a number came from. The
+never from a re-fit of merged data that forgets which track a number came from.
+Tracks are combined by adding their log-likelihoods under a population model,
+never by averaging their posteriors or histogramming their medians. The
 napari plugin [napari-gemscape2](https://github.com/delnatan/napari-gemscape2)
 runs `gridpost` on its tracks. No workflow carries a calibration claim on
 experimental tracks: the intervals are checked in simulation under the model.
@@ -138,8 +140,9 @@ consecutive displacements, using each frame's localization SD and a flat
 defaults shown). That range is the prior's support, so it is part of the
 analysis: every gridpost function reads it from `GridPostOptions` (or takes
 the grid array explicitly), and a posterior cut by an edge says so in its
-row's `message`. `analyze_tracks(..., keep_posteriors=True)` also returns
-each track's full log posterior (`result.posteriors`). There is no lag window. This is the
+row's `message`. `analyze_tracks(..., keep_likelihoods=True)` also returns
+each track's log-likelihood on the grid (`result.likelihoods`), what tracks are
+combined from. There is no lag window. This is the
 per-track information to report for `D`: a short, uninformative track
 produces a wide posterior rather than a falsely confident point estimate (see
 [docs/gridpost.md](docs/gridpost.md)). The motion's shape (alpha) is not part of
@@ -162,12 +165,23 @@ carry, likely from the spot smearing during the exposure) turns D = 0.3 into
 ## Distribution of D across tracks, and by track length
 
 ```python
-from diffusionkit.gridpost import analyze_tracks, by_track_length, deconvolve_tracks
+from diffusionkit.gridpost import (analyze_tracks, by_track_length, deconvolve_tracks, lognormal_tracks,
+                                   shared_D_tracks)
 
-result = analyze_tracks(tracks, acquisition, keep_posteriors=True)
-pop = deconvolve_tracks(result)          # how D is distributed across the tracks
-comp = by_track_length(result.posteriors, result.options.u_D(), pop, weight="detections")
+result = analyze_tracks(tracks, acquisition, keep_likelihoods=True)
+shared = shared_D_tracks(result)         # complete pooling: one D for every track
+logn = lognormal_tracks(result)          # partial pooling: ln D ~ N(mu, sigma) across tracks
+logn.summary(.9)                         # median D, spread sigma, mean D, each with its interval
+pop = deconvolve_tracks(result)          # partial pooling, any shape: how D is distributed
+comp = by_track_length(result.likelihoods, result.options.u_D(), pop, weight="detections")
 ```
+
+Each is built from every track's log-likelihood on the D grid, the tracks'
+logs added under a model of the population: one D for all (`shared_D_tracks`;
+when the tracks differ it lands near their mean D, with an interval that is
+too narrow), a log-normal (`lognormal_tracks`, whose sigma says whether they
+differ), or a smooth density of any shape (`deconvolve_tracks`). See
+[docs/gridpost.md](docs/gridpost.md#combining-tracks-no-complete-and-partial-pooling).
 
 `deconvolve_tracks` is a population-level comparator to an ensemble MSD fit,
 not a replacement for the per-track posteriors: it estimates how `D` is
@@ -177,8 +191,9 @@ whose smoothness is chosen by the data (Laplace evidence), and `samples` are
 posterior draws of the whole distribution, so any band or mass comes with an
 interval (`pop.band(.68, cumulative=True)`).
 
-`by_track_length` splits the pooled and the deconvolved distribution into
-track-length groups. Fast particles leave the focal depth within a few frames,
+`by_track_length` splits the unpooled (the tracks' own posteriors) and the
+partially pooled distribution (each track's posterior under the population)
+into track-length groups. Fast particles leave the focal depth within a few frames,
 so short tracks come mostly from fast particles and long tracks from slow ones.
 Counted per track, the groups add up to the distribution; counted per detection
 (each track once per frame), they give the make-up of the spots seen in focus,
@@ -217,24 +232,26 @@ with ThreadPoolExecutor(8) as pool:                      # one pool serves every
     batch = analyze_experiments(experiments, map_fn=pool.map)
 
 batch.fits                                  # every track of every movie, labelled
-pops = batch.populations("sample")          # {"wt": PopulationDistribution, "mut": ...}
+pops = batch.populations("sample")          # {"wt": DeconvolvedPopulation, "mut": ...}
 reps = batch.populations("experiment")      # one per movie: do the replicates agree?
-pooled = batch.populations("all")[None]     # everything, one distribution
+together = batch.populations("all")[None]   # everything, one distribution
+logn = batch.populations("experiment", model="lognormal")   # median D and spread per replicate
+batch.shared_D("sample")                    # one D per sample (complete pooling)
 
 pops["wt"].mass(0, .035)                    # draws of the mass below 0.035 um^2/s: any interval
 pops["wt"].mass(0, .035) - pops["mut"].mass(0, .035)   # the difference, with its uncertainty
 cdf_distance(pops["wt"], pops["mut"])       # draws of the W1 distance in ln D
 sel = batch.select(sample="wt")             # a GridPosteriorAnalysis: feed it to by_track_length etc.
-by_track_length(sel.posteriors, batch.options.u_D(), pops["wt"])
+by_track_length(sel.likelihoods, batch.options.u_D(), pops["wt"])
 ```
 
 `batch.select(...)` is the seam: it returns the same `GridPosteriorAnalysis`
 a single movie does, so every function that reads one (`deconvolve_tracks`,
 `by_track_length`, the plots) reads a sample or a replicate unchanged. What
-is combined is the kept per-track log posteriors, which are the tracks'
-likelihoods on the one `D` grid; every movie must therefore use the same
-`GridPostOptions`, and the `D_post_info_bits` are comparable. Replicates of a
-sample are pooled by summing their tracks' likelihoods in a single fit, so
+is combined is the kept per-track log-likelihoods on the one `D` grid; every
+movie must therefore use the same `GridPostOptions`, and the
+`D_post_info_bits` are comparable. Replicates of a sample are combined by
+adding their tracks' log-likelihoods in a single fit, so
 each track counts once whatever movie it came from; run `by="experiment"`
 for the per-replicate view. `cdf_distance` between two samples means little
 alone, because two draws of the same population are still apart: compare it with the
@@ -242,7 +259,7 @@ replicate-to-replicate distances inside a sample.
 `gridpost.viz.plot_populations(pops)` overlays the distributions and their bands.
 A batch need not come from `analyze_experiments`: `GridPostBatch.from_analyses({name: analysis}, {name: sample})`
 assembles one from per-experiment `GridPosteriorAnalysis`es obtained any way, such as posteriors restored from
-disk (they must share one `GridPostOptions`), so pooling never forces a refit.
+disk (they must share one `GridPostOptions`), so combining never forces a refit.
 
 ### Ensemble-averaged MSD over experiments
 
@@ -341,13 +358,14 @@ Trajectory data is a `polars.DataFrame` (`track_id`, `frame`, `x_um`, `y_um`,
 object. Plain dataclasses hold only per-analysis metadata and results:
 `Acquisition` and `Experiment` (shared), `MSDOptions`, `MSDCurve`, `MSDFit`,
 `ClassicBatch`, `EnsembleMSD` (classic), `GridPostOptions`, `PosteriorD`,
-`PopulationDistribution`, `LengthComposition`, `GridPostBatch` (gridpost) and
+`GridLikelihoods`, `SharedD`, `LogNormalPopulation`, `DeconvolvedPopulation`,
+`LengthComposition`, `GridPostBatch` (gridpost) and
 `Drift` (drift). Standalone
 functions validate the table, compute MSD or the grid posteriors, and fit or
 summarize them. `diffusionkit.io.validated_track_frame` is the single
 validation boundary every per-track algorithm calls first. The batch layer sits on top: `analyze_experiments` calls the per-movie
 `analyze_tracks` and labels its tables, and the combined reads take its tables
-or kept posteriors; nothing in it re-reads raw tracks. No GUI, file
+or kept likelihoods; nothing in it re-reads raw tracks. No GUI, file
 writing, global JAX settings, or worker creation is part of `classic`,
 `gridpost` or `drift` (a pool is passed in as `map_fn`, and owned by the caller).
 
