@@ -36,6 +36,7 @@ from scipy.special import logsumexp, ndtr
 
 from ..data import Acquisition
 from .data import GridDistribution, GridPosteriorAnalysis
+from .posterior import EDGE_RATIO_WARN
 
 SIGMA_MAX = 3.  # sigma's prior bound in ln D: a 90% range of e^(2 * 1.645 * 3), over four decades
 N_MU, N_SIGMA = 61, 41  # the (mu, sigma) posterior grid
@@ -265,8 +266,9 @@ def fit_lognormal(lls: np.ndarray, u: np.ndarray, sigma_max: float = SIGMA_MAX, 
     """Partial pooling: the posterior of a log-normal distribution of D across tracks, from per-track
     log-likelihood rows on the evenly spaced ln D grid `u`.
 
-    Priors: mu flat over the grid, sigma flat on [0, `sigma_max`]. A posterior that reaches either
-    bound depends on it, and says so in `problem` (with a warning). `rng` (default: seeded) draws
+    Priors: mu flat over the grid, sigma flat on [0, `sigma_max`]. A posterior cut by either bound
+    (its marginal there above `posterior.EDGE_RATIO_WARN` of its peak) depends on it, and says so
+    in `problem` (with a warning). `rng` (default: seeded) draws
     `samples`. A track with a flat likelihood row leaves the posterior unchanged.
     """
     lls, u = _check(lls, u)
@@ -276,11 +278,13 @@ def fit_lognormal(lls: np.ndarray, u: np.ndarray, sigma_max: float = SIGMA_MAX, 
     mu, sigma, lp = _zoom(L, u, sigma_max)
     log_post = lp - logsumexp(lp)
 
-    near = log_post >= log_post.max() - DROP
+    # Cut by a prior bound: the marginal there above `EDGE_RATIO_WARN` of its peak, as for a track's posterior.
+    cut = np.log(EDGE_RATIO_WARN)
+    m_mu, m_sigma = logsumexp(log_post, axis=1), logsumexp(log_post, axis=0)
     problems = []
-    if near[:, -1].any() and sigma[-1] >= sigma_max:
+    if sigma[-1] >= sigma_max and m_sigma[-1] - m_sigma.max() > cut:
         problems.append(f"sigma reaches its prior bound sigma_max={sigma_max:g}")
-    if (near[0].any() and mu[0] <= u[0]) or (near[-1].any() and mu[-1] >= u[-1]):
+    if (mu[0] <= u[0] and m_mu[0] - m_mu.max() > cut) or (mu[-1] >= u[-1] and m_mu[-1] - m_mu.max() > cut):
         problems.append("mu reaches the D grid's end")
     problem = "; ".join(problems)
     if problem:
