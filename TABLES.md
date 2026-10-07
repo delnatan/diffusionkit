@@ -73,7 +73,7 @@ Posterior columns (see [docs/gridpost.md](docs/gridpost.md)), null unless `statu
 
 | Column | Meaning |
 | --- | --- |
-| `D_post_median_um2_s` | Posterior 0.5 quantile (median) of D under a flat prior in ln D over `[GridPostOptions.D_min_um2_s, D_max_um2_s]` |
+| `D_post_mean_um2_s` | Posterior mean E[D], the one point estimate, under a flat prior in ln D over `[GridPostOptions.D_min_um2_s, D_max_um2_s]`; reads high for short tracks by about 1/(n - 2), so do not average it over tracks (use a population model) |
 | `D_post_lo_um2_s`, `D_post_hi_um2_s` | Posterior quantiles at `(1-level)/2` and `(1+level)/2` (`GridPostOptions.level`, default 0.9: an equal-tailed 90% interval) |
 | `D_post_info_bits` | Information the track gave about D: relative entropy KL(posterior \|\| prior) in bits, prior flat in ln D over the grid. 0 = data left the prior unchanged; each bit is about a halving of the plausible ln D range. Comparable only between runs on the same `[D_min_um2_s, D_max_um2_s]` |
 | `D_floor_um2_s` | Localization floor: the D at which a displacement's motion variance equals its localization noise, `<s^2> / (dt - exposure/3)`, `<s^2>` the track's mean per-frame localization variance over both axes (`posterior.localization_floor`). A reference scale to show next to D, not a mobility threshold. Scales with the square of the reported SDs |
@@ -86,7 +86,10 @@ Gaussian sigma wouldn't describe them well anyway.
 
 Uncomputable parameters are null. An `ok` `posterior_D` row whose posterior
 is cut by a grid edge (edge weight above 5% of the peak) says so in
-`message`: its summary then depends on where that edge is. `status` values:
+`message` and in `D_grid_edge`: "low" (the data only bound D from above:
+read the row as upper bounds), "high" (only from below), "both" (a flat
+posterior, no information), null otherwise. Its summary then depends on
+where that edge is. `status` values:
 
 | Status | Meaning |
 | --- | --- |

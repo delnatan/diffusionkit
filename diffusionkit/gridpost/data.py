@@ -42,7 +42,7 @@ class GridPostOptions:
 @dataclass(frozen=True)
 class PosteriorD:
     PARAMETERS: ClassVar[tuple[str, ...]] = (
-        "D_post_median_um2_s", "D_post_lo_um2_s", "D_post_hi_um2_s", "D_post_info_bits",
+        "D_post_mean_um2_s", "D_post_lo_um2_s", "D_post_hi_um2_s", "D_post_info_bits",
         "D_floor_um2_s")
     parameters: dict[str, float | None]
     status: str
@@ -50,6 +50,7 @@ class PosteriorD:
     model: str = "posterior_D"
     method: str = "grid_posterior"
     uncertainty_method: str = "credible_interval"
+    grid_edge: str | None = None  # `posterior.grid_edge`: "low", "high", "both", or None
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,25 @@ class GridDistribution:
         with np.errstate(divide="ignore"):
             inside = (self.u >= np.log(lo)) & (self.u < np.log(hi))
         return self.samples[:, inside].sum(axis=1)
+
+    def partially_pooled_means(self, loglik_D: np.ndarray, n_draws: int = 200) -> np.ndarray:
+        """(n_tracks,) each track's E[D] with this population as its prior (partial pooling), in the
+        parameter's own units: the mean of E[D | track, g] over `n_draws` evenly spaced draws of g,
+        so the population's own uncertainty is in it.
+
+        `loglik_D` are log-likelihood rows on `u` (any per-row constant). Unlike the flat-prior
+        E[D], it does not depend on the grid's edges (the population has no mass there), and its
+        average over the tracks the population was fitted to is the population's mean. It is not
+        the track's own number, though: it borrows from the population, so it moves with which
+        tracks make up the population and with the population model.
+        """
+        lls = np.asarray(loglik_D, float)
+        if lls.ndim != 2 or lls.shape[1] != len(self.u):
+            raise ValueError(f"loglik_D must be (n_tracks, {len(self.u)}), got {lls.shape}")
+        L = np.exp(lls - lls.max(axis=1, keepdims=True))
+        pick = np.linspace(0, len(self.samples) - 1, min(n_draws, len(self.samples))).round().astype(int)
+        G = self.samples[pick].T  # (len(u), n_draws)
+        return ((L @ (G * np.exp(self.u)[:, None])) / np.maximum(L @ G, 1e-300)).mean(axis=1)
 
 
 @dataclass(frozen=True)

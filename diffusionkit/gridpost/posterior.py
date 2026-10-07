@@ -138,15 +138,36 @@ def edge_ratios(p: np.ndarray) -> tuple[float, float]:
 EDGE_RATIO_WARN = .05
 
 
+def grid_edge(p: np.ndarray) -> str | None:
+    """Which grid edge cuts the posterior: "low" (the data only bound D from above, so read its
+    values as upper bounds), "high" (only from below), "both" (it is flat: no information), or
+    None."""
+    low, high = (r > EDGE_RATIO_WARN for r in edge_ratios(p))
+    return {(True, False): "low", (False, True): "high", (True, True): "both"}.get((low, high))
+
+
 def quantile(p: np.ndarray, q: float, u: np.ndarray) -> float:
     """Posterior q-quantile of D, interpolating the CDF at cell midpoints."""
     return float(np.exp(_grid_quantile(p, u, q)))
 
 
+def mean(p: np.ndarray, u: np.ndarray) -> float:
+    """Posterior mean of D, E[D], in um^2/s."""
+    return float(p @ np.exp(u))
+
+
 def summary(p: np.ndarray, u: np.ndarray, level: float = .9) -> dict[str, float]:
-    """Median and equal-tailed credible interval of D, in um^2/s."""
+    """Posterior mean E[D] and equal-tailed credible interval of D, in um^2/s.
+
+    The mean is the one point estimate: of the summaries of a posterior cut by the grid's lower
+    edge (a track that only bounds D from above), it is the one the edge barely moves -- the mean
+    of a log-uniform stretch depends on its lower end only through a logarithm, where its median
+    moves with the square root of it. Under the flat prior in ln D (a 1/D prior on D) it reads
+    high for short tracks, by about 1/(n - 2) for n frames in the noise-free limit; an average
+    over tracks belongs to a population model (`lognormal`, `deconvolve`), not to this column.
+    """
     return {
-        "median": quantile(p, .5, u),
+        "mean": mean(p, u),
         "lo": quantile(p, (1 - level) / 2, u),
         "hi": quantile(p, (1 + level) / 2, u),
     }
@@ -154,7 +175,7 @@ def summary(p: np.ndarray, u: np.ndarray, level: float = .9) -> dict[str, float]
 
 def track_posterior(track: pl.DataFrame, acquisition: Acquisition, log_prior: np.ndarray | None = None,
                     options: GridPostOptions = GridPostOptions()) -> dict[str, float]:
-    """Posterior median and `options.level` credible interval of D for one track.
+    """Posterior mean E[D] and `options.level` credible interval of D for one track.
 
     Evaluated on `options.u_D()`. `log_prior` (on that grid) defaults to
     `flat` -- the least-informative choice, no empirical-Bayes fitting across

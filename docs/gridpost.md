@@ -34,9 +34,10 @@ in u is log-uniform in D (scale-invariant), and the posterior weights are
 over the whole grid -- the least-informative choice, no empirical-Bayes
 fitting across tracks. The grid's range, `[D_min_um2_s, D_max_um2_s]`
 (default 1e-5 to 10 um^2/s, 601 points), is therefore the prior's support:
-a posterior that has not died out by an edge is cut there, and its median
-and interval move with the edge. The workflow flags such tracks in
-`message` (`posterior.edge_ratios`); localization-limited, near-immobile
+a posterior that has not died out by an edge is cut there, and its summary
+moves with the edge. The workflow flags such tracks in `message` and in
+`D_grid_edge` (`posterior.grid_edge`: "low", "high" or "both");
+localization-limited, near-immobile
 tracks reach the lower edge this way, since their data only bound D from
 above. The default lower edge sits well below any localization floor so
 that such tracks fall into a low tail, read as upper bounds, rather than into
@@ -45,10 +46,19 @@ be told apart from their steps. No module-level grid exists to fall back on: the
 grids from `GridPostOptions`, and the lower-level functions take them as
 required arguments.
 
-`posterior.summary` reports the `(1-level)/2`/0.5/`(1+level)/2` quantiles of
-the posterior (`D_post_lo_um2_s`, `D_post_median_um2_s`, `D_post_hi_um2_s`;
-`GridPostOptions.level` defaults to 0.9) -- an equal-tailed credible interval
-read directly off the CDF, not a multiple of a standard deviation (a
+`posterior.summary` reports one point estimate, the posterior mean E[D]
+(`D_post_mean_um2_s`), and the `(1-level)/2` and `(1+level)/2` quantiles
+(`D_post_lo_um2_s`, `D_post_hi_um2_s`; `GridPostOptions.level` defaults to
+0.9). Of a posterior cut by the lower edge, E[D] is the summary the edge
+barely moves: in simulation (tracks of 5 frames at D = 0.002 um^2/s, 97% of
+them cut), moving `D_min_um2_s` from 1e-5 to 1e-7 moves the median about 10x
+and E[D] 1.6x. Its cost is that under the flat prior in ln D (a 1/D prior on
+D) it reads high for short tracks, by about 1/(n - 2) for n frames (+31% at
+5 frames, about x2 at 3) where the median is within a few percent -- so a
+column of per-track E[D] is not to be averaged: an average over tracks
+belongs to a population model (below). For a cut track, `D_grid_edge` says how
+to read it: "low", as an upper bound; "high", as a lower bound. The interval
+is equal-tailed, read directly off the CDF, not a multiple of a standard deviation (a
 normal's 90% equal-tailed interval is +/-1.645 SD, not +/-1 SD, and these
 posteriors are often far from normal on short tracks anyway). Localization
 SDs must be strictly positive and are treated as known. Unlike a point
@@ -150,7 +160,13 @@ leaves the result unchanged.
 The result is a `GridDistribution` like a deconvolution: `weights` (g at the
 posterior mode), `samples` (g at posterior draws of (mu, sigma), kept in
 `draws`), `band`, `mass`, `cdf_distance`, `by_track_length(..., population)`
-and `viz.plot_populations` all take it. `summary(level)` gives the median D,
+and `viz.plot_populations` all take it, and so does
+`partially_pooled_means(loglik_D)`: each track's E[D] with the population as
+its prior, which neither the grid's edges nor the flat prior's 1/D lean move
+(in simulation, its average over the tracks is the population's mean, and its
+error against each track's true D in ln D is less than half the flat-prior
+median's) -- but it borrows from the population, so it moves with which tracks
+make it up and with the model. `summary(level)` gives the median D,
 sigma and the mean D with equal-tailed intervals. When the truth is sigma = 0
 the posterior piles against that bound, so its equal-tailed interval never
 contains 0: read sigma's upper bound there.

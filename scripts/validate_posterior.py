@@ -33,11 +33,11 @@ def simulate(n, D, count, rng, dt=.033):
 
 
 def summarize(fits, D):
-    lo, hi, median = (fits[c].drop_nulls().to_numpy() for c in
-                      ("D_post_lo_um2_s", "D_post_hi_um2_s", "D_post_median_um2_s"))
-    return {"n_estimated": len(median), "status_counts": dict(Counter(fits["status"])),
-            "median_bias_ln": float(np.mean(np.log(median/D))) if len(median) else None,
-            "median_rmse_ln": float(np.sqrt(np.mean(np.log(median/D)**2))) if len(median) else None,
+    lo, hi, mean = (fits[c].drop_nulls().to_numpy() for c in
+                      ("D_post_lo_um2_s", "D_post_hi_um2_s", "D_post_mean_um2_s"))
+    return {"n_estimated": len(mean), "status_counts": dict(Counter(fits["status"])),
+            "mean_bias_ln": float(np.mean(np.log(mean/D))) if len(mean) else None,
+            "mean_rmse_ln": float(np.sqrt(np.mean(np.log(mean/D)**2))) if len(mean) else None,
             "coverage_90pct": float(np.mean((lo <= D) & (D <= hi))) if len(lo) else None}
 
 

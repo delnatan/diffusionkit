@@ -17,6 +17,7 @@ FIT_SCHEMA = {
     "method": pl.String, "status": pl.String, "message": pl.String,
     "uncertainty_method": pl.String,
     **{name: pl.Float64 for name in PosteriorD.PARAMETERS},
+    "D_grid_edge": pl.String,
 }
 
 
@@ -42,11 +43,11 @@ def _posterior_D_or_invalid(track: pl.DataFrame, acquisition: Acquisition,
         return PosteriorD(dict.fromkeys(PosteriorD.PARAMETERS), "invalid_input", str(exc)), None
     p = np.exp(lp)
     s = posterior_mod.summary(p, u, options.level)
-    return PosteriorD({"D_post_median_um2_s": s["median"], "D_post_lo_um2_s": s["lo"],
+    return PosteriorD({"D_post_mean_um2_s": s["mean"], "D_post_lo_um2_s": s["lo"],
                        "D_post_hi_um2_s": s["hi"],
                        "D_post_info_bits": posterior_mod.information_bits(lp, prior),
                        "D_floor_um2_s": posterior_mod.localization_floor(track, acquisition)},
-                      "ok", _edge_message(p, options)), lp
+                      "ok", _edge_message(p, options), grid_edge=posterior_mod.grid_edge(p)), lp
 
 
 def analyze_track(track: pl.DataFrame, acquisition: Acquisition,
@@ -55,7 +56,8 @@ def analyze_track(track: pl.DataFrame, acquisition: Acquisition,
 
     Invalid input raises; short tracks are explicit results. The posterior models
     `acquisition.exposure_s` as box-shutter blur. An "ok" posterior cut by a grid edge
-    (`posterior.edge_ratios`) says so in its message. The result carries an "ok"
+    (`posterior.edge_ratios`) says so in its message and in `grid_edge` ("low": read the values
+    as upper bounds; "high": as lower bounds). The result carries an "ok"
     track's normalized log-likelihood on the grid (`loglik_D`).
     """
     validate_acquisition(acquisition, allow_exposure=True)
@@ -117,7 +119,8 @@ def analyze_tracks(table: pl.DataFrame, acquisition: Acquisition,
         post = result.posterior_D
         fit_rows.append({"track_id": track_id, "n_frames": result.n_frames, "model": post.model,
                          "method": post.method, "status": post.status, "message": post.message,
-                         "uncertainty_method": post.uncertainty_method, **post.parameters})
+                         "uncertainty_method": post.uncertainty_method, **post.parameters,
+                         "D_grid_edge": post.grid_edge})
         if keep_likelihoods and result.loglik_D is not None:
             D_ids.append(track_id)
             D_frames.append(result.n_frames)

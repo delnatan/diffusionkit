@@ -66,7 +66,7 @@ below.
 from diffusionkit.gridpost import posterior as P
 
 s = P.track_posterior(one, Acquisition(dt_s=.033, exposure_s=.03))
-s["median"], s["lo"], s["hi"]   # D_post_median/lo/hi_um2_s, flat prior by default
+s["mean"], s["lo"], s["hi"]     # D_post_mean/lo/hi_um2_s: E[D] and the interval, flat prior by default
 ```
 
 Set `exposure_s` to the camera exposure; the posterior models the blur. This is the field also attached to
@@ -161,7 +161,7 @@ experiments = [Experiment(name, table, acq, sample=sample)
                for name, sample, table in movies]          # track_id need only be unique within a movie
 
 batch = gridpost.analyze_experiments(experiments)           # labelled fits + stacked likelihoods
-batch.fits.group_by("sample").agg(pl.col("D_post_median_um2_s").median())   # per-track table, grouped any way
+batch.fits.group_by("sample").agg(pl.col("D_grid_edge").is_not_null().sum())   # per-track table, grouped any way
 pops = batch.populations("sample")                          # D distribution per sample, with bands
 reps = batch.populations("experiment")                      # per replicate
 
@@ -185,6 +185,7 @@ result, so a different grouping never refits a track. Save `batch.fits`,
 To compare samples, draw each population's mass over a range with
 `pop.mass(lo, hi)` and difference the draws, or use
 `gridpost.cdf_distance` against the replicate-to-replicate distances. The
-batch `fits` table's `D_post_median_um2_s` is a per-track summary; a histogram
-of those medians is not the population (a short track's median sits near its
-prior), which is what `populations` is for.
+batch `fits` table's `D_post_mean_um2_s` is a per-track summary; a histogram
+or average of it is not the population (a short track's value leans on the
+flat prior), which is what `populations` is for. For a per-track value that
+borrows from the population, `pops["wt"].partially_pooled_means(sel.likelihoods.loglik_D)`.

@@ -202,6 +202,25 @@ class FromAnalysisTests(unittest.TestCase):
         self.assertEqual(comp.partially_pooled.shape[0], 10)
         np.testing.assert_allclose(comp.partially_pooled.sum(axis=(1, 2)), 1., atol=1e-10)
 
+    def test_partially_pooled_means_are_unbiased_on_average_and_ignore_the_grid_edge(self):
+        rng = np.random.default_rng(11)
+        D_true = np.exp(np.log(.03) + .8 * rng.standard_normal(400))
+        table = simulated_table(D_true, rng, frames=(4, 15))
+        lls = np.array([P.track_loglik(t, Acquisition(DT), U) for t in table.partition_by("track_id", maintain_order=True)])
+        pop = LN.fit_lognormal(lls, U, n_samples=100)
+        pooled = pop.partially_pooled_means(lls)
+        self.assertAlmostEqual(pooled.mean() / D_true.mean(), 1., delta=.1)
+        flat = np.exp(lls - logsumexp(lls, axis=1, keepdims=True)) @ np.exp(U)
+        error = lambda est: np.sqrt(np.mean(np.log(est / D_true) ** 2))
+        self.assertLess(error(pooled), .8 * error(flat))  # borrowing from the population helps short tracks
+        # A grid reaching 100x lower changes nothing: the population has no mass down there.
+        U2 = np.linspace(U[0] - np.log(100), U[-1], len(U) + 200)
+        lls2 = np.array([P.track_loglik(t, Acquisition(DT), U2) for t in table.partition_by("track_id", maintain_order=True)])
+        pooled2 = LN.fit_lognormal(lls2, U2, n_samples=100).partially_pooled_means(lls2)
+        np.testing.assert_allclose(pooled2, pooled, rtol=.02)
+        with self.assertRaises(ValueError):
+            pop.partially_pooled_means(lls[:, :-1])
+
     def test_needs_kept_likelihoods(self):
         bare = analyze_tracks(simulated_table([.05, .1], np.random.default_rng(0)), Acquisition(DT))
         for f in (LN.lognormal_tracks, LN.shared_D_tracks):

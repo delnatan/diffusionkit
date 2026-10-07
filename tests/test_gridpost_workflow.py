@@ -34,10 +34,10 @@ class WorkflowTests(unittest.TestCase):
         out = analyze_track(table(), acquisition, options)
         self.assertEqual(out.posterior_D.status, "ok")
         direct = P.track_posterior(table(), acquisition, options=options)
-        self.assertAlmostEqual(out.posterior_D.parameters["D_post_median_um2_s"], direct["median"], places=12)
+        self.assertAlmostEqual(out.posterior_D.parameters["D_post_mean_um2_s"], direct["mean"], places=12)
         unblurred = analyze_track(table(), Acquisition(.03), options)
-        self.assertNotAlmostEqual(out.posterior_D.parameters["D_post_median_um2_s"],
-                                  unblurred.posterior_D.parameters["D_post_median_um2_s"], places=6)
+        self.assertNotAlmostEqual(out.posterior_D.parameters["D_post_mean_um2_s"],
+                                  unblurred.posterior_D.parameters["D_post_mean_um2_s"], places=6)
 
     def test_zero_localization_sd_gives_invalid_input(self):
         zero = table().with_columns(pl.Series("sigma_x_um", np.zeros(5)))
@@ -108,21 +108,25 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(out.loglik_D.shape, (101,))
         u = options.u_D()
         expected = P.summary(P.posterior(P.track_loglik(t, Acquisition(.03), u), P.flat(u)), u, options.level)
-        self.assertAlmostEqual(out.posterior_D.parameters["D_post_median_um2_s"], expected["median"], places=12)
+        self.assertAlmostEqual(out.posterior_D.parameters["D_post_mean_um2_s"], expected["mean"], places=12)
         self.assertAlmostEqual(np.exp(out.loglik_D).sum(), 1., places=12)
         self.assertEqual(P.track_posterior(t, Acquisition(.03), options=options), expected)
 
     def test_narrow_grid_moves_the_summary_and_says_so(self):
-        """An upper edge below where the data put D cuts the posterior: the median sits
-        at the edge and the message names it."""
+        """An upper edge below where the data put D cuts the posterior: the summary sits
+        at the edge, and the message and grid_edge say which."""
         t = table(12)
         wide = analyze_track(t, Acquisition(.03))
-        D_med = wide.posterior_D.parameters["D_post_median_um2_s"]
-        cut = analyze_track(t, Acquisition(.03), GridPostOptions(D_max_um2_s=D_med / 3))
+        D_mean = wide.posterior_D.parameters["D_post_mean_um2_s"]
+        cut = analyze_track(t, Acquisition(.03), GridPostOptions(D_max_um2_s=D_mean / 3))
         self.assertEqual(cut.posterior_D.status, "ok")
-        self.assertLess(cut.posterior_D.parameters["D_post_hi_um2_s"], D_med / 3 + 1e-12)
+        self.assertLess(cut.posterior_D.parameters["D_post_hi_um2_s"], D_mean / 3 + 1e-12)
         self.assertIn("D_max_um2_s", cut.posterior_D.message)
+        self.assertEqual(cut.posterior_D.grid_edge, "high")
         self.assertEqual(wide.posterior_D.message, "")
+        self.assertIsNone(wide.posterior_D.grid_edge)
+        rows = analyze_tracks(t, Acquisition(.03), GridPostOptions(D_max_um2_s=D_mean / 3)).fits
+        self.assertEqual(rows["D_grid_edge"].to_list(), ["high"])
 
     def test_keep_likelihoods_returns_ok_tracks_only(self):
         good = table()
