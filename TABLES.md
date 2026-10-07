@@ -116,9 +116,12 @@ arrays aligned to its rows.
 | `localization_offset_um2` | The same weighted mean of the tracks' supplied-SD offsets; 0 when ignored |
 | `msd_se_um2` | Bootstrap SD of `msd_um2` over resamples; null without `n_boot` |
 
-### EnsembleMSD.fit(n_points, offset="fit", level=.9) -- one row per group and model
+### EnsembleMSD.fit(n_points, offset="fit", level=.9, *, alpha_points=None) -- one row per group and model
 
-`n_points` (required) lags are fitted. `model` is `linear` (`offset="fit"`, free
+The linear fit uses the first `n_points` (required) lags, the log-log fit the
+first `alpha_points` (default `n_points`); with `offset="fit"` the log-log fit
+subtracts the intercept of the linear fit over its own window. Each row's
+`n_points` is its own window. `model` is `linear` (`offset="fit"`, free
 intercept; `method` `msd_ols_intercept`) or `brownian` (`offset="provided"`),
 and `power_law` (`method` `msd_loglog`, after subtracting the offset). Columns:
 `group`, `model`, `method`, `status`, `message`, `n_lags` (points actually used),

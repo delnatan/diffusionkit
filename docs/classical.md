@@ -34,7 +34,8 @@ track's time average or an average over tracks. `compute_msd` makes the
 time-averaged MSD of one track; `classic.ensemble_msd` averages those over
 tracks (`weight="pairs"`, the standard estimator: all squared displacements
 pooled; `"tracks"`: the mean of the TA-MSDs) and `EnsembleMSD.fit(n_points)`
-fits the first `n_points` lags of the result.
+fits the first `n_points` lags of the result (`alpha_points=` gives the
+log-log fit a window of its own, usually wider).
 
 ## The fitting window
 
@@ -45,6 +46,14 @@ three lags, never more than exist). Per track, `MSDOptions(max_lag=None,
 lag_fraction=.3)` applies it to each track's own length, so long tracks use
 more of their data. The window is a statistical choice that moves the
 estimates; the ensemble fit therefore has no default for it.
+
+D and alpha can take different windows, and usually should: D is best read off
+the first, best-measured lags, while a log-log slope needs a span of lags (a
+decade of tau or so) to show curvature. Per track, `MSDOptions(alpha_max_lag=...)`
+or `alpha_lag_fraction=...` sets alpha's window (default: D's), and the curve is
+computed to the larger of the two (`fit_windows`); `alpha_fit="loglog"` fits it
+the textbook way, as the ensemble does, instead of the default linear-space
+`fit_anomalous_msd`. On the ensemble, `EnsembleMSD.fit(n, alpha_points=m)`.
 
 ## The textbook pair: linear fit, then log-log fit
 

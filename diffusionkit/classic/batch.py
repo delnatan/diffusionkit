@@ -13,9 +13,10 @@ TA-MSD, with weight w_i = n_pairs_i(l) ("pairs", the standard ensemble estimator
 displacement counts once, so long tracks dominate) or 1 ("tracks": the plain mean of the TA-MSDs).
 
 Building the curve and fitting it are separate steps. `ensemble_msd` resamples tracks (or whole
-experiments) once and keeps the resampled curves; `EnsembleMSD.fit(n_points)` then fits the first
-`n_points` lags of the averaged curve and of every resample, so a new window or offset rule refits
-without resampling. `n_points` is required: the window is part of the answer. Overlapping pairs within
+experiments) once and keeps the resampled curves; `EnsembleMSD.fit(n_points, alpha_points=...)` then fits
+D over the first `n_points` lags and alpha over the first `alpha_points`, of the averaged curve and of every
+resample, so a new window or offset rule refits without resampling. `n_points` is required: the window is
+part of the answer. Overlapping pairs within
 a track are correlated, so pairs are never the resampling unit; a track is the unit that can be treated
 as independent, and only under the model's own assumptions: the intervals do not cover miscalibrated
 localization SDs or drift shared by a movie's tracks. A group must share one frame interval, since its
@@ -57,7 +58,7 @@ class EnsembleMSD:
     `curves` is one row per group and lag: `n_units` (resampling units reaching the lag), `n_pairs`,
     `msd_um2` (the weighted mean, raw), `localization_offset_um2` (the same mean of the supplied SDs'
     offsets; zero when ignored) and `msd_se_um2` (bootstrap SD of the raw mean, null without a bootstrap).
-    `fit(n_points)` fits them.
+    `fit(n_points, alpha_points=...)` fits them.
     """
     curves: pl.DataFrame
     by: str
@@ -74,29 +75,40 @@ class EnsembleMSD:
             raise ValueError(f"no group named {group!r}; have {sorted(self.means)}")
         return self.means[group]
 
-    def fit(self, n_points: int, offset: str = "fit", level: float = .9) -> pl.DataFrame:
-        """Linear then log-log fits of each group's first `n_points` lags: one row per group and model.
+    def fit(self, n_points: int, offset: str = "fit", level: float = .9, *,
+            alpha_points: int | None = None) -> pl.DataFrame:
+        """Linear then log-log fits of each group's first lags: one row per group and model.
 
-        `n_points` is required (`analysis.window_lags` gives a rule of thumb; it must not exceed a group's
-        lags). `offset="fit"` takes the localization offset from the linear fit's intercept, `"provided"`
-        from the supplied SDs. Each bootstrap resample is fitted the same way, so the offset estimate is
-        inside the interval; `_lo`/`_hi` are its equal-tailed `level` interval, null without a bootstrap or
+        The linear fit (D, and with `offset="fit"` the offset) uses the first `n_points` lags; the log-log fit
+        (alpha, K) the first `alpha_points` (default `n_points`). They are separate windows because the two
+        fits want different ones: D from the short, best-measured lags (`analysis.window_lags` gives the
+        25-40% rule of thumb), alpha from a span of lags wide enough to show curvature in log-log, often the
+        whole curve. Either must be in [3, a group's lags]. `offset="fit"` takes the localization offset from
+        the linear fit's intercept, over its own window, and subtracts it before the log-log fit; `"provided"`
+        takes it from the supplied SDs. Each bootstrap resample is fitted the same way, so the offset estimate
+        is inside the interval; `_lo`/`_hi` are its equal-tailed `level` interval, null without a bootstrap or
         when fewer than two resamples gave the parameter. Rows: model `linear` (or `brownian`) with `D_um2_s`,
-        `offset_um2`, `localization_sd_um`, and `power_law` with `K_um2_s_alpha`, `alpha`.
+        `offset_um2`, `localization_sd_um`, and `power_law` with `K_um2_s_alpha`, `alpha`; each row's
+        `n_points` is its own window.
         """
         if not 0 < level < 1:
             raise ValueError("level must be in (0, 1)")
+        if alpha_points is None:
+            alpha_points = n_points
         q = [(1 - level) / 2, (1 + level) / 2]
         rows = []
         for name, curve in self.means.items():
-            if not isinstance(n_points, (int, np.integer)) or isinstance(n_points, bool) or not 3 <= n_points <= len(curve.lag):
-                raise ValueError(f"group {name!r}: n_points must be an integer in [3, {len(curve.lag)}], got {n_points!r}")
-            fits = _fit_window(curve, n_points, offset)
-            boot = [_fit_window(c, n_points, offset) for c in self.resamples[name]
-                    if len(c.lag) >= n_points and np.array_equal(c.lag[:n_points], curve.lag[:n_points])]
+            for arg, n in (("n_points", n_points), ("alpha_points", alpha_points)):
+                if not isinstance(n, (int, np.integer)) or isinstance(n, bool) or not 3 <= n <= len(curve.lag):
+                    raise ValueError(f"group {name!r}: {arg} must be an integer in [3, {len(curve.lag)}], got {n!r}")
+            span = max(n_points, alpha_points)
+            fits = _fit_window(curve, n_points, offset, alpha_points)
+            boot = [_fit_window(c, n_points, offset, alpha_points) for c in self.resamples[name]
+                    if len(c.lag) >= span and np.array_equal(c.lag[:span], curve.lag[:span])]
             for k, fit in enumerate(fits):
                 row = {"group": name, "model": fit.model, "method": fit.method, "status": fit.status,
-                       "message": fit.message, "n_lags": fit.n_lags, "n_points": int(n_points),
+                       "message": fit.message, "n_lags": fit.n_lags,
+                       "n_points": int(alpha_points if fit.model == "power_law" else n_points),
                        "n_units": self.n_units[name],
                        "uncertainty_method": f"cluster_bootstrap_{self.resample}" if boot else "not_estimated",
                        **{p: None for p in PARAMETERS}, **{f"{p}_{e}": None for p in PARAMETERS for e in ("lo", "hi")}}
@@ -109,20 +121,22 @@ class EnsembleMSD:
         return pl.DataFrame(rows, schema=FIT_SCHEMA)
 
 
-def _fit_window(curve: MSDCurve, n_points: int, offset: str) -> tuple[MSDFit, MSDFit]:
-    """The two fits `EnsembleMSD.fit` reports, for the curve's first `n_points` lags: D, then alpha and K after the offset.
+def _fit_window(curve: MSDCurve, n_points: int, offset: str, alpha_points: int | None = None) -> tuple[MSDFit, MSDFit]:
+    """The two fits `EnsembleMSD.fit` reports: D over the curve's first `n_points` lags, then alpha and K over
+    its first `alpha_points` (default `n_points`) after the offset.
 
     offset="fit": the linear fit's intercept is the offset (clipped at 0 when negative, which the linear row flags).
     offset="provided": the curve's own offset from supplied SDs, and D through the origin.
     """
+    alpha_curve = curve.head(n_points if alpha_points is None else alpha_points)
     curve = curve.head(n_points)
     if offset == "provided":
-        return fit_brownian_msd(curve), fit_loglog_msd(curve)
+        return fit_brownian_msd(curve), fit_loglog_msd(alpha_curve)
     if offset != "fit":
         raise ValueError(f"offset must be 'fit' or 'provided', got {offset!r}")
     linear = fit_linear_msd(curve)
     b = linear.parameters["offset_um2"]
-    return linear, fit_loglog_msd(curve, 0. if b is None else max(b, 0.))
+    return linear, fit_loglog_msd(alpha_curve, 0. if b is None else max(b, 0.))
 
 
 def analyze_experiments(experiments: Sequence[Experiment], options: MSDOptions = MSDOptions(), *,

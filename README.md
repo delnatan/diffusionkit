@@ -255,6 +255,7 @@ ens.curves                   # per group and lag: n_units, n_pairs, msd, offset,
 n = classic.window_lags(len(ens.curve("wt").lag), .3)   # a rule of thumb for the window (or choose it)
 ens.fit(n)                   # textbook fits of the first n lags: D, localization SD, alpha, K, with _lo/_hi
 ens.fit(n + 2)               # a different window refits; nothing is resampled again
+ens.fit(n, alpha_points=len(ens.curve("wt").lag))   # alpha over the whole curve, D over its first n lags
 ```
 
 The EA-MSD at each lag is a weighted mean of the tracks' TA-MSDs.
@@ -266,7 +267,10 @@ separate steps, and **`fit(n_points)` requires the window**: the number of
 lags used changes D and alpha, so it is never a hidden default. Each fit is the
 textbook pair above: a free-intercept line for D and the offset
 (`offset="fit"`, default), then the log-log line on the offset-subtracted curve;
-`offset="provided"` uses the supplied SDs instead. Every bootstrap resample is
+`offset="provided"` uses the supplied SDs instead. The log-log fit can take a
+wider window than D (`alpha_points`): alpha needs a span of lags to show
+curvature, D the first, best-measured ones; with `offset="fit"` the offset is
+still the intercept over D's window. Every bootstrap resample is
 fitted the same way, so the offset estimate is inside the interval.
 
 The intervals come from resampling tracks (`resample="track"`) or whole movies

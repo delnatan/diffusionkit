@@ -18,6 +18,14 @@ class MSDOptions:
     min_frames: int = 5
     localization: Literal["provided", "ignore"] = "provided"
     max_nfev: int = 200
+    # The power law's own window, the same two ways (at most one set; neither: the D window above). Alpha
+    # usually wants more lags than D: a log-log slope needs a span of lags to show curvature, while D is best
+    # read off the first, best-measured ones. The curve is computed to the larger of the two windows.
+    alpha_max_lag: int | None = None
+    alpha_lag_fraction: float | None = None
+    # How alpha is fitted: "nls", bounded least squares in linear MSD space (`fit_anomalous_msd`), or
+    # "loglog", OLS of log(MSD - offset) on log(tau) (`fit_loglog_msd`), the textbook fit the ensemble uses.
+    alpha_fit: Literal["nls", "loglog"] = "nls"
 
 
 @dataclass(frozen=True)

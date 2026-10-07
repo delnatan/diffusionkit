@@ -183,6 +183,26 @@ class LagWindowTests(unittest.TestCase):
         n = [len(classic.compute_msd(t, ACQ, opts).lag) for t in (short, long_)]
         self.assertEqual(n, [3, 12])
 
+    def test_alpha_has_its_own_window_per_track(self):
+        track = movie(.2, 1, 41, seed=3)
+        opts = classic.MSDOptions(max_lag=3, alpha_max_lag=12, alpha_fit="loglog")
+        result = classic.analyze_track(track, ACQ, opts)
+        self.assertEqual(len(result.msd.lag), 12)  # the curve runs to the larger window
+        self.assertEqual(result.brownian.n_lags, 3)
+        self.assertEqual(result.anomalous.method, "msd_loglog")
+        self.assertEqual(result.anomalous.n_lags, 12)
+        self.assertAlmostEqual(result.brownian.parameters["D_um2_s"],
+                               classic.fit_brownian_msd(result.msd.head(3)).parameters["D_um2_s"], places=12)
+        self.assertAlmostEqual(result.anomalous.parameters["alpha"],
+                               classic.fit_loglog_msd(result.msd.head(12)).parameters["alpha"], places=12)
+        share = classic.MSDOptions(max_lag=None, lag_fraction=.25, alpha_lag_fraction=.5)
+        self.assertEqual(classic.fit_windows(41, share), (10, 20))
+        self.assertEqual(classic.fit_windows(41, classic.MSDOptions()), (3, 3))  # alpha follows D by default
+        self.assertEqual(classic.fit_windows(6, opts), (3, 5))  # capped at the track's longest lag
+        for bad in ({"alpha_max_lag": 5, "alpha_lag_fraction": .5}, {"alpha_fit": "x"}, {"alpha_lag_fraction": 0}):
+            with self.assertRaises(ValueError):
+                classic.analyze_track(track, ACQ, classic.MSDOptions(**bad))
+
     def test_exactly_one_window_rule(self):
         for kw in ({"lag_fraction": .3}, {"max_lag": None}, {"lag_fraction": 1.5, "max_lag": None}):
             with self.assertRaises(ValueError):
@@ -218,6 +238,22 @@ class TextbookFitTests(unittest.TestCase):
         row = ens.fit(5)
         self.assertAlmostEqual(row.filter(pl.col("model") == "linear")["D_um2_s"][0], lin.parameters["D_um2_s"], places=12)
         self.assertAlmostEqual(row.filter(pl.col("model") == "power_law")["alpha"][0], log.parameters["alpha"], places=12)
+
+    def test_alpha_has_its_own_window_with_the_short_windows_offset(self):
+        ens = classic.ensemble_msd(self.batch, "all", n_boot=20)
+        curve = ens.curve("all")
+        lin = classic.fit_linear_msd(curve, 3)
+        log = classic.fit_loglog_msd(curve, lin.parameters["offset_um2"], n_points=len(curve.lag))
+        fit = ens.fit(3, alpha_points=len(curve.lag))
+        row = {r["model"]: r for r in fit.iter_rows(named=True)}
+        self.assertAlmostEqual(row["linear"]["D_um2_s"], ens.fit(3).filter(pl.col("model") == "linear")["D_um2_s"][0],
+                               places=12)
+        self.assertAlmostEqual(row["power_law"]["alpha"], log.parameters["alpha"], places=12)
+        self.assertEqual((row["linear"]["n_points"], row["power_law"]["n_points"]), (3, len(curve.lag)))
+        self.assertIsNotNone(row["power_law"]["alpha_lo"])
+        for bad in (2, len(curve.lag) + 1):
+            with self.assertRaisesRegex(ValueError, "alpha_points"):
+                ens.fit(3, alpha_points=bad)
 
     def test_loglog_drops_nonpositive_points_and_says_so(self):
         curve = classic.MSDCurve(np.arange(1, 5), np.arange(1, 5) * .1, np.full(4, 9), np.array([.01, .5, .9, 1.2]),

@@ -6,9 +6,9 @@ import polars as pl
 from ..data import Acquisition
 from ..io import validate_table_schema, validated_track_frame
 from ..validation import validate_acquisition
-from .analysis import compute_msd, validate_options
+from .analysis import compute_msd, fit_windows, validate_options
 from .data import ClassicAnalysis, MSDOptions, TrackAnalysis
-from .estimators import empty_fit, fit_anomalous_msd, fit_brownian_msd
+from .estimators import empty_fit, fit_anomalous_msd, fit_brownian_msd, fit_loglog_msd
 
 
 FIT_SCHEMA = {
@@ -28,7 +28,7 @@ MSD_SCHEMA = {
 
 def analyze_track(track: pl.DataFrame, acquisition: Acquisition,
                   options: MSDOptions = MSDOptions()) -> TrackAnalysis:
-    """Fit MSD D and alpha for one track's rows.
+    """Fit MSD D and alpha for one track's rows: D over the D window, alpha over its own (`MSDOptions`).
 
     Invalid input raises; short tracks are explicit results. `status="excluded"`
     when `exposure_s > 0`: the MSD estimators assume instantaneous positions,
@@ -49,8 +49,11 @@ def analyze_track(track: pl.DataFrame, acquisition: Acquisition,
         return TrackAnalysis(track_id, n, None, empty_fit("brownian", "excluded", message),
                              empty_fit("power_law", "excluded", message), acquisition, options)
     msd = compute_msd(track, acquisition, options)
-    return TrackAnalysis(track_id, n, msd, fit_brownian_msd(msd),
-                         fit_anomalous_msd(msd, max_nfev=options.max_nfev), acquisition, options)
+    n_d, n_alpha = fit_windows(n, options)
+    alpha_curve = msd.head(n_alpha)
+    alpha = (fit_loglog_msd(alpha_curve) if options.alpha_fit == "loglog"
+             else fit_anomalous_msd(alpha_curve, max_nfev=options.max_nfev))
+    return TrackAnalysis(track_id, n, msd, fit_brownian_msd(msd.head(n_d)), alpha, acquisition, options)
 
 
 def analyze_tracks(table: pl.DataFrame, acquisition: Acquisition,
