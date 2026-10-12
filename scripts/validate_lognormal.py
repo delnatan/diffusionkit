@@ -1,4 +1,4 @@
-"""Coverage study for log-normal partial pooling and complete pooling (gridpost.lognormal).
+"""Coverage study for the log-normal population and complete pooling (gridpost.lognormal).
 
 Populations of D across tracks, 1000 tracks each of 5-20 frames, dt 35 ms, localization SD
 30-45 nm, on the default GridPostOptions grid (flat in ln D over 1e-5..10), simulated in position

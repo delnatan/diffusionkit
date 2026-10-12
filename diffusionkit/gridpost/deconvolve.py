@@ -1,6 +1,7 @@
 """Distribution of D across many tracks: a smooth log density, its smoothness chosen by evidence.
 
-Population-level comparator to the per-track posteriors in `posterior.py`, not a
+A population g of any smooth shape, the third member beside `lognormal`'s shared D (complete
+pooling) and log-normal g. Population-level comparator to the per-track posteriors in `posterior.py`, not a
 replacement for them -- per-track posteriors stay the primary output of this
 package; this reports how D is distributed across a whole table of tracks, the
 way an ensemble MSD fit would, but without averaging away each track's own
@@ -66,7 +67,7 @@ from .posterior import flat
 
 EPS = 1e-6  # prior precision on log g's unpenalized linear tilt: there only so the evidence is proper
 LAM_GRID = np.geomspace(1e4, 1e-8, 37)  # scanned from smooth to rough, flat prior in log lam
-N_CHAINS = 50  # HMC chains, shared across lam by evidence weight
+N_CHAINS = 50  # HMC chains, split across lam by evidence weight
 TINY = 1e-300
 
 

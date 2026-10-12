@@ -110,11 +110,10 @@ bands widen because the tracks cannot tell those D values apart.
 ### Split by track length
 
 ```python
-comp = by_track_length(result.likelihoods, result.options.u_D(), pop, weight="detections")
+comp = by_track_length(result.likelihoods, result.options.u_D(), weight="detections")
 comp.labels(), comp.n_tracks, comp.n_detections   # the groups: '3', '5-6', '25+', ...
 comp.unpooled                # (groups, grid): flat-prior posteriors summed per group
-comp.partially_pooled        # (draws, groups, grid): each track's posterior under a draw of pop
-comp.partially_pooled[:, :, comp.u < np.log(.035)].sum(2)   # mass below 0.035 per group, one row per draw
+comp.unpooled[:, comp.u < np.log(.035)].sum(1)    # mass below 0.035 per group
 
 from diffusionkit.gridpost.viz import plot_by_track_length   # needs the plots extra
 fig = plot_by_track_length(comp, result.fits["D_floor_um2_s"].drop_nulls().to_numpy())
@@ -122,8 +121,7 @@ fig = plot_by_track_length(comp, result.fits["D_floor_um2_s"].drop_nulls().to_nu
 
 Fast particles leave the focal depth within a few frames, so short tracks come
 mostly from fast particles and long tracks from slow ones. The groups add up to
-the whole distribution. With `weight="tracks"` they are fractions of tracks, and
-the partially pooled groups add up to about the population. With
+the whole distribution. With `weight="tracks"` they are fractions of tracks. With
 `weight="detections"` each track counts once per frame, which gives the
 composition of the spots seen in focus.
 
@@ -187,5 +185,4 @@ To compare samples, draw each population's mass over a range with
 `gridpost.cdf_distance` against the replicate-to-replicate distances. The
 batch `fits` table's `D_post_mean_um2_s` is a per-track summary; a histogram
 or average of it is not the population (a short track's value leans on the
-flat prior), which is what `populations` is for. For a per-track value that
-borrows from the population, `pops["wt"].partially_pooled_means(sel.likelihoods.loglik_D)`.
+flat prior), which is what `populations` is for.

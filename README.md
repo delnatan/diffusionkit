@@ -158,8 +158,7 @@ The D posterior's interval is a genuine credible interval under a flat
 prior, but its calibration is a simulation check under the model (see
 `scripts/validate_posterior.py`), not a claim about experimental tracks. It
 conditions on the reported localization SDs: noise beyond them reads as motion.
-In simulation, 40 nm of unreported per-frame noise (what fast GEMs appear to
-carry, likely from the spot smearing during the exposure) turns D = 0.3 into
+In simulation, 40 nm of unreported per-frame noise turns D = 0.3 into
 ~0.43 um^2/s.
 
 ## Distribution of D across tracks, and by track length
@@ -170,10 +169,10 @@ from diffusionkit.gridpost import (analyze_tracks, by_track_length, deconvolve_t
 
 result = analyze_tracks(tracks, acquisition, keep_likelihoods=True)
 shared = shared_D_tracks(result)         # complete pooling: one D for every track
-logn = lognormal_tracks(result)          # partial pooling: ln D ~ N(mu, sigma) across tracks
+logn = lognormal_tracks(result)          # population: ln D ~ N(mu, sigma) across tracks
 logn.summary(.9)                         # median D, spread sigma, mean D, each with its interval
-pop = deconvolve_tracks(result)          # partial pooling, any shape: how D is distributed
-comp = by_track_length(result.likelihoods, result.options.u_D(), pop, weight="detections")
+pop = deconvolve_tracks(result)          # population, any shape: how D is distributed
+comp = by_track_length(result.likelihoods, result.options.u_D(), weight="detections")
 ```
 
 Each is built from every track's log-likelihood on the D grid, the tracks'
@@ -181,7 +180,7 @@ logs added under a model of the population: one D for all (`shared_D_tracks`;
 when the tracks differ it lands near their mean D, with an interval that is
 too narrow), a log-normal (`lognormal_tracks`, whose sigma says whether they
 differ), or a smooth density of any shape (`deconvolve_tracks`). See
-[docs/gridpost.md](docs/gridpost.md#combining-tracks-no-complete-and-partial-pooling).
+[docs/gridpost.md](docs/gridpost.md#combining-tracks-one-shared-d-or-a-population).
 
 `deconvolve_tracks` is a population-level comparator to an ensemble MSD fit,
 not a replacement for the per-track posteriors: it estimates how `D` is
@@ -191,14 +190,12 @@ whose smoothness is chosen by the data (Laplace evidence), and `samples` are
 posterior draws of the whole distribution, so any band or mass comes with an
 interval (`pop.band(.68, cumulative=True)`).
 
-`by_track_length` splits the unpooled (the tracks' own posteriors) and the
-partially pooled distribution (each track's posterior under the population)
-into track-length groups. Fast particles leave the focal depth within a few frames,
+`by_track_length` splits the unpooled distribution (the tracks' own flat-prior
+posteriors, summed) into track-length groups. Fast particles leave the focal depth within a few frames,
 so short tracks come mostly from fast particles and long tracks from slow ones.
 Counted per track, the groups add up to the distribution; counted per detection
-(each track once per frame), they give the make-up of the spots seen in focus,
-which can differ a lot (a GEM movie: 52% of tracks but 67% of detections below
-0.035 um^2/s). `gridpost.viz.plot_by_track_length` draws it. See
+(each track once per frame), they give the make-up of the spots seen in focus.
+`gridpost.viz.plot_by_track_length` draws it. See
 [docs/gridpost.md](docs/gridpost.md#distribution-of-d-across-tracks-deconvolve).
 
 ## Batches of experiments: replicates and samples
@@ -242,7 +239,7 @@ pops["wt"].mass(0, .035)                    # draws of the mass below 0.035 um^2
 pops["wt"].mass(0, .035) - pops["mut"].mass(0, .035)   # the difference, with its uncertainty
 cdf_distance(pops["wt"], pops["mut"])       # draws of the W1 distance in ln D
 sel = batch.select(sample="wt")             # a GridPosteriorAnalysis: feed it to by_track_length etc.
-by_track_length(sel.likelihoods, batch.options.u_D(), pops["wt"])
+by_track_length(sel.likelihoods, batch.options.u_D())
 ```
 
 `batch.select(...)` is the seam: it returns the same `GridPosteriorAnalysis`
@@ -295,8 +292,8 @@ The intervals come from resampling tracks (`resample="track"`) or whole movies
 variation, and it needs several replicates per sample): overlapping pairs are
 correlated, so pairs are never the resampling unit. The intervals assume
 correct localization SDs and no drift shared by a movie's tracks; correct
-drift first. A group pools lags by index, so it must share one dt (pool
-experiments with different dt separately), and its high lags rest on fewer
+drift first. A group's curves are averaged lag by lag, so it must have one dt
+(put experiments with different dt in different groups), and its high lags rest on fewer
 tracks (`n_units`). Movies with `exposure_s > 0` have no MSD fits and so no
 ensemble curve. For the constrained fit on an ensemble curve, pass
 `ens.curve(group).head(n)` to `fit_anomalous_msd`.

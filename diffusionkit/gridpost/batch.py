@@ -23,7 +23,7 @@ from .lognormal import SharedD, lognormal_tracks, shared_D_tracks
 from .workflow import analyze_tracks
 
 GROUPINGS = ("sample", "experiment", "all")
-MODELS = {"deconvolve": deconvolve_tracks, "lognormal": lognormal_tracks}  # partial pooling, by shape of g
+MODELS = {"deconvolve": deconvolve_tracks, "lognormal": lognormal_tracks}  # population models, by shape of g
 
 
 @dataclass(frozen=True)
@@ -103,7 +103,7 @@ class GridPostBatch:
 
     def populations(self, by: str = "sample", n_samples: int = 1000, rng: np.random.Generator | None = None,
                     model: str = "deconvolve") -> dict[str | None, GridDistribution]:
-        """The distribution of D (partial pooling) for each sample, each experiment (replicates side by
+        """The distribution of D (a population model) for each sample, each experiment (replicates side by
         side) or all of it together: `deconvolve_tracks` (`model="deconvolve"`, any shape) or
         `lognormal_tracks` (`model="lognormal"`).
 

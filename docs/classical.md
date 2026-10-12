@@ -32,8 +32,8 @@ SDs were supplied; its results describe the uncorrected curve.
 The estimators below take an `MSDCurve` and do not care whether it is one
 track's time average or an average over tracks. `compute_msd` makes the
 time-averaged MSD of one track; `classic.ensemble_msd` averages those over
-tracks (`weight="pairs"`, the standard estimator: all squared displacements
-pooled; `"tracks"`: the mean of the TA-MSDs) and `EnsembleMSD.fit(n_points)`
+tracks (`weight="pairs"`, the standard estimator: every squared displacement
+counts once; `"tracks"`: the mean of the TA-MSDs) and `EnsembleMSD.fit(n_points)`
 fits the first `n_points` lags of the result (`alpha_points=` gives the
 log-log fit a window of its own, usually wider).
 

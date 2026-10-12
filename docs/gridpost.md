@@ -82,7 +82,7 @@ maximum-likelihood D with a bootstrap-calibrated non-Brownian z-score
 testing deviation from alpha=1) has been retired now that the posterior
 supersedes its point-estimate role.
 
-## Combining tracks: no, complete and partial pooling
+## Combining tracks: one shared D, or a population
 
 `analyze_tracks(..., keep_likelihoods=True)` keeps each track's log-likelihood
 of D on the grid (`GridLikelihoods.loglik_D`, normalized so that each row's
@@ -96,14 +96,14 @@ tracks multiply:
 l(theta) = sum_i log int L_i(u) g_theta(u) du,      u = ln D
 ```
 
-The three standard levels of pooling are three choices of g:
+Three choices of g, beside the per-track posteriors, which need none:
 
-| pooling | g | function | what it answers |
+| read | g | function | what it answers |
 |---|---|---|---|
-| none | each track on its own | the per-track posterior (`fits`) | how fast is this track? |
-| complete | delta(u - u0): one D for all | `fit_shared_D`, `shared_D_tracks` | the one D, if every track had it |
-| partial, log-normal | N(mu, sigma) in ln D | `fit_lognormal`, `lognormal_tracks` | the population's median D and its spread |
-| partial, any shape | a smooth log density | `deconvolve`, `deconvolve_tracks` | how D is distributed, shape included |
+| per track (unpooled) | none: each track on its own | the per-track posterior (`fits`) | how fast is this track? |
+| shared D (complete pooling) | delta(u - u0): one D for all | `fit_shared_D`, `shared_D_tracks` | the one D, if every track had it |
+| log-normal population | N(mu, sigma) in ln D | `fit_lognormal`, `lognormal_tracks` | the population's median D and its spread |
+| population of any shape | a smooth log density | `deconvolve`, `deconvolve_tracks` | how D is distributed, shape included |
 
 Two things look like population reads and are not:
 
@@ -126,18 +126,39 @@ quantity an ensemble MSD reports. Its interval is the problem: it narrows as
 populations at 0.005 and 0.2 um^2/s give a shared D near 0.13 with an
 interval of about +/-1%, a value neither population has. And because the
 weighting is by information, mostly track length, it leans toward the long
-tracks; in GEM movies those are the slow particles that stay in focus. The
+tracks, which are often the slow particles that stay in focus. The
 log-normal's sigma is the check: sigma = 0 is complete pooling, so when its
 posterior reaches 0, one shared D describes the tracks.
 
-The words are kept to these meanings throughout: "pooled" names a level of
-pooling above; tracks of several movies are "combined" into one fit; the
-average of posteriors is "unpooled".
+The words are kept to these meanings throughout:
+
+- **unpooled**: each track's own posterior under the flat prior (`fits`, and
+  their sum in `LengthComposition.unpooled`). The prior is flat in ln D on
+  the grid, so a track's normalized likelihood row is also its posterior.
+- **shared** is the one D of complete pooling (`fit_shared_D`,
+  `shared_D_tracks`, `SharedD`, `GridPostBatch.shared_D`), and nothing else:
+  every track is taken to have that D.
+- a **population** is a distribution g of D across tracks (the log-normal,
+  the deconvolution). Each track has its own D, a draw from g; g is fitted
+  with each track's D integrated out (the l(theta) above), and g is what is
+  reported. A population is not a shared D or a shared posterior.
+- tracks of several movies are **combined** into one fit, whatever the model.
+
+Not computed: each track's posterior with the fitted g as its prior
+(partial pooling, i.e. empirical Bayes). The same tracks would set the prior
+and then be judged by it, so a track's number would move with which other
+tracks are in the fit and with the population model. Per-track numbers stay
+each track's own (`fits`), and questions about the population are answered
+by g.
+
+Outside this section "shared" keeps its plain meaning (drift shared by a
+movie's tracks), and `classic` does not use "pooled": its ensemble MSD is a
+weighted average of the tracks' curves, not a model of the population.
 
 ## Log-normal population: `lognormal`
 
 `lognormal_tracks(analysis)` (or `fit_lognormal(lls, u)` on any evenly spaced
-grid of rows) is partial pooling with two parameters: ln D ~ N(mu, sigma)
+grid of rows) is a population with two parameters: ln D ~ N(mu, sigma)
 across tracks, truncated to the grid. exp(mu) is the population's median D,
 sigma its spread in ln D, and exp(mu + sigma^2/2) its mean D; each track's own
 measurement noise is in the model, not in sigma. Priors are flat in mu over
@@ -159,14 +180,8 @@ leaves the result unchanged.
 
 The result is a `GridDistribution` like a deconvolution: `weights` (g at the
 posterior mode), `samples` (g at posterior draws of (mu, sigma), kept in
-`draws`), `band`, `mass`, `cdf_distance`, `by_track_length(..., population)`
-and `viz.plot_populations` all take it, and so does
-`partially_pooled_means(loglik_D)`: each track's E[D] with the population as
-its prior, which neither the grid's edges nor the flat prior's 1/D lean move
-(in simulation, its average over the tracks is the population's mean, and its
-error against each track's true D in ln D is less than half the flat-prior
-median's) -- but it borrows from the population, so it moves with which tracks
-make it up and with the model. `summary(level)` gives the median D,
+`draws`), `band`, `mass`, `cdf_distance` and `viz.plot_populations` all
+take it. `summary(level)` gives the median D,
 sigma and the mean D with equal-tailed intervals. When the truth is sigma = 0
 the posterior piles against that bound, so its equal-tailed interval never
 contains 0: read sigma's upper bound there.
@@ -198,7 +213,7 @@ numbers describe the wrong shape.
 
 `fit_shared_D(lls, u)` sums the rows and interpolates the sum with a cubic
 spline through the cells within 40 nats of its peak, which resolves it below
-the grid step: with many tracks the shared posterior is narrower than a cell.
+the grid step: with many tracks the shared D's posterior is narrower than a cell.
 
 ## Distribution of D across tracks: `deconvolve`
 
@@ -245,24 +260,17 @@ grid of per-track log-likelihood rows.
 
 Track length is observed, and it depends on D. A fast particle crosses the
 focal depth in a few frames and makes short tracks; a slow one stays in focus
-and makes one long track. `by_track_length(likelihoods, u, population)` splits a
-distribution of D into groups of track length (`LENGTH_EDGES`, lower edges 3, 4,
+and makes one long track. `by_track_length(likelihoods, u)` splits the
+unpooled distribution of D into groups of track length (`LENGTH_EDGES`, lower edges 3, 4,
 5, 7, 10, 15, 25, 50 frames, trimmed at the longest track). Each track i
 contributes w_i p_i(D), and the contributions are summed per group and divided
-by the total weight, so the groups add up to the whole distribution:
+by the total weight, so the groups add up to the whole distribution
+(`unpooled`). p_i is the track's flat-prior posterior, so this describes the
+tracks without a population model, and a short track spreads wide.
 
-- `unpooled`: p_i is the track's flat-prior posterior. This describes the tracks
-  without a population model, and a short track spreads wide.
-- `partially_pooled`: p_i(D | g), proportional to L_i(D) g(D), the track's
-  posterior with the population (a deconvolution or a log-normal) as its prior.
-  It is computed once per draw of g, so the groups carry the population's
-  uncertainty.
-
-`weight="tracks"` counts each track once, and the partially pooled groups then add
-up to about g. `weight="detections"` counts each frame, so the result is the
+`weight="tracks"` counts each track once. `weight="detections"` counts each frame, so the result is the
 composition of the spots seen. The two differ when fast particles make many short
-tracks: in a 49-frame GEM movie (wt_2), D < 0.035 holds 52% of tracks and 67%
-of detections. Per detection, the excluded tracks shorter than `min_frames`
+tracks. Per detection, the excluded tracks shorter than `min_frames`
 (mostly single spots, likely fast) are missing, which pushes the slow share up.
 `viz.plot_by_track_length` stacks the groups and shows each group's own
 distribution, with the localization floor as a band.
@@ -272,26 +280,10 @@ distribution, with the localization floor as a band.
 Each track gets D: an interval, its information in bits, and the localization
 floor as a scale. Nothing else is reported.
 
-The motion's shape (alpha) is not part of `gridpost`. Earlier versions had
-three pieces:
-- a grid posterior over alpha with the scale marginalized;
-- each track's joint (alpha, D) posterior, written to file;
-- a 2D deconvolution of that joint posterior.
-
-Across the prototypes, alpha did not survive as a per-track quantity:
-- On short tracks it is weakly identified.
-- It leans low for immobile tracks (prior volume).
-- It confounds localization-SD errors with real caging.
-- Its population read over-counts long-lived low-alpha tracks.
-
-They were removed after commit 540ba4a; see the git history. An anomalous
-exponent is still available from the MSD fits (`diffusionkit.classic`), and
-from `diffusionkit.bayes` as a per-track diagnostic.
-
-Other per-track shape metrics (a ratio of D at two timescales, a
-Brownian-versus-noise likelihood ratio, radius of gyration, straightness) were
-removed earlier for the same reason. On short tracks they are one fluctuation
-of the displacement covariance under several names.
+The motion's shape (alpha) is not part of `gridpost`. On short tracks it is
+weakly identified, and it confounds localization-SD errors with real caging.
+An anomalous exponent is available from the MSD fits (`diffusionkit.classic`),
+and from `diffusionkit.bayes` as a per-track diagnostic.
 
 ## Workflow: `gridpost.analyze_track`/`analyze_tracks`
 

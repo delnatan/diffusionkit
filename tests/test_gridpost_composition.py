@@ -1,4 +1,4 @@
-"""The unpooled and partially pooled distribution of D split by track length (gridpost.composition)."""
+"""The unpooled distribution of D split by track length (gridpost.composition)."""
 import importlib.util
 import unittest
 
@@ -6,7 +6,7 @@ import numpy as np
 import polars as pl
 
 from diffusionkit import Acquisition
-from diffusionkit.gridpost import GridPostOptions, analyze_tracks, by_track_length, deconvolve_tracks
+from diffusionkit.gridpost import GridPostOptions, analyze_tracks, by_track_length
 
 ACQ = Acquisition(dt_s=.02, exposure_s=.02)
 OPT = GridPostOptions(D_min_um2_s=1e-4, D_max_um2_s=10., n_D=101)
@@ -31,14 +31,12 @@ class ByTrackLengthTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.analysis = analyze_tracks(two_populations(np.random.default_rng(0)), ACQ, OPT, keep_likelihoods=True)
-        cls.population = deconvolve_tracks(cls.analysis, n_samples=200)
 
     def test_unpooled_groups_stack_to_the_mean_flat_prior_posterior(self):
         post = self.analysis.likelihoods
         comp = by_track_length(post, U)
         self.assertEqual(comp.n_tracks.sum(), len(post.track_ids))
         self.assertEqual(comp.n_detections.sum(), post.n_frames.sum())
-        self.assertIsNone(comp.partially_pooled)
         p = np.exp(post.loglik_D)
         np.testing.assert_allclose(comp.unpooled.sum(0), p.mean(0) / p.mean(0).sum(), atol=1e-12)
         np.testing.assert_allclose(comp.unpooled.sum(1), comp.share(), atol=1e-12)
@@ -53,20 +51,10 @@ class ByTrackLengthTests(unittest.TestCase):
         p = np.exp(post.loglik_D)
         np.testing.assert_allclose(comp.unpooled.sum(0), n @ p / n.sum(), atol=1e-12)
 
-    def test_partially_pooled_groups_stack_to_about_the_population(self):
-        comp = by_track_length(self.analysis.likelihoods, U, self.population, n_draws=50)
-        self.assertEqual(comp.partially_pooled.shape, (50, 7, len(U)))
-        np.testing.assert_allclose(comp.partially_pooled.sum(axis=(1, 2)), 1., atol=1e-10)
-        total = comp.partially_pooled.sum(1).mean(0)
-        self.assertLess(.5 * np.abs(total - self.population.samples.mean(0)).sum(), .05)
-        lo, hi = comp.band(.9)
-        self.assertTrue(np.all(lo <= hi))
-
     def test_short_tracks_sit_at_the_fast_mode_and_long_ones_at_the_slow(self):
-        comp = by_track_length(self.analysis.likelihoods, U, self.population, edges=(3, 20))
-        mean = comp.partially_pooled.mean(0)
+        comp = by_track_length(self.analysis.likelihoods, U, edges=(3, 20))
         split = np.log(np.sqrt(.3 * .003))
-        short, long = mean / mean.sum(1, keepdims=True)
+        short, long = comp.unpooled / comp.unpooled.sum(1, keepdims=True)
         self.assertGreater(short[U > split].sum(), .95)
         self.assertGreater(long[U < split].sum(), .95)
 
@@ -77,18 +65,14 @@ class ByTrackLengthTests(unittest.TestCase):
                 by_track_length(post, U, **kw)
         with self.assertRaises(ValueError):
             by_track_length(post, U[:-1])
-        with self.assertRaises(ValueError):
-            by_track_length(post, U, self.population.__class__(**{**self.population.__dict__, "u": U + 1.}))
-        with self.assertRaises(ValueError):
-            by_track_length(post, U).band()
 
     @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "needs the plots extra")
-    def test_plot_draws_both_columns(self):
+    def test_plot_draws_one_column(self):
         from diffusionkit.gridpost.viz import plot_by_track_length
-        comp = by_track_length(self.analysis.likelihoods, U, self.population, n_draws=20)
+        comp = by_track_length(self.analysis.likelihoods, U)
         floor = self.analysis.fits["D_floor_um2_s"].drop_nulls().to_numpy()
         fig = plot_by_track_length(comp, floor)
-        self.assertEqual(len(fig.axes), 4)
+        self.assertEqual(len(fig.axes), 2)
 
 
 if __name__ == "__main__":

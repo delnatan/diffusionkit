@@ -153,7 +153,7 @@ class ClassicBatchTests(unittest.TestCase):
         self.assertEqual(b["n_points"].unique().to_list(), [4])
         self.assertEqual(ens.curve("s").lag.tolist(), [1, 2, 3, 4])
 
-    def test_pooled_curve_is_pair_weighted_mean(self):
+    def test_pairs_curve_is_pair_weighted_mean(self):
         ens = classic.ensemble_msd(self.batch, "all", n_boot=0)
         rows = self.batch.msd.filter(pl.col("lag") == 2)
         expected = (rows["n_pairs"] * rows["msd_um2"]).sum() / rows["n_pairs"].sum()

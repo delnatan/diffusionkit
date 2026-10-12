@@ -8,12 +8,12 @@ likelihood is its own likelihood averaged over g, and the tracks multiply:
 - **complete pooling** (`fit_shared_D`): g = delta(u - u0), every track has the same D. Then
   l = sum_i log L_i(u0), the summed log-likelihood. Its interval narrows as 1/sqrt(n) however much
   the tracks differ, and it weighs each track by how much it says about D, so long tracks dominate.
-- **partial pooling, log-normal** (`fit_lognormal`): ln D ~ N(mu, sigma) across tracks, truncated to
+- **log-normal population** (`fit_lognormal`): ln D ~ N(mu, sigma) across tracks, truncated to
   the grid. exp(mu) is the population's median D and sigma its spread in ln D, with each track's own
   measurement noise taken out by the model rather than averaged in. sigma = 0 is complete pooling,
   so sigma's posterior says whether one shared D describes the tracks.
 
-`deconvolve` is the third member: partial pooling with a smooth g of any shape. What these are not
+`deconvolve` is the third member: a population g of any smooth shape. What these are not
 is an average of the tracks' posteriors (the sum is outside the log there, so it is no likelihood
 of anything) or a histogram of their medians (a short track's median sits where the prior puts it).
 
@@ -44,7 +44,7 @@ DROP = 20.  # log-posterior drop that bounds the region the grid must hold (e^-2
 MAX_ZOOM = 12  # zoom steps before the grid is taken as it is
 TINY = 1e-300
 _CHUNK = 5_000_000  # tracks x columns per matrix product, ~40 MB
-_SHARED_WINDOW = 40.  # the shared posterior is splined over the cells within this many nats of its peak
+_SHARED_WINDOW = 40.  # the shared D's posterior is splined over the cells within this many nats of its peak
 _SHARED_REFINE = 64  # spline points per grid cell
 
 
@@ -180,7 +180,7 @@ def shared_D_tracks(analysis: GridPosteriorAnalysis) -> SharedD:
 
 
 # --------------------------------------------------------------------------
-# Partial pooling: log-normal D across tracks
+# Log-normal population: D across tracks
 # --------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -263,7 +263,7 @@ def _zoom(L: np.ndarray, u: np.ndarray, sigma_max: float):
 
 def fit_lognormal(lls: np.ndarray, u: np.ndarray, sigma_max: float = SIGMA_MAX, n_samples: int = 1000,
                   rng: np.random.Generator | None = None) -> LogNormal:
-    """Partial pooling: the posterior of a log-normal distribution of D across tracks, from per-track
+    """The posterior of a log-normal distribution of D across tracks, from per-track
     log-likelihood rows on the evenly spaced ln D grid `u`.
 
     Priors: mu flat over the grid, sigma flat on [0, `sigma_max`]. A posterior cut by either bound

@@ -19,8 +19,8 @@ resample, so a new window or offset rule refits without resampling. `n_points` i
 part of the answer. Overlapping pairs within
 a track are correlated, so pairs are never the resampling unit; a track is the unit that can be treated
 as independent, and only under the model's own assumptions: the intervals do not cover miscalibrated
-localization SDs or drift shared by a movie's tracks. A group must share one frame interval, since its
-lags are pooled by index; pool experiments with different dt separately.
+localization SDs or drift shared by a movie's tracks. A group must have one frame interval, since its
+curves are averaged lag by lag; put experiments with different dt in different groups.
 """
 from __future__ import annotations
 
@@ -172,7 +172,7 @@ def _group_sums(rows: pl.DataFrame, weight: str, resample: str, name) -> _Group:
     lags = np.sort(rows["lag"].unique().to_numpy())
     tau = rows.group_by("lag").agg(pl.col("tau_s").unique().alias("tau")).sort("lag")
     if tau["tau"].list.len().max() > 1:
-        raise ValueError(f"group {name!r} mixes frame intervals; pool experiments with different dt separately")
+        raise ValueError(f"group {name!r} mixes frame intervals; put experiments with different dt in different groups")
     tau = tau["tau"].list.first().to_numpy()
     unit = (rows["experiment"] if resample == "experiment" else
             rows["experiment"] + "/" + rows["track_id"].cast(pl.String))

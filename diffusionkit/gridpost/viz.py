@@ -22,17 +22,13 @@ def plot_by_track_length(comp: LengthComposition, floor_um2_s: np.ndarray | None
     """Top: the distribution of D per decade, stacked by track-length group. Bottom: each group's
     own distribution (normalized to its peak), with its tracks and detections at right.
 
-    Columns are the unpooled flat-prior posteriors and, when `comp` has a population, the
-    partially pooled split (posterior mean over draws; `comp.band` and `comp.partially_pooled` hold the
-    uncertainty, best read as masses over a range rather than pointwise on the fine grid).
+    The distribution is the tracks' own flat-prior posteriors (unpooled), so a short track spreads wide.
     `floor_um2_s` (e.g. the fits table's `D_floor_um2_s`) draws the localization floor's 10-90%
     band and median. Read below the floor as unresolved: those tracks only bound D from above.
     """
     x = comp.u / np.log(10)
     dx = x[1] - x[0]
     columns = [("unpooled (each track's flat-prior posterior)", comp.unpooled)]
-    if comp.partially_pooled is not None:
-        columns.append(("partially pooled (posterior under the population)", comp.partially_pooled.mean(0)))
     colors = plt.get_cmap(cmap)(np.linspace(.1, .9, len(comp.edges)))
     labels = comp.labels()
     fig, axes = plt.subplots(2, len(columns), figsize=(5.2 * len(columns), 6.4), squeeze=False,

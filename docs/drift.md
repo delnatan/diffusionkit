@@ -24,7 +24,7 @@ Per axis, track i's displacements are
   averages, so subtracting the estimated (exposure-averaged) drift is exact.
 - D_i is unknown. It is marginalized by EM over a D grid with a flat prior in ln D, and the M-step is generalized
   least squares with W_i = E[Sigma_i^-1].
-  - Still spots carry the estimate: a GEM at D = 0.3 um^2/s gets ~1/25 of a still spot's weight.
+  - Still spots carry the estimate: a particle at D = 0.3 um^2/s gets ~1/25 of a still spot's weight.
   - Nothing is classified and no length cut is needed.
 
 `degree=0` is one rigid path, 1 adds rotation, shear and stretch, and 2 a smooth bend. The increments' covariance
@@ -43,19 +43,8 @@ Motion still shared after degree 2 is local deformation. A smooth local flow v (
 about |v|^2 / (4 dt (1 - 2R)), with R = exposure / (6 dt). That is ~2e-5 um^2/s for 1 nm/frame, 5e-4 for 5 nm/frame
 and 5e-3 for 17 nm/frame. Compare it with the slowest population's D before correcting further.
 
-On C. elegans hypodermis GEM movies (49 frames of 20 ms):
-- **anc-1:** 800 nm of global drift. Uncorrected, it moved the whole slow population (D ~ 1e-3) to 0.01-0.05.
-- **wt_3:** the global drift was ~0, but there was local deformation of ~1 nm/frame (neighbour correlation 0.48 at
-  8 um). A space-time flow model removed it and changed neither the D population nor step memory. That model is kept
-  as a prototype, not in the package.
-- Two shortcuts don't work:
-  - A per-frame neighbour average within a fixed radius is noisier than the flow itself (SE ~3 nm per frame at
-    5 um). Subtracting it biases slow D by ~3e-4.
-  - A graph with every track step as a node had too many degrees of freedom, and the evidence rejected any flow.
-
 ## Validation (`tests/test_drift.py`)
 
 - A rigid ~0.3 um path is recovered to < 4 nm rms from 600 mixed still/mobile tracks.
 - With no drift, the estimate stays within its reported SE.
 - Frame offsets are handled, gaps raise, and the neighbour check separates shared motion from own motion.
-- On the GEM movies the package reproduces the prototype exactly (anc-1: -802 nm in x over 48 frames).
