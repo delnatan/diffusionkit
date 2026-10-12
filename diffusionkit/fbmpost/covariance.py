@@ -1,5 +1,5 @@
-"""Blurred fractional Brownian motion covariance in numpy: the reference `bayes.likelihood`'s jax version is
-checked against (tests/test_bayes_blur.py).
+"""Blurred fractional Brownian motion covariance in numpy: what the fBm grid posterior (`fbmpost.posterior`)
+evaluates, and the reference `bayes.likelihood`'s jax version is checked against (tests/test_bayes_blur.py).
 
 Per axis the motion has structure function E[(z(t+s) - z(t))^2] = 2 K |s|^alpha, and each frame records its average
 over a box exposure (0 <= exposure_s <= dt_s). At alpha = 1 this is `gridpost.likelihood.motion_covariance`, the

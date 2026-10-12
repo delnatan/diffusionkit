@@ -9,7 +9,8 @@ table format and one `Acquisition`; use any one without the others.
 | module | question it answers | per track | across experiments | extra deps |
 |---|---|---|---|---|
 | `gridpost` (recommended) | how fast is each track, and how is `D` distributed? | exact grid posterior over `D`, information, localization floor | shared `D`; log-normal or free-shape `D` distribution per sample or replicate, with intervals; split by track length | none |
-| `classic` | what do MSD fits say? | MSD curve, linear `D` and power-law `K`/alpha (the only place alpha is reported) | ensemble MSD vs lag per sample, fitted, with a cluster-bootstrap interval | none |
+| `fbmpost` | what is each track's alpha? | joint grid posterior over alpha and `D_ref` (fBm), drawn as a D-alpha scatter with error ellipses; `D_ref` is **not** a Brownian `D` | not provided: an alpha population needs the joint deconvolution (see below) | none |
+| `classic` | what do MSD fits say? | MSD curve, linear `D` and power-law `K`/alpha by MSD fit | ensemble MSD vs lag per sample, fitted, with a cluster-bootstrap interval | none |
 | `drift` | what motion do all tracks share? | | one drift field per movie, subtracted before the above | none |
 | `bayes` | what does one weak track's full posterior look like? | NUTS via NumPyro, a diagnostic | not provided | `bayes` |
 
@@ -28,8 +29,8 @@ pip install -e .                    # numpy, polars, scipy -- classic and gridpo
 pip install -e ".[bayes,plots]"      # NumPyro/JAX Bayesian pipeline and plotting modules
 ```
 
-Python >=3.11. `classic`, `gridpost` and `drift` do not import JAX, NumPyro, or
-plotting libraries; `gridpost.viz` and `bayes.viz` need the `plots` extra.
+Python >=3.11. `classic`, `gridpost`, `fbmpost` and `drift` do not import JAX, NumPyro, or
+plotting libraries; `gridpost.viz`, `fbmpost.viz` and `bayes.viz` need the `plots` extra.
 
 ## Classical analysis: time-averaged and ensemble-averaged MSD
 
@@ -146,9 +147,8 @@ combined from. There is no lag window. This is the
 per-track information to report for `D`: a short, uninformative track
 produces a wide posterior rather than a falsely confident point estimate (see
 [docs/gridpost.md](docs/gridpost.md)). The motion's shape (alpha) is not part of
-`gridpost`: its per-track posterior did not hold up on short tracks (see
-docs/gridpost.md, "What is reported"), and the MSD fits remain the place for a
-power-law exponent.
+`gridpost`. It has its own pipeline, `fbmpost` (below); `gridpost`'s Brownian
+`D` stays the standard quantification of how fast tracks move.
 
 The default range, 1e-5 to 10 um^2/s, sits well below any localization
 floor, so tracks that can't be told from still fall into a low tail, read as
@@ -197,6 +197,50 @@ Counted per track, the groups add up to the distribution; counted per detection
 (each track once per frame), they give the make-up of the spots seen in focus.
 `gridpost.viz.plot_by_track_length` draws it. See
 [docs/gridpost.md](docs/gridpost.md#distribution-of-d-across-tracks-deconvolve).
+
+## alpha per track, and D_ref: `fbmpost`
+
+```python
+from diffusionkit.fbmpost import FbmPostOptions, analyze_tracks
+from diffusionkit.fbmpost.viz import plot_alpha_D   # needs the `plots` extra
+
+fbm = analyze_tracks(tracks, acquisition, FbmPostOptions(tau_ref_s=.1))
+plot_alpha_D(fbm.fits)   # D_ref against alpha, one 1-SD error ellipse per track
+```
+
+The joint grid posterior over the anomalous exponent alpha and an amplitude, under blurred fractional
+Brownian motion with each frame's localization SD. Its likelihood is `gridpost`'s at alpha = 1 (tested).
+Every per-track number is a posterior under stated priors: alpha is flat on 0.02-1.98 and the amplitude
+is flat in ln SNR. A track that carries no information on alpha returns that prior (mean 1, SD 0.57); its
+`alpha_post_info_bits` is then near 0. See [docs/fbmpost.md](docs/fbmpost.md).
+
+> **`D_ref` is not a Brownian D.** It is the fBm amplitude expressed as
+> `D_ref = MSD_1D(tau_ref) / (2 tau_ref)`: the true (unblurred) motion's apparent D at one lag,
+> `tau_ref_s` (default 0.1 s). It has the units of D (um^2/s) only so that the D-alpha scatter has
+> a readable axis.
+>
+> - **It depends on tau_ref.** `D_ref = K tau_ref^(alpha - 1)`, so it equals a Brownian D only at
+>   alpha = 1. At alpha = 0.3, moving tau_ref from 0.1 s to 1 s divides it by 5. `D_ref` values are
+>   comparable only at the same tau_ref, in seconds, and never across different tau_ref.
+> - **It comes from a different posterior.** Its margin inherits the alpha prior. Below the localization
+>   floor (`D_ref_floor_um2_s`), high-alpha hypotheses set its lower limit, so read it as an upper bound
+>   there (90% intervals covered 65-80% in simulation).
+> - **It differs from `gridpost`'s D on real data.** On gelatin, liquid movies agreed within 0.04
+>   decades. Gelled movies did not: short tracks' `D_ref` was up to a decade lower and long tracks' about
+>   0.25 decades higher.
+>
+> So don't report `D_ref` as a track's D or compare it with `gridpost` or MSD D values. Don't pair
+> `gridpost`'s D with `fbmpost`'s alpha, either: within a track, alpha and `D_ref` are correlated
+> (down to about -0.75 near the floor), which is why the scatter draws ellipses. For how fast tracks
+> move, and for D populations, use `gridpost`.
+
+**Populations of alpha.** A track's alpha curve (`keep_posteriors=True`) is a posterior: the amplitude is
+summed out under its prior, and near the floor that prior shapes it. Tracks therefore don't combine by
+adding these curves. On simulated populations, deconvolving them in 1D was biased: a true 0.49 share of
+alpha < 0.75 came out 0.05 when alpha and D were correlated. The population of alpha has to be estimated
+jointly with that of D: a 2D deconvolution of the tracks' (alpha, D) likelihoods. It recovered 0.475
+[0.45, 0.51] in the same simulation and is not yet in the package. As for D, a deconvolution describes
+the population; it does not sharpen any track's own alpha.
 
 ## Batches of experiments: replicates and samples
 
