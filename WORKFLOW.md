@@ -111,19 +111,21 @@ bands widen because the tracks cannot tell those D values apart.
 
 ```python
 comp = by_track_length(result.likelihoods, result.options.u_D(), weight="detections")
-comp.labels(), comp.n_tracks, comp.n_detections   # the groups: '3', '5-6', '25+', ...
-comp.unpooled                # (groups, grid): flat-prior posteriors summed per group
-comp.unpooled[:, comp.u < np.log(.035)].sum(1)    # mass below 0.035 per group
+comp.labels(), comp.n_tracks, comp.n_detections   # the groups: '3-4', '5-9', '10-19', '20+'
+comp.deconvolved             # (groups, grid): each group's deconvolved population times its share
+comp.populations[0].mass(hi=.035)    # draws of the share of the 3-4 frame group below 0.035
+comp.band(.68)               # each group's pointwise band, scaled like `deconvolved`
 
 from diffusionkit.gridpost.viz import plot_by_track_length   # needs the plots extra
 fig = plot_by_track_length(comp, result.fits["D_floor_um2_s"].drop_nulls().to_numpy())
 ```
 
 Fast particles leave the focal depth within a few frames, so short tracks come
-mostly from fast particles and long tracks from slow ones. The groups add up to
-the whole distribution. With `weight="tracks"` they are fractions of tracks. With
-`weight="detections"` each track counts once per frame, which gives the
-composition of the spots seen in focus.
+mostly from fast particles and long tracks from slow ones. Each group's
+population is deconvolved from its own tracks, and the groups stack to 1. With
+`weight="tracks"` a group's share is its fraction of tracks. With
+`weight="detections"` it is its fraction of frames, which gives the
+composition of the spots seen in focus (within a group each track still counts once).
 
 ## Inspect or change the classical analysis
 

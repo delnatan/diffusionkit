@@ -107,7 +107,7 @@ Three choices of g, beside the per-track posteriors, which need none:
 
 Two things look like population reads and are not:
 
-- **the average of the tracks' posteriors** (`LengthComposition.unpooled`).
+- **the average of the tracks' posteriors.**
   The sum is outside the log, so it is the likelihood of nothing; it is the
   first EM step of the deconvolution from the flat prior. A short track adds
   the flat prior's shape to it, so it describes the tracks, with their
@@ -132,8 +132,8 @@ posterior reaches 0, one shared D describes the tracks.
 
 The words are kept to these meanings throughout:
 
-- **unpooled**: each track's own posterior under the flat prior (`fits`, and
-  their sum in `LengthComposition.unpooled`). The prior is flat in ln D on
+- **unpooled**: each track's own posterior under the flat prior (`fits`).
+  The prior is flat in ln D on
   the grid, so a track's normalized likelihood row is also its posterior.
 - **shared** is the one D of complete pooling (`fit_shared_D`,
   `shared_D_tracks`, `SharedD`, `GridPostBatch.shared_D`), and nothing else:
@@ -260,16 +260,25 @@ grid of per-track log-likelihood rows.
 
 Track length is observed, and it depends on D. A fast particle crosses the
 focal depth in a few frames and makes short tracks; a slow one stays in focus
-and makes one long track. `by_track_length(likelihoods, u)` splits the
-unpooled distribution of D into groups of track length (`LENGTH_EDGES`, lower edges 3, 4,
-5, 7, 10, 15, 25, 50 frames, trimmed at the longest track). Each track i
-contributes w_i p_i(D), and the contributions are summed per group and divided
-by the total weight, so the groups add up to the whole distribution
-(`unpooled`). p_i is the track's flat-prior posterior, so this describes the
-tracks without a population model, and a short track spreads wide.
+and makes one long track. `by_track_length(likelihoods, u)` splits the tracks
+into a few length groups (`LENGTH_EDGES`, lower edges 3, 5, 10, 20 frames,
+trimmed at the longest track) and deconvolves each group's population of D
+from its own tracks' likelihood rows (`deconvolve`, above). Group b's
+population g_b is stacked by its share of the weight, share_b g_b(D), so the
+groups add up to a mixture population (`deconvolved`), with each group's
+draws in `populations[b]` and its band in `band()`.
 
-`weight="tracks"` counts each track once. `weight="detections"` counts each frame, so the result is the
-composition of the spots seen. The two differ when fast particles make many short
+The stack is close to the whole table's deconvolution but not equal to it:
+each group's evidence chooses its own smoothness. A group with few tracks is
+mostly the smoothness prior; its band shows it. On a simulated mix of D 0.3
+and 0.003 um^2/s whose fast share falls with length (200 tracks per group),
+each group's fast share came out within 0.01 of the truth, and the fast mode's
+spread in log10 D (truly 0) was 0.03-0.11, against 0.12-0.47 from averaging the
+tracks' posteriors, which this replaces.
+
+`weight="tracks"` gives each group its share of tracks. `weight="detections"` gives it its
+share of frames, so the result is the composition of the spots seen; within a
+group each track still counts once. The two differ when fast particles make many short
 tracks. Per detection, the excluded tracks shorter than `min_frames`
 (mostly single spots, likely fast) are missing, which pushes the slow share up.
 `viz.plot_by_track_length` stacks the groups and shows each group's own

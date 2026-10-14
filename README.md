@@ -190,10 +190,11 @@ whose smoothness is chosen by the data (Laplace evidence), and `samples` are
 posterior draws of the whole distribution, so any band or mass comes with an
 interval (`pop.band(.68, cumulative=True)`).
 
-`by_track_length` splits the unpooled distribution (the tracks' own flat-prior
-posteriors, summed) into track-length groups. Fast particles leave the focal depth within a few frames,
+`by_track_length` deconvolves the population of D within each of a few
+track-length groups (3-4, 5-9, 10-19, 20+ frames) and stacks them by their share.
+Fast particles leave the focal depth within a few frames,
 so short tracks come mostly from fast particles and long tracks from slow ones.
-Counted per track, the groups add up to the distribution; counted per detection
+Shared by tracks, the groups add up to a population; shared by detection
 (each track once per frame), they give the make-up of the spots seen in focus.
 `gridpost.viz.plot_by_track_length` draws it. See
 [docs/gridpost.md](docs/gridpost.md#distribution-of-d-across-tracks-deconvolve).

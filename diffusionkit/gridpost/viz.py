@@ -19,16 +19,16 @@ def _floor_band(ax, floor_um2_s):
 
 def plot_by_track_length(comp: LengthComposition, floor_um2_s: np.ndarray | None = None,
                          cmap: str = "viridis") -> plt.Figure:
-    """Top: the distribution of D per decade, stacked by track-length group. Bottom: each group's
-    own distribution (normalized to its peak), with its tracks and detections at right.
+    """Top: the population of D per decade, stacked by track-length group. Bottom: each group's
+    own deconvolved population (normalized to its peak), with its tracks and detections at right.
 
-    The distribution is the tracks' own flat-prior posteriors (unpooled), so a short track spreads wide.
+    A group with few tracks is mostly the deconvolution's smoothness prior: read its count.
     `floor_um2_s` (e.g. the fits table's `D_floor_um2_s`) draws the localization floor's 10-90%
     band and median. Read below the floor as unresolved: those tracks only bound D from above.
     """
     x = comp.u / np.log(10)
     dx = x[1] - x[0]
-    columns = [("unpooled (each track's flat-prior posterior)", comp.unpooled)]
+    columns = [("deconvolved per length group", comp.deconvolved)]
     colors = plt.get_cmap(cmap)(np.linspace(.1, .9, len(comp.edges)))
     labels = comp.labels()
     fig, axes = plt.subplots(2, len(columns), figsize=(5.2 * len(columns), 6.4), squeeze=False,
