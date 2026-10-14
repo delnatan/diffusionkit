@@ -109,8 +109,43 @@ frames, D_ref log-normal around the floor), a 1D deconvolution of the alpha curv
 - Alpha correlated with D: it came out 0.05 against 0.49.
 
 Integrating the amplitude under the true D population instead recovered 0.59. A population of alpha has to
-be estimated jointly with the population of D: the deconvolution of `gridpost.deconvolve` on the (alpha, ln
-D_ref) plane.
+be estimated jointly with the population of D (next section).
+
+## Population of alpha and D_ref
+
+`analyze_tracks(..., keep_likelihoods=True)` keeps each "ok" track's likelihood on (alpha, log10 D_ref) cells
+(`JointGrid`: alpha cells 0.06 wide, D_ref cells 0.2 decades wide over 1e-6 to 1e2). Each fine grid row is
+moved to the common D_ref axis and averaged over each cell, so a narrow likelihood is not aliased. No prior
+enters. `deconvolve_tracks` fits g(alpha, log10 D_ref) with `gridpost.deconvolve_2d`: `deconvolve`'s smooth log
+density, Newton fit, Laplace evidence and HMC on the flattened grid. The penalty is the second difference along
+each axis with its own lam. Its null space includes alpha × log10 D_ref, so a correlation between them is not
+smoothed toward zero. lam is the evidence maximum (a diagonal scan, then Nelder-Mead), and the draws are at that
+lam rather than integrated over it.
+
+The fit uses only the D_ref cells some track tells apart (`informative_range`). Above them every track is at
+least 5 nats below its best; below them every track is on its noise-only plateau to 1%. That plateau depends on
+alpha: at high alpha the track's longest lag detects motion at lower D_ref, so short tracks keep the range wide.
+
+`scripts/validate_fbmpost_population.py`, 1500 tracks of 5-80 frames, D_ref straddling the floor (about 30% of
+tracks below it), gelatin-like acquisition. Medians and 90% bands over the draws, seed 0:
+
+| | truth | 2D population | 1D on alpha curves |
+|---|---|---|---|
+| Two modes: P(alpha < 0.75) | 0.59 | 0.62 [0.58, 0.67] | 0.42 [0.36, 0.47] |
+| Two modes: P(alpha < 0.75), above the floor | 0.44 | 0.51 [0.46, 0.57] | |
+| Two modes: SD of alpha | 0.29 | 0.32 [0.30, 0.34] | |
+| Two modes: corr(alpha, log10 D_ref) | 0.61 | 0.63 [0.50, 0.70] | |
+| Homogeneous alpha = 0.6: mean | 0.60 | 0.59 [0.58, 0.61] | |
+| Homogeneous: SD of alpha | 0 | 0.06 [0.04, 0.08] | |
+
+Both modes come out (peaks near 0.4 and 1.0), and a single alpha comes out as one peak about a cell wide. The
+two-mode fit leans low by about 0.03 in alpha. A second seed in the prototype gave the same P(alpha < 0.75) but a
+correlation of 0.29 [0.07, 0.47] against 0.58. Bands are from two seeds, not a coverage study. A fit takes
+8-20 s for 1500 tracks.
+
+Below the floor the tracks barely tell D_ref values apart, so g's alpha there is mostly the smoothness prior
+continuing alpha from above. `AlphaDPopulation`'s `above_floor` reads leave that part out, and
+`mass_below_floor` says how much of the population it is.
 
 ## Calibration (`scripts/validate_fbmpost.py`)
 

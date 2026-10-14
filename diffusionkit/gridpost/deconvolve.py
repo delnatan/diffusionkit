@@ -47,6 +47,11 @@ remain:
 - Below the localization floor the data cannot tell D values apart; the bands
   widen there, and a mode's location is under-covered (62% at 68%).
 
+`deconvolve_2d` is the same model on a 2D grid, for a population over two parameters at once (alpha and
+D_ref in `fbmpost.population`): the penalty is a Kronecker sum of the 1D one along each axis, each axis with
+its own lam, so its null space is {1, u, v, u v} and a linear trend of log g along the diagonal (a correlation
+between the two parameters) is not smoothed away.
+
 `deconvolve` itself only needs log-likelihood rows on a common 1D grid. A track
 with no information about the parameter has a flat likelihood and leaves the fit
 and the evidence exactly unchanged (and the bands, up to Monte Carlo error),
@@ -59,7 +64,7 @@ from warnings import warn
 
 import numpy as np
 from scipy.linalg import solve_triangular
-from scipy.optimize import minimize_scalar
+from scipy.optimize import minimize, minimize_scalar
 
 from ..data import Acquisition
 from .data import GridDistribution, GridPosteriorAnalysis
@@ -81,6 +86,22 @@ class Deconvolution(GridDistribution):
     lam: float                # smoothness at the evidence maximum
     lam_grid: np.ndarray      # scanned lam, descending
     log_evidence: np.ndarray  # Laplace log evidence on lam_grid
+
+
+@dataclass(frozen=True)
+class Deconvolution2D:
+    """Distribution of two parameters across tracks on the grid `u` x `v`.
+
+    `weights` (len(u), len(v)) is the posterior mode at `lam`; `samples` (n_samples, len(u), len(v)) are
+    draws at that lam. Each sums to 1.
+    """
+
+    u: np.ndarray
+    v: np.ndarray
+    weights: np.ndarray
+    samples: np.ndarray
+    lam: tuple[float, float]  # (along u, along v) at the evidence maximum
+    log_evidence: float
 
 
 @dataclass(frozen=True)
@@ -234,6 +255,35 @@ class _LogG:
         return np.hstack(keep).T
 
 
+class _LogG2(_LogG):
+    """`_LogG` on a flattened (n_u, n_v) grid (u major), with lam = (lam_u, lam_v).
+
+    Q(lam) = lam_u Omega_u (x) I dv + lam_v I du (x) Omega_v -- the 1D penalty along each axis,
+    integrated over the other -- plus EPS on the null space's three non-constant directions
+    {u, v, u v}. Its eigenvalues are sums of the axes' (Kronecker sum), so the evidence's
+    normalizer costs nothing per lam.
+    """
+
+    def __init__(self, L: np.ndarray, shape: tuple[int, int], du: float, dv: float):
+        self._setup(L)
+        nu, nv = shape
+        Ou, Ov = _second_difference_penalty(nu, du), _second_difference_penalty(nv, dv)
+        self.Omegas = (np.kron(Ou, np.eye(nv)) * dv, np.kron(np.eye(nu), Ov) * du)
+        eu, ev = np.linalg.eigvalsh(Ou) * dv, np.linalg.eigvalsh(Ov) * du
+        eu[:2], ev[:2] = 0., 0.  # the exact null space {1, u} of each axis
+        self._eig = (eu, ev)
+        a, b = np.arange(nu) - (nu - 1) / 2, np.arange(nv) - (nv - 1) / 2
+        null = (np.kron(a, np.ones(nv)), np.kron(np.ones(nu), b), np.kron(a, b))  # orthogonal, sum zero
+        self.tilt = EPS * sum(np.outer(w, w) / (w @ w) for w in null)
+
+    def Q(self, lam) -> np.ndarray:
+        return lam[0] * self.Omegas[0] + lam[1] * self.Omegas[1] + self.tilt
+
+    def log_prior_norm(self, lam) -> float:
+        ev = lam[0] * self._eig[0][:, None] + lam[1] * self._eig[1][None, :]
+        return 0.5 * (float(np.sum(np.log(ev[ev > 0]))) + 3 * np.log(EPS))
+
+
 def _softmax(eta: np.ndarray, axis: int = 0) -> np.ndarray:
     e = np.exp(eta - eta.max(axis=axis, keepdims=True))
     return e / e.sum(axis=axis, keepdims=True)
@@ -314,6 +364,60 @@ def deconvolve(lls: np.ndarray, u: np.ndarray, log_prior: np.ndarray | None = No
         return out
 
     return Deconvolution(u, full(_softmax(best.x)), full(draws), best.lam, lam_grid, curve)
+
+
+def deconvolve_2d(lls: np.ndarray, u: np.ndarray, v: np.ndarray, n_samples: int = 1000,
+                  lam_grid: np.ndarray = np.geomspace(1e3, 1e-6, 10),
+                  rng: np.random.Generator | None = None) -> Deconvolution2D:
+    """Distribution of two grid parameters across tracks from log-likelihoods on `u` x `v`.
+
+    `lls` is (n_tracks, len(u), len(v)); `u` and `v` must each be evenly spaced. lam = (lam_u,
+    lam_v) maximizes the Laplace evidence: a scan of lam_u = lam_v over `lam_grid`, then
+    Nelder-Mead in (ln lam_u, ln lam_v) from its best point. The draws are HMC at that lam; unlike
+    `deconvolve`, lam is not integrated out. Warns when the scan's best point is an end of
+    `lam_grid`. `rng` (default: seeded) draws `samples`.
+    """
+    lls, u, v = np.asarray(lls, float), np.asarray(u, float), np.asarray(v, float)
+    if lls.ndim != 3 or lls.shape[1:] != (len(u), len(v)):
+        raise ValueError(f"lls must be (n_tracks, {len(u)}, {len(v)}), got {lls.shape}")
+    if len(u) < 3 or len(v) < 3:
+        raise ValueError("each axis needs at least 3 grid points")
+    steps = []
+    for axis in (u, v):
+        d = np.diff(axis)
+        if not np.allclose(d, d[0], rtol=1e-6):
+            raise ValueError("u and v must be evenly spaced")
+        steps.append(float(d[0]))
+    flat = lls.reshape(len(lls), -1)
+    model = _LogG2(np.exp(flat - flat.max(axis=1, keepdims=True)), (len(u), len(v)), *steps)
+    modes: dict = {}
+    x = np.zeros(model.K)
+
+    def neg(loglam):
+        nonlocal x
+        key = tuple(np.round(loglam, 4))
+        if key not in modes:
+            modes[key] = model.fit(tuple(np.exp(loglam)), x)  # warm-started from the last fit
+            x = modes[key].x
+        return -modes[key].log_evidence
+
+    lam_grid = np.sort(np.asarray(lam_grid, float))[::-1]
+    scan = [neg(np.log([lam, lam])) for lam in lam_grid]  # smooth to rough
+    i = int(np.argmin(scan))
+    if i in (0, len(lam_grid) - 1):
+        warn(f"deconvolve_2d: evidence maximum at the lam_grid edge (lam={lam_grid[i]:.3g}); widen lam_grid",
+             stacklevel=2)
+    start = np.log([lam_grid[i]] * 2)
+    minimize(neg, start, method="Nelder-Mead",
+             options={"xatol": .1, "fatol": .05, "initial_simplex": start + np.array([[0, 0], [1.5, 0], [0, 1.5]])})
+    best = max(modes.values(), key=lambda m: m.log_evidence)
+    if best.problem:
+        warn(f"deconvolve_2d: {best.problem} at lam={best.lam}", stacklevel=2)
+    rng = np.random.default_rng(0) if rng is None else rng
+    draws = model.hmc(best, N_CHAINS, -(-n_samples // N_CHAINS), rng)[:n_samples]
+    shape = (len(u), len(v))
+    return Deconvolution2D(u, v, _softmax(best.x).reshape(shape), draws.reshape(-1, *shape),
+                           (float(best.lam[0]), float(best.lam[1])), float(best.log_evidence))
 
 
 def deconvolve_tracks(

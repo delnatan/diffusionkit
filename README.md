@@ -9,7 +9,7 @@ table format and one `Acquisition`; use any one without the others.
 | module | question it answers | per track | across experiments | extra deps |
 |---|---|---|---|---|
 | `gridpost` (recommended) | how fast is each track, and how is `D` distributed? | exact grid posterior over `D`, information, localization floor | shared `D`; log-normal or free-shape `D` distribution per sample or replicate, with intervals; split by track length | none |
-| `fbmpost` | what is each track's alpha? | joint grid posterior over alpha and `D_ref` (fBm), drawn as a D-alpha scatter with error ellipses; `D_ref` is **not** a Brownian `D` | not provided: an alpha population needs the joint deconvolution (see below) | none |
+| `fbmpost` | what is each track's alpha? | joint grid posterior over alpha and `D_ref` (fBm), drawn as a D-alpha scatter with error ellipses; `D_ref` is **not** a Brownian `D` | free-shape population of (alpha, `D_ref`) by 2D deconvolution of the tracks' joint likelihoods, with intervals | none |
 | `classic` | what do MSD fits say? | MSD curve, linear `D` and power-law `K`/alpha by MSD fit | ensemble MSD vs lag per sample, fitted, with a cluster-bootstrap interval | none |
 | `drift` | what motion do all tracks share? | | one drift field per movie, subtracted before the above | none |
 | `bayes` | what does one weak track's full posterior look like? | NUTS via NumPyro, a diagnostic | not provided | `bayes` |
@@ -237,11 +237,23 @@ is flat in ln SNR. A track that carries no information on alpha returns that pri
 
 **Populations of alpha.** A track's alpha curve (`keep_posteriors=True`) is a posterior: the amplitude is
 summed out under its prior, and near the floor that prior shapes it. Tracks therefore don't combine by
-adding these curves. On simulated populations, deconvolving them in 1D was biased: a true 0.49 share of
-alpha < 0.75 came out 0.05 when alpha and D were correlated. The population of alpha has to be estimated
-jointly with that of D: a 2D deconvolution of the tracks' (alpha, D) likelihoods. It recovered 0.475
-[0.45, 0.51] in the same simulation and is not yet in the package. As for D, a deconvolution describes
-the population; it does not sharpen any track's own alpha.
+adding these curves; deconvolving them in 1D was biased in simulation. The population of alpha is
+estimated jointly with that of D_ref instead, from each track's prior-free likelihood on (alpha, log10
+D_ref) cells:
+
+```python
+from diffusionkit.fbmpost import deconvolve_tracks
+
+fbm = analyze_tracks(tracks, acquisition, FbmPostOptions(), keep_likelihoods=True)
+pop = deconvolve_tracks(fbm.likelihoods)           # or fbm.likelihoods.rows(mask) for a subset
+pop.alpha_weights(), pop.alpha_band(.9)            # alpha's distribution across tracks, pointwise band
+pop.p_alpha_below(1.), pop.alpha_sd(), pop.corr()  # one value per posterior draw: take quantiles
+```
+
+Below the localization floor the tracks don't tell D_ref values apart, so alpha there comes mostly from
+the smoothness prior; `above_floor=True` reads leave that part out. As for D, a deconvolution describes
+the population; it does not sharpen any track's own alpha. See
+[docs/fbmpost.md](docs/fbmpost.md#population-of-alpha-and-d_ref).
 
 ## Batches of experiments: replicates and samples
 

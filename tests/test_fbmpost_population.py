@@ -1,0 +1,122 @@
+"""The population of (alpha, D_ref) across tracks: the 2D deconvolution and the fbmpost cells it is fitted to."""
+import unittest
+
+import numpy as np
+import polars as pl
+
+from diffusionkit import Acquisition
+from diffusionkit.fbmpost import (AlphaDPopulation, FbmPostOptions, JointGrid, analyze_tracks, deconvolve_tracks,
+                                  simulate_tracks)
+from diffusionkit.fbmpost.population import informative_range
+from diffusionkit.gridpost.deconvolve import deconvolve_2d
+
+ACQ = Acquisition(.044, .02)
+
+
+def gaussian_tracks(rng, n, u, v, sd, corr):
+    """Per-track Gaussian log-likelihoods on u x v around (x, y) drawn from a correlated normal population."""
+    xy = rng.multivariate_normal([0, 0], [[1, corr], [corr, 1]], n) * .5
+    obs = xy + sd * rng.standard_normal(xy.shape)
+    return -.5 * (((u[None, :, None] - obs[:, 0, None, None]) ** 2 + (v[None, None, :] - obs[:, 1, None, None]) ** 2)
+                  / sd ** 2), xy
+
+
+class Deconvolve2DTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        rng = np.random.default_rng(1)
+        cls.u = cls.v = np.linspace(-2.5, 2.5, 21)
+        cls.lls, cls.truth = gaussian_tracks(rng, 400, cls.u, cls.v, .3, .7)
+        cls.fit = deconvolve_2d(cls.lls, cls.u, cls.v, n_samples=200)
+
+    def test_recovers_a_correlated_population(self):
+        s, u, v = self.fit.samples, self.u[None, :, None], self.v[None, None, :]
+        mu, mv = (s * u).sum((1, 2)), (s * v).sum((1, 2))
+        su, sv = np.sqrt((s * u ** 2).sum((1, 2)) - mu ** 2), np.sqrt((s * v ** 2).sum((1, 2)) - mv ** 2)
+        corr = ((s * u * v).sum((1, 2)) - mu * mv) / (su * sv)
+        self.assertLess(abs(np.median(mu)), .1)
+        self.assertLess(abs(np.median(su) - .5), .1)  # the population's SD, not the observations' (0.58)
+        self.assertLess(abs(np.median(corr) - .7), .15)
+
+    def test_weights_and_draws_are_distributions(self):
+        self.assertAlmostEqual(self.fit.weights.sum(), 1, places=10)
+        np.testing.assert_allclose(self.fit.samples.sum(axis=(1, 2)), 1, atol=1e-10)
+        self.assertTrue((self.fit.samples >= 0).all())
+
+    def test_a_track_with_no_information_changes_nothing(self):
+        flat = np.zeros((5, len(self.u), len(self.v)))
+        fit = deconvolve_2d(np.concatenate([self.lls, flat]), self.u, self.v, n_samples=50)
+        self.assertEqual(fit.lam, self.fit.lam)
+        np.testing.assert_allclose(fit.weights, self.fit.weights, atol=1e-6)
+
+    def test_rejects_an_uneven_grid(self):
+        with self.assertRaises(ValueError):
+            deconvolve_2d(self.lls, self.u ** 3, self.v)
+
+
+class JointLikelihoodTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        rng = np.random.default_rng(2)
+        cls.options = FbmPostOptions()
+        short = pl.DataFrame({"track_id": [99, 99], "frame": [0, 1], "x_um": [0., .01], "y_um": [0., 0.],
+                              "sigma_x_um": [.013] * 2, "sigma_y_um": [.013] * 2})
+        cls.table = pl.concat([simulate_tracks(40, 40, .6, .01, .013, ACQ, rng=rng), short])
+        cls.result = analyze_tracks(cls.table, ACQ, cls.options, keep_likelihoods=True)
+
+    def test_one_slab_per_fitted_track_on_the_joint_grid(self):
+        lik, grid = self.result.likelihoods, JointGrid()
+        self.assertEqual(list(lik.track_ids), list(range(40)))  # the 2-frame track is excluded
+        self.assertEqual(lik.loglik.shape, (40, len(grid.alphas(self.options)), len(grid.log10_D_ref())))
+        np.testing.assert_allclose(lik.loglik.max(axis=(1, 2)), 0)
+        np.testing.assert_allclose(lik.D_ref_floor_um2_s, .013 ** 2 / self.options.tau_ref_s)
+        self.assertIsNone(analyze_tracks(self.table, ACQ, self.options).likelihoods)
+
+    def test_alpha_cells_have_one_centred_on_one(self):
+        alphas = JointGrid().alphas(self.options)
+        self.assertTrue(np.isclose(alphas, 1).any())
+        np.testing.assert_allclose(np.diff(alphas), .06)
+
+    def test_each_track_peaks_near_its_posterior(self):
+        lik, fits = self.result.likelihoods, self.result.fits.filter(pl.col("status") == "ok")
+        flat = lik.loglik.reshape(len(lik.track_ids), -1).argmax(axis=1)
+        a, d = np.unravel_index(flat, lik.loglik.shape[1:])
+        self.assertLess(np.median(np.abs(lik.log10_D_ref[d] - fits["log10_D_ref_post_mean"].to_numpy())), .25)
+
+    def test_the_range_drops_cells_no_track_reaches(self):
+        keep = informative_range(self.result.likelihoods)
+        D = self.result.likelihoods.log10_D_ref[keep]
+        self.assertGreater(D[-1], -2)  # the tracks sit at log10 D_ref = -2
+        self.assertLess(D[-1], 1)
+
+    def test_population_of_identical_tracks_is_narrow_at_their_alpha(self):
+        pop = deconvolve_tracks(self.result.likelihoods, n_samples=200)
+        self.assertEqual(pop.n_tracks, 40)
+        self.assertLess(abs(np.median(pop.alpha_mean()) - .6), .1)
+        self.assertLess(np.median(pop.alpha_sd()), .15)
+        self.assertGreater(np.median(pop.p_alpha_below(1.)), .9)
+        self.assertAlmostEqual(pop.log10_floor, np.log10(.013 ** 2 / self.options.tau_ref_s))
+        self.assertLess(np.median(pop.mass_below_floor()), .2)
+
+
+class AlphaDPopulationTests(unittest.TestCase):
+    def setUp(self):
+        alphas, D = np.array([.4, .7, 1., 1.3]), np.array([-4., -3., -2.])
+        w = np.zeros((4, 3))
+        w[0, 0], w[2, 2] = .5, .5  # half at (0.4, below the floor), half at (1.0, above it)
+        self.pop = AlphaDPopulation(alphas, D, w, w[None], (1., 1.), 2, -2.5)
+
+    def test_cut_splits_a_cell_at_its_centre(self):
+        self.assertAlmostEqual(self.pop.p_alpha_below(1.)[0], .75)
+        self.assertAlmostEqual(self.pop.p_alpha_below(.85)[0], .5)
+
+    def test_above_floor_reads_drop_the_mass_below_it(self):
+        self.assertAlmostEqual(self.pop.mass_below_floor()[0], .5)
+        self.assertAlmostEqual(self.pop.alpha_mean(above_floor=True)[0], 1.)
+        np.testing.assert_allclose(self.pop.alpha_weights(above_floor=True), [0, 0, 1, 0])
+        self.assertAlmostEqual(self.pop.alpha_mean()[0], .7)
+        self.assertAlmostEqual(self.pop.corr()[0], 1.)
+
+
+if __name__ == "__main__":
+    unittest.main()
