@@ -9,7 +9,7 @@ table format and one `Acquisition`; use any one without the others.
 | module | question it answers | per track | across experiments | extra deps |
 |---|---|---|---|---|
 | `gridpost` (recommended) | how fast is each track, and how is `D` distributed? | exact grid posterior over `D`, information, localization floor | shared `D`; log-normal or free-shape `D` distribution per sample or replicate, with intervals; split by track length | none |
-| `fbmpost` | what is each track's alpha? | joint grid posterior over alpha and `D_ref` (fBm), drawn as a D-alpha scatter with error ellipses; `D_ref` is **not** a Brownian `D` | free-shape population of (alpha, `D_ref`) by 2D deconvolution of the tracks' joint likelihoods, with intervals | none |
+| `fbmpost` | what is each track's alpha? | alpha and `D_ref` (fBm) by profile likelihood, with likelihood-ratio intervals and a test of alpha = 1; `D_ref` is **not** a Brownian `D` | shared alpha (summed profiles); free-shape population of (alpha, `D_ref`) by 2D deconvolution of the tracks' joint likelihoods, with intervals | none |
 | `classic` | what do MSD fits say? | MSD curve, linear `D` and power-law `K`/alpha by MSD fit | ensemble MSD vs lag per sample, fitted, with a cluster-bootstrap interval | none |
 | `drift` | what motion do all tracks share? | | one drift field per movie, subtracted before the above | none |
 | `bayes` | what does one weak track's full posterior look like? | NUTS via NumPyro, a diagnostic | not provided | `bayes` |
@@ -202,44 +202,29 @@ Shared by tracks, the groups add up to a population; shared by detection
 ## alpha per track, and D_ref: `fbmpost`
 
 ```python
-from diffusionkit.fbmpost import FbmPostOptions, analyze_tracks
+from diffusionkit.fbmpost import FbmPostOptions, analyze_tracks, shared_alpha
 from diffusionkit.fbmpost.viz import plot_alpha_D   # needs the `plots` extra
 
-fbm = analyze_tracks(tracks, acquisition, FbmPostOptions(tau_ref_s=.1))
-plot_alpha_D(fbm.fits)   # D_ref against alpha, one 1-SD error ellipse per track
+fbm = analyze_tracks(tracks, acquisition, FbmPostOptions(tau_ref_s=.1), keep_profiles=True)
+plot_alpha_D(fbm.fits)               # D_ref against alpha, likelihood-ratio intervals as error bars
+shared_alpha(fbm.profiles).summary() # one alpha for all tracks
 ```
 
-The joint grid posterior over the anomalous exponent alpha and an amplitude, under blurred fractional
-Brownian motion with each frame's localization SD. Its likelihood is `gridpost`'s at alpha = 1 (tested).
-Every per-track number is a posterior under stated priors: alpha is flat on 0.02-1.98 and the amplitude
-is flat in ln SNR. A track that carries no information on alpha returns that prior (mean 1, SD 0.57); its
-`alpha_post_info_bits` is then near 0. See [docs/fbmpost.md](docs/fbmpost.md).
+The anomalous exponent alpha and an amplitude, under blurred fractional Brownian motion with each frame's
+localization SD. Its likelihood is `gridpost`'s at alpha = 1 (tested). The amplitude is maximized at each
+alpha (the profile likelihood), so no prior enters: each track gets `alpha_hat`, its likelihood-ratio interval
+(95% by default), and a likelihood-ratio test of alpha = 1. A track with no motion above its noise has no
+`alpha_hat`; its D_ref interval is then an upper bound. Summing the profiles gives one alpha shared by all
+tracks (`shared_alpha`), the alpha counterpart of `gridpost`'s shared D. See [docs/fbmpost.md](docs/fbmpost.md).
 
 > **`D_ref` is not a Brownian D.** It is the fBm amplitude expressed as
 > `D_ref = MSD_1D(tau_ref) / (2 tau_ref)`: the true (unblurred) motion's apparent D at one lag,
-> `tau_ref_s` (default 0.1 s). It has the units of D (um^2/s) only so that the D-alpha scatter has
-> a readable axis.
->
-> - **It depends on tau_ref.** `D_ref = K tau_ref^(alpha - 1)`, so it equals a Brownian D only at
->   alpha = 1. At alpha = 0.3, moving tau_ref from 0.1 s to 1 s divides it by 5. `D_ref` values are
->   comparable only at the same tau_ref, in seconds, and never across different tau_ref.
-> - **It comes from a different posterior.** Its margin inherits the alpha prior. Below the localization
->   floor (`D_ref_floor_um2_s`), high-alpha hypotheses set its lower limit, so read it as an upper bound
->   there (90% intervals covered 65-80% in simulation).
-> - **It differs from `gridpost`'s D on real data.** On gelatin, liquid movies agreed within 0.04
->   decades. Gelled movies did not: short tracks' `D_ref` was up to a decade lower and long tracks' about
->   0.25 decades higher.
->
-> So don't report `D_ref` as a track's D or compare it with `gridpost` or MSD D values. Don't pair
-> `gridpost`'s D with `fbmpost`'s alpha, either: within a track, alpha and `D_ref` are correlated
-> (down to about -0.75 near the floor), which is why the scatter draws ellipses. For how fast tracks
-> move, and for D populations, use `gridpost`.
+> `tau_ref_s` (default 0.1 s). `D_ref = K tau_ref^(alpha - 1)`, so it equals a Brownian D only at
+> alpha = 1, and values are comparable only at the same tau_ref in seconds. For how fast tracks move, and
+> for D populations, use `gridpost`.
 
-**Populations of alpha.** A track's alpha curve (`keep_posteriors=True`) is a posterior: the amplitude is
-summed out under its prior, and near the floor that prior shapes it. Tracks therefore don't combine by
-adding these curves; deconvolving them in 1D was biased in simulation. The population of alpha is
-estimated jointly with that of D_ref instead, from each track's prior-free likelihood on (alpha, log10
-D_ref) cells:
+**Populations of alpha.** How alpha is distributed across tracks is estimated jointly with D_ref, from each
+track's likelihood on (alpha, log10 D_ref) cells:
 
 ```python
 from diffusionkit.fbmpost import deconvolve_tracks

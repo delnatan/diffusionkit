@@ -1,4 +1,4 @@
-"""fBm grid-posterior inputs and outputs. Algorithms live in other modules."""
+"""fBm profile-likelihood inputs and outputs. Algorithms live in other modules."""
 from dataclasses import dataclass, field
 from typing import ClassVar
 
@@ -10,16 +10,11 @@ from ..data import Acquisition
 
 @dataclass(frozen=True)
 class FbmPostOptions:
-    """Everything an fBm grid-posterior run depends on besides the tracks and the acquisition.
+    """Everything an fBm profile-likelihood run depends on besides the tracks and the acquisition.
 
-    The prior is flat in alpha over [alpha_min, alpha_max] and flat in ln SNR over [snr_min, snr_max],
-    where SNR = K ||L^-1 C_alpha L^-t|| is the amplitude in units of the track's own localization
-    noise (`posterior.log_likelihood_grid`). Within one alpha that is flat in ln K, ln D or any other
-    amplitude, so it changes nothing for a track that measures its amplitude; what it fixes is how
-    the bounds fall across alpha. Below detection the likelihood depends on K only through K lam,
-    so in SNR units the noise-only stretch is equally long at every alpha, and a track that sees only
-    noise returns the flat alpha prior. (Bounds in D at dt lean such tracks to low alpha, and in D at
-    the longest lag they still lean, unless the range is many decades wide.)
+    alpha is evaluated on `alphas()`, n_alpha points over [alpha_min, alpha_max]; the amplitude is
+    profiled out at each (`profile`), so no prior enters. `level` is the likelihood-ratio intervals'
+    coverage: alpha within chi2_1(level) / 2 of the maximum (1.92 nats at 0.95).
 
     `tau_ref_s` only sets what is reported: D_ref = MSD_1D(tau_ref) / (2 tau_ref), the D of the
     true (unblurred) motion at one lag shared by every track and movie. At alpha = 1 it is the
@@ -27,22 +22,17 @@ class FbmPostOptions:
     and keep it fixed across datasets with different frame intervals.
     """
     min_frames: int = 3
-    level: float = .9  # credible-interval mass
+    level: float = .95
     tau_ref_s: float = .1
     alpha_min: float = .02
     alpha_max: float = 1.98
     n_alpha: int = 99  # steps of 0.02 over the default range, with alpha = 1 on the grid
-    snr_min: float = 1e-4
-    snr_max: float = 1e8
-    n_snr: int = 553  # steps of 0.05 in ln SNR over the default range
 
     def __post_init__(self):
         if not 0 < self.alpha_min < self.alpha_max < 2:
             raise ValueError(f"need 0 < alpha_min < alpha_max < 2, got {self.alpha_min}, {self.alpha_max}")
-        if not (np.isfinite(self.snr_min) and np.isfinite(self.snr_max) and 0 < self.snr_min < self.snr_max):
-            raise ValueError(f"need 0 < snr_min < snr_max, got {self.snr_min}, {self.snr_max}")
-        if self.n_alpha < 2 or self.n_snr < 2:
-            raise ValueError("n_alpha and n_snr must be at least 2")
+        if self.n_alpha < 3:
+            raise ValueError("n_alpha must be at least 3")
         if not 0 < self.level < 1:
             raise ValueError(f"level must be in (0, 1), got {self.level}")
         if not self.tau_ref_s > 0:
@@ -54,55 +44,74 @@ class FbmPostOptions:
         """The alpha grid."""
         return np.linspace(self.alpha_min, self.alpha_max, self.n_alpha)
 
-    def u_snr(self) -> np.ndarray:
-        """The ln SNR grid the amplitude is evaluated on."""
-        return np.linspace(np.log(self.snr_min), np.log(self.snr_max), self.n_snr)
-
 
 @dataclass(frozen=True)
-class PosteriorAlphaD:
+class ProfileAlphaD:
+    """One track's profile-likelihood fit. `alpha_hat` is None when the track shows no motion above its
+    localization noise (its likelihood peaks at K = 0, the same at every alpha); D_ref_lo is 0 when the track
+    only bounds D_ref from above."""
     PARAMETERS: ClassVar[tuple[str, ...]] = (
-        "alpha_post_mean", "alpha_post_lo", "alpha_post_hi", "alpha_post_sd", "alpha_post_info_bits",
-        "alpha_post_p_below_1",
-        "D_ref_post_mean_um2_s", "D_ref_post_lo_um2_s", "D_ref_post_hi_um2_s",
-        "log10_D_ref_post_mean", "log10_D_ref_post_sd", "alpha_log10_D_ref_corr", "D_ref_floor_um2_s")
+        "alpha_hat", "alpha_lo", "alpha_hi", "alpha_dll_brownian", "alpha_p_brownian",
+        "K_hat", "D_ref_hat_um2_s", "D_ref_lo_um2_s", "D_ref_hi_um2_s", "log10_D_ref_hat",
+        "D_ref_floor_um2_s", "loglik_max")
     parameters: dict[str, float | None]
     status: str
     message: str
-    model: str = "posterior_alpha_D"
-    method: str = "grid_posterior"
-    uncertainty_method: str = "credible_interval"
-    grid_edge: str | None = None  # `gridpost.posterior.grid_edge` of the SNR margin: "low", "high", "both", None
+    model: str = "fbm_alpha_D"
+    method: str = "profile_likelihood"
+    uncertainty_method: str = "likelihood_ratio_interval"
+    alpha_edge: str | None = None  # which end of the alpha grid the interval reaches: "low", "high", "both", None
 
 
 @dataclass(frozen=True)
-class TrackPosteriorFbm:
+class TrackFitFbm:
     track_id: int
     n_frames: int
-    posterior: PosteriorAlphaD
+    fit: ProfileAlphaD
     acquisition: Acquisition
     options: FbmPostOptions
-    # The normalized log marginal posterior of alpha on `options.alphas()` (`AlphaPosteriors`), None unless "ok".
-    log_post_alpha: np.ndarray | None = field(default=None, compare=False, repr=False)
-    # The likelihood on a `JointGrid`'s cells (`population.joint_cells`), when asked for and "ok".
+    # l_p(alpha) - max l_p on `options.alphas()` (`AlphaProfiles`), None unless "ok".
+    profile: np.ndarray | None = field(default=None, compare=False, repr=False)
+    # The likelihood on a `JointGrid`'s cells (`likelihood.cells`), when asked for and "ok".
     joint_loglik: np.ndarray | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
-class AlphaPosteriors:
-    """Every "ok" track's marginal log posterior of alpha on `options.alphas()`, one row per track.
+class AlphaProfiles:
+    """Every "ok" track's profile log-likelihood of alpha on `alphas`, one row per track, each row's maximum 0.
 
-    A posterior, not a likelihood: the amplitude is summed out under its flat ln SNR prior, and
-    near the localization floor that prior decides how the row leans. Tracks don't combine by
-    adding these rows: on simulated populations a deconvolution of them put the share of alpha
-    < 0.75 at 0.43 against a true 0.60 (0.05 against 0.49 when alpha and D were correlated).
-    A population model needs each track's likelihood over (alpha, D) jointly (`JointLikelihoods`).
+    A likelihood with the track's own amplitude maximized at each alpha, so rows add: their sum is the
+    profile of one alpha shared by every track (`population.shared_alpha`). They are not a population model's
+    input: a distribution of alpha across tracks is fitted jointly with D_ref (`JointLikelihoods`).
     """
     track_ids: np.ndarray
     n_frames: np.ndarray
-    log_post_alpha: np.ndarray  # (len(track_ids), n_alpha), each row's logsumexp is 0
+    alphas: np.ndarray
+    loglik: np.ndarray  # (len(track_ids), n_alpha)
+
+    def rows(self, index) -> "AlphaProfiles":
+        """The tracks at `index` (an integer index array or a boolean mask)."""
+        return AlphaProfiles(self.track_ids[index], self.n_frames[index], self.alphas, self.loglik[index])
 
 
+@dataclass(frozen=True)
+class SharedAlpha:
+    """One alpha shared by every track (complete pooling): the maximum of the summed profiles and its
+    likelihood-ratio interval. `alphas` and `loglik` are the summed curve on a fine grid (maximum 0)."""
+    alpha_hat: float
+    alpha_lo: float
+    alpha_hi: float
+    dll_brownian: float  # summed max - summed value at alpha = 1
+    p_brownian: float
+    n_tracks: int
+    level: float
+    at_grid_edge: bool  # the interval reaches an end of the alpha grid
+    alphas: np.ndarray = field(compare=False, repr=False)
+    loglik: np.ndarray = field(compare=False, repr=False)
+
+    def summary(self) -> dict[str, float]:
+        return {"alpha": self.alpha_hat, "lo": self.alpha_lo, "hi": self.alpha_hi,
+                "dll_brownian": self.dll_brownian, "p_brownian": self.p_brownian}
 
 
 @dataclass(frozen=True)
@@ -144,12 +153,12 @@ class JointGrid:
 class JointLikelihoods:
     """Every "ok" track's likelihood over (alpha, log10 D_ref) cells, one (n_alpha, n_D) slab per track.
 
-    Free of priors: each fine grid row (`posterior.log_likelihood_grid`) is moved to the common
-    log10 D_ref axis (a shift, no Jacobian) and averaged over each cell. Each slab's maximum is 0.
+    Free of priors: the likelihood is evaluated on points of each cell and averaged over it
+    (`likelihood.cells`). Each slab's maximum is 0.
     """
     track_ids: np.ndarray
     n_frames: np.ndarray
-    D_ref_floor_um2_s: np.ndarray  # (n_tracks,) `posterior.localization_floor`
+    D_ref_floor_um2_s: np.ndarray  # (n_tracks,) `likelihood.localization_floor`
     alphas: np.ndarray             # (n_alpha,) cell centres
     log10_D_ref: np.ndarray        # (n_D,) cell centres, evenly spaced
     loglik: np.ndarray             # (n_tracks, n_alpha, n_D)
@@ -228,9 +237,9 @@ class AlphaDPopulation:
 
 
 @dataclass(frozen=True)
-class FbmPosteriorAnalysis:
-    fits: pl.DataFrame  # one row per track (model posterior_alpha_D)
+class FbmAnalysis:
+    fits: pl.DataFrame  # one row per track (model fbm_alpha_D)
     acquisition: Acquisition
     options: FbmPostOptions
-    posteriors: AlphaPosteriors | None = field(default=None, compare=False, repr=False)  # keep_posteriors=True
+    profiles: AlphaProfiles | None = field(default=None, compare=False, repr=False)  # keep_profiles=True
     likelihoods: JointLikelihoods | None = field(default=None, compare=False, repr=False)  # keep_likelihoods=True

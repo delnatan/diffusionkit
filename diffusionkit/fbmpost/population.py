@@ -1,9 +1,10 @@
-"""The distribution of (alpha, D_ref) across tracks, from their joint likelihoods.
+"""alpha across tracks: one alpha shared by all (`shared_alpha`) and the distribution of (alpha, D_ref).
 
-A track's alpha curve is a posterior: the amplitude is summed out under its flat ln SNR prior, which near the
-localization floor tilts the curve. A population of alpha built from those curves inherits the tilt (docs/fbmpost.md,
-"Population"). Here the amplitude is a second population axis instead: each track's likelihood on (alpha, log10
-D_ref) cells (`joint_cells`), with no prior in it, and `gridpost.deconvolve_2d` -- the smooth log density of
+One shared alpha is the maximum of the tracks' summed profiles, each track keeping its own amplitude
+(complete pooling, `gridpost`'s shared D for alpha). A distribution of alpha cannot be fitted to the
+profiles, because they say nothing about how alpha and D_ref vary together across tracks. Here the
+amplitude is a second population axis: each track's likelihood on (alpha, log10 D_ref) cells
+(`likelihood.cells`), with no prior in it, and `gridpost.deconvolve_2d` -- the smooth log density of
 `gridpost.deconvolve` on a 2D grid -- fits g(alpha, log10 D_ref). Alpha's population is g's margin, and the D_ref
 population it is marginalized under is the fitted one, not a per-track prior.
 
@@ -14,12 +15,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..gridpost.deconvolve import deconvolve_2d
-from .data import AlphaDPopulation, FbmPostOptions, JointGrid, JointLikelihoods
-from .posterior import TrackGrid, log10_D_ref
+from scipy.interpolate import CubicSpline
+from scipy.stats import chi2
 
-# Cells further than this below a track's maximum are stored at it (e^-200: no mixture can tell).
-_LOGLIK_FLOOR = -200.
+from ..gridpost.deconvolve import deconvolve_2d
+from .data import AlphaDPopulation, AlphaProfiles, JointLikelihoods, SharedAlpha
+
+# `shared_alpha` interpolates the summed profile at this many points per grid step.
+_REFINE = 50
 # `informative_range`: a cell is above every track when each track's likelihood there, at its best alpha, is this
 # far below its maximum (a 5-frame track loses ~9 nats per decade of D_ref),
 _TOP_NATS = 5.
@@ -31,35 +34,28 @@ _PLATEAU = 1e-2
 _MARGIN = 5
 
 
-def joint_cells(grid: TrackGrid, options: FbmPostOptions, joint: JointGrid) -> np.ndarray:
-    """(n_alpha, n_D) log of a track's likelihood (`posterior.log_likelihood_grid`) averaged over each of
-    `joint`'s cells, with its maximum at 0.
+def shared_alpha(profiles: AlphaProfiles, level: float = .95) -> SharedAlpha:
+    """One alpha for every track in `profiles` (`analyze_tracks(..., keep_profiles=True).profiles`, or a `rows`
+    selection): the maximum of the summed profile and its likelihood-ratio interval at `level`.
 
-    Within a fine alpha row the ln SNR points are evenly spaced in log10 D_ref, so their mean over a cell is
-    the cell's average. A cell the row's SNR range does not reach takes the nearest reached cell's value
-    (below snr_min the likelihood is the noise-only plateau).
+    The sum is smooth in alpha and, with many tracks, narrower than a grid step, so it is read off a cubic
+    spline through the grid at `_REFINE` points per step.
     """
-    x = log10_D_ref(grid.ln_K, options)
-    centres = joint.log10_D_ref()
-    step = joint.d_log10_D_ref
-    n_a, n_d = len(joint.alphas(options)), len(centres)
-    edges = np.append(centres - step / 2, centres[-1] + step / 2)
-    top = grid.loglik.max()
-    lin = np.empty((n_a * joint.alpha_group, n_d))
-    for j in range(len(lin)):
-        b = np.digitize(x[j], edges) - 1
-        ok = (b >= 0) & (b < n_d)
-        s = np.bincount(b[ok], np.exp(grid.loglik[j, ok] - top), n_d)
-        c = np.bincount(b[ok], minlength=n_d)
-        reached = np.flatnonzero(c)
-        if not len(reached):
-            raise ValueError("the track's SNR grid misses every log10 D_ref cell: widen the JointGrid")
-        near = reached[np.clip(np.searchsorted(reached, np.arange(n_d)), 0, len(reached) - 1)]
-        lin[j] = s[near] / c[near]
-    lin = lin.reshape(n_a, joint.alpha_group, n_d).mean(axis=1)
-    with np.errstate(divide="ignore"):
-        ll = np.log(lin)
-    return np.maximum(ll - ll.max(), _LOGLIK_FLOOR)
+    if not len(profiles.track_ids):
+        raise ValueError("no track to pool")
+    if not 0 < level < 1:
+        raise ValueError(f"level must be in (0, 1), got {level}")
+    grid = profiles.alphas
+    total = profiles.loglik.sum(axis=0)
+    fine = np.linspace(grid[0], grid[-1], (len(grid) - 1) * _REFINE + 1)
+    curve = CubicSpline(grid, total)(fine)
+    top = curve.max()
+    inside = np.flatnonzero(curve >= top - chi2.ppf(level, 1) / 2)
+    one = float(CubicSpline(grid, total)(1.)) if grid[0] <= 1 <= grid[-1] else np.nan
+    dll = max(top - one, 0.)
+    return SharedAlpha(float(fine[curve.argmax()]), float(fine[inside[0]]), float(fine[inside[-1]]), dll,
+                       float(chi2.sf(2 * dll, 1)), len(profiles.track_ids), level,
+                       bool(inside[0] == 0 or inside[-1] == len(fine) - 1), fine, curve - top)
 
 
 def informative_range(likelihoods: JointLikelihoods) -> slice:

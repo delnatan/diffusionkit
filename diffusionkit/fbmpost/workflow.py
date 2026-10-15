@@ -1,4 +1,4 @@
-"""Functional single-track and table workflows for the fBm (alpha, D) grid posterior."""
+"""Functional single-track and table workflows for the fBm (alpha, D_ref) profile-likelihood fit."""
 import functools
 from collections.abc import Callable, Iterable
 
@@ -6,13 +6,13 @@ import numpy as np
 import polars as pl
 
 from ..data import Acquisition
+from ..gridpost.likelihood import _prepared
 from ..io import validate_table_schema, validated_track_frame
 from ..tracks import TrackArrays, by_length, chunks
 from ..validation import validate_acquisition
-from . import posterior as P
-from .data import (AlphaPosteriors, FbmPosteriorAnalysis, FbmPostOptions, JointGrid, JointLikelihoods, PosteriorAlphaD,
-                   TrackPosteriorFbm)
-from .population import joint_cells
+from . import likelihood as L
+from . import profile as P
+from .data import AlphaProfiles, FbmAnalysis, FbmPostOptions, JointGrid, JointLikelihoods, ProfileAlphaD, TrackFitFbm
 
 CHUNK_TRACKS = 64  # tracks per unit of work handed to `map_fn`
 
@@ -20,98 +20,118 @@ FIT_SCHEMA = {
     "track_id": pl.Int64, "n_frames": pl.Int64, "model": pl.String,
     "method": pl.String, "status": pl.String, "message": pl.String,
     "uncertainty_method": pl.String,
-    **{name: pl.Float64 for name in PosteriorAlphaD.PARAMETERS},
-    "D_grid_edge": pl.String,
+    **{name: pl.Float64 for name in ProfileAlphaD.PARAMETERS},
+    "alpha_edge": pl.String,
 }
 
+_NO_MOTION = "no motion above the localization noise: alpha is not identified and D_ref is only bounded above"
 _EDGE_MESSAGE = {
-    "low": "amplitude posterior cut by snr_min: the track only bounds D from above",
-    "high": "amplitude posterior cut by snr_max: the track only bounds D from below",
-    "both": "amplitude posterior cut by both grid edges: no information about D",
+    "low": "the alpha interval reaches alpha_min",
+    "high": "the alpha interval reaches alpha_max",
+    "both": "the alpha interval spans the whole grid",
 }
 
 
-def _empty(status: str, message: str) -> PosteriorAlphaD:
-    return PosteriorAlphaD(dict.fromkeys(PosteriorAlphaD.PARAMETERS), status, message)
+def _empty(status: str, message: str) -> ProfileAlphaD:
+    return ProfileAlphaD(dict.fromkeys(ProfileAlphaD.PARAMETERS), status, message)
 
 
-def _excluded(n: int, options: FbmPostOptions) -> PosteriorAlphaD:
+def _excluded(n: int, options: FbmPostOptions) -> ProfileAlphaD:
     return _empty("excluded", f"{n} frames; min_frames={options.min_frames}")
 
 
-def _from_grid(grid: P.TrackGrid, floor: float, options: FbmPostOptions,
-               joint: JointGrid | None) -> tuple[PosteriorAlphaD, np.ndarray, np.ndarray | None]:
-    """The "ok" summary of one track's likelihood grid, its alpha margin and, given `joint`, its cells."""
-    lp = P.log_posterior(grid.loglik)
-    edge = P.snr_edge(lp)
-    parameters = {**P.summary(lp, grid.ln_K, options), "D_ref_floor_um2_s": floor}
-    return (PosteriorAlphaD(parameters, "ok", _EDGE_MESSAGE.get(edge, ""), grid_edge=edge),
-            P.alpha_log_marginal(lp), None if joint is None else joint_cells(grid, options, joint))
+def _number(x: float) -> float | None:
+    return float(x) if np.isfinite(x) else None
 
 
-def _posterior_or_invalid(track: pl.DataFrame, acquisition: Acquisition, options: FbmPostOptions,
-                          joint: JointGrid | None) -> tuple[PosteriorAlphaD, np.ndarray | None, np.ndarray | None]:
+def _fit(s: P.TrackProfiles, k: int, floor: float, tau_ref_s: float) -> ProfileAlphaD:
+    """Track k of `s` as an "ok" result."""
+    identified = np.isfinite(s.alpha_hat[k])
+    x_hat = s.log10_D_ref_hat[k]
+    parameters = {
+        "alpha_hat": _number(s.alpha_hat[k]), "alpha_lo": float(s.alpha_lo[k]), "alpha_hi": float(s.alpha_hi[k]),
+        "alpha_dll_brownian": float(s.dll_brownian[k]), "alpha_p_brownian": float(s.p_brownian[k]),
+        "K_hat": float(np.exp(s.ln_K_hat[k])), "D_ref_hat_um2_s": float(10. ** x_hat),
+        "D_ref_lo_um2_s": float(10. ** s.log10_D_ref_lo[k]), "D_ref_hi_um2_s": float(10. ** s.log10_D_ref_hi[k]),
+        "log10_D_ref_hat": _number(x_hat), "D_ref_floor_um2_s": floor, "loglik_max": float(s.loglik_max[k]),
+    }
+    edge = s.alpha_edge[k]
+    message = _EDGE_MESSAGE.get(edge, "") if identified else _NO_MOTION
+    return ProfileAlphaD(parameters, "ok", message, alpha_edge=edge)
+
+
+def _fit_batch(xy: np.ndarray, sd: np.ndarray, acquisition: Acquisition, options: FbmPostOptions,
+               joint: JointGrid | None) -> tuple[P.TrackProfiles, np.ndarray | None]:
+    """Profile summaries, and given `joint` the population cells, of tracks of one length."""
+    grid = options.alphas()
+    alphas, i_one = P.alphas_with_one(grid)
+    w = L.whiten_batch(xy, sd, float(acquisition.dt_s), float(acquisition.exposure_s), alphas)
+    s = P.summarize(w, alphas, len(grid), i_one, options.level, options.tau_ref_s)
+    return s, None if joint is None else L.cells(w, options, joint)
+
+
+def _fit_or_invalid(track: pl.DataFrame, acquisition: Acquisition, options: FbmPostOptions,
+                    joint: JointGrid | None) -> tuple[ProfileAlphaD, np.ndarray | None, np.ndarray | None]:
     try:
-        grid = P.log_likelihood_grid(track, acquisition, options)
+        prepared = _prepared(track, acquisition)
     except ValueError as exc:  # e.g. a zero localization SD
         return _empty("invalid_input", str(exc)), None, None
-    return _from_grid(grid, P.localization_floor(track, options), options, joint)
+    xy, sd = (prepared.select(c).to_numpy()[None] for c in (["x_um", "y_um"], ["sigma_x_um", "sigma_y_um"]))
+    s, cells = _fit_batch(xy, sd, acquisition, options, joint)
+    return (_fit(s, 0, L.localization_floor(track, options), options.tau_ref_s), s.curve[0],
+            None if cells is None else cells[0])
 
 
 def analyze_track(track: pl.DataFrame, acquisition: Acquisition,
-                  options: FbmPostOptions = FbmPostOptions(), joint: JointGrid | None = None) -> TrackPosteriorFbm:
-    """The joint grid posterior over (alpha, D) for one track's rows, summarized per margin.
+                  options: FbmPostOptions = FbmPostOptions(), joint: JointGrid | None = None) -> TrackFitFbm:
+    """alpha and D_ref of one track's rows by profile likelihood, with likelihood-ratio intervals.
 
-    Invalid input raises; short tracks are explicit results. The posterior models
-    `acquisition.exposure_s` as box-shutter blur. An "ok" result carries the track's normalized
-    marginal log posterior of alpha (`log_post_alpha`) and, given `joint`, its likelihood on those
-    cells (`joint_loglik`, `population.joint_cells`).
+    Invalid input raises; short tracks are explicit results. The likelihood models
+    `acquisition.exposure_s` as box-shutter blur. An "ok" result carries the track's profile of alpha
+    (`profile`, maximum 0) and, given `joint`, its likelihood on those cells (`joint_loglik`).
     """
     validate_acquisition(acquisition, allow_exposure=True)
     track = validated_track_frame(track, acquisition, require_localization=True)
     track_id = int(track["track_id"][0])
     n = track.height
     if n < options.min_frames:
-        return TrackPosteriorFbm(track_id, n, _excluded(n, options),
-                                 acquisition, options)
-    posterior, log_post_alpha, joint_loglik = _posterior_or_invalid(track, acquisition, options, joint)
-    return TrackPosteriorFbm(track_id, n, posterior, acquisition, options, log_post_alpha, joint_loglik)
+        return TrackFitFbm(track_id, n, _excluded(n, options), acquisition, options)
+    fit, curve, cells = _fit_or_invalid(track, acquisition, options, joint)
+    return TrackFitFbm(track_id, n, fit, acquisition, options, curve, cells)
 
 
 def _analyze_group(group: pl.DataFrame, acquisition: Acquisition, options: FbmPostOptions,
-                   joint: JointGrid | None) -> TrackPosteriorFbm:
+                   joint: JointGrid | None) -> TrackFitFbm:
     """`analyze_track`, with an invalid track as an `invalid_input` result rather than a raise."""
     try:
         return analyze_track(group, acquisition, options, joint)
     except ValueError as exc:
-        return TrackPosteriorFbm(int(group["track_id"][0]), group.height, _empty("invalid_input", str(exc)),
-                                 acquisition, options)
+        return TrackFitFbm(int(group["track_id"][0]), group.height, _empty("invalid_input", str(exc)),
+                           acquisition, options)
 
 
 def _analyze_chunk(index: range, arrays: TrackArrays, acquisition: Acquisition, options: FbmPostOptions,
-                   joint: JointGrid | None) -> list[TrackPosteriorFbm]:
-    """`analyze_track` for tracks `index` of `arrays`, in order. Clean tracks of one length are whitened
-    together (`posterior.whiten_batch`); any other track takes the per-track path, so its result is that
+                   joint: JointGrid | None) -> list[TrackFitFbm]:
+    """`analyze_track` for tracks `index` of `arrays`, in order. Clean tracks of one length are fitted
+    together (`likelihood.whiten_batch`); any other track takes the per-track path, so its result is that
     path's own."""
-    out: dict[int, TrackPosteriorFbm] = {}
+    out: dict[int, TrackFitFbm] = {}
     n_frames = arrays.n_frames
     fast = [i for i in index if arrays.clean[i] and n_frames[i] >= options.min_frames]
     for group in by_length(fast, n_frames):
         xy, sd = arrays.stack(group)
-        lam, y, const = P.whiten_batch(xy, sd, float(acquisition.dt_s), float(acquisition.exposure_s),
-                                       options.alphas())
-        floors = [np.mean(v ** 2) / options.tau_ref_s for v in sd]  # as `posterior.localization_floor`
+        s, cells = _fit_batch(xy, sd, acquisition, options, joint)
+        floors = [np.mean(v ** 2) / options.tau_ref_s for v in sd]  # as `likelihood.localization_floor`
         for k, i in enumerate(group):
-            grid = P.grid_from_whitened(lam[k], y[k], float(const[k]), options)
-            post, log_post_alpha, cells = _from_grid(grid, float(floors[k]), options, joint)
-            out[i] = TrackPosteriorFbm(int(arrays.track_id[i]), int(n_frames[i]), post, acquisition, options,
-                                       log_post_alpha, cells)
+            out[i] = TrackFitFbm(int(arrays.track_id[i]), int(n_frames[i]),
+                                 _fit(s, k, float(floors[k]), options.tau_ref_s), acquisition, options,
+                                 s.curve[k], None if cells is None else cells[k])
     for i in index:
         if i in out:
             continue
         n = int(n_frames[i])
         if arrays.valid[i] and n < options.min_frames:
-            out[i] = TrackPosteriorFbm(int(arrays.track_id[i]), n, _excluded(n, options), acquisition, options)
+            out[i] = TrackFitFbm(int(arrays.track_id[i]), n, _excluded(n, options), acquisition, options)
         else:
             out[i] = _analyze_group(arrays.frame(i), acquisition, options, joint)
     return [out[i] for i in index]
@@ -120,26 +140,25 @@ def _analyze_chunk(index: range, arrays: TrackArrays, acquisition: Acquisition, 
 def analyze_tracks(table: pl.DataFrame, acquisition: Acquisition,
                    options: FbmPostOptions = FbmPostOptions(), *,
                    progress: Callable[[int, int], None] | None = None,
-                   keep_posteriors: bool = False,
+                   keep_profiles: bool = False,
                    keep_likelihoods: bool = False,
                    joint: JointGrid = JointGrid(),
-                   map_fn: Callable[..., Iterable] = map) -> FbmPosteriorAnalysis:
-    """One fit row per input track (model posterior_alpha_D), including exclusions and invalid tracks.
+                   map_fn: Callable[..., Iterable] = map) -> FbmAnalysis:
+    """One fit row per input track (model fbm_alpha_D), including exclusions and invalid tracks.
 
     Same contract as `gridpost.analyze_tracks`: schema errors raise before work starts, invalid
     tracks get status='invalid_input', and `map_fn` (e.g. a `ThreadPoolExecutor`'s `map`; the linear
     algebra releases the GIL) runs chunks of `CHUNK_TRACKS` consecutive tracks and must yield results
-    in input order. With `keep_posteriors`,
-    `result.posteriors` holds every "ok" track's marginal log posterior of alpha (see
-    `AlphaPosteriors` for why that is not a population model's input). With `keep_likelihoods`,
-    `result.likelihoods` holds every "ok" track's likelihood on `joint`'s (alpha, log10 D_ref) cells,
-    what `population.deconvolve_tracks` fits a population to.
+    in input order. With `keep_profiles`, `result.profiles` holds every "ok" track's profile of alpha,
+    what `population.shared_alpha` sums. With `keep_likelihoods`, `result.likelihoods` holds every "ok"
+    track's likelihood on `joint`'s (alpha, log10 D_ref) cells, what `population.deconvolve_tracks` fits a
+    population to.
     """
     validate_acquisition(acquisition, allow_exposure=True)
     validate_table_schema(table)
     arrays = TrackArrays.from_table(table, acquisition)
     total = len(arrays)
-    rows, ids, frames, log_post = [], [], [], []
+    rows, ids, frames, curves = [], [], [], []
     lik_ids, lik_frames, floors, cells = [], [], [], []
     if progress is not None:
         progress(0, total)
@@ -148,31 +167,31 @@ def analyze_tracks(table: pl.DataFrame, acquisition: Acquisition,
     done = 0
     for chunk in results:
         for result in chunk:
-            post = result.posterior
-            rows.append({"track_id": result.track_id, "n_frames": result.n_frames, "model": post.model,
-                         "method": post.method, "status": post.status, "message": post.message,
-                         "uncertainty_method": post.uncertainty_method, **post.parameters,
-                         "D_grid_edge": post.grid_edge})
-            if keep_posteriors and result.log_post_alpha is not None:
+            fit = result.fit
+            rows.append({"track_id": result.track_id, "n_frames": result.n_frames, "model": fit.model,
+                         "method": fit.method, "status": fit.status, "message": fit.message,
+                         "uncertainty_method": fit.uncertainty_method, **fit.parameters,
+                         "alpha_edge": fit.alpha_edge})
+            if keep_profiles and result.profile is not None:
                 ids.append(result.track_id)
                 frames.append(result.n_frames)
-                log_post.append(result.log_post_alpha)
+                curves.append(result.profile)
             if keep_likelihoods and result.joint_loglik is not None:
                 lik_ids.append(result.track_id)
                 lik_frames.append(result.n_frames)
-                floors.append(post.parameters["D_ref_floor_um2_s"])
+                floors.append(fit.parameters["D_ref_floor_um2_s"])
                 cells.append(result.joint_loglik)
             done += 1
             if progress is not None:
                 progress(done, total)
-    posteriors = None
-    if keep_posteriors:
-        posteriors = AlphaPosteriors(np.array(ids, dtype=np.int64), np.array(frames, dtype=np.int64),
-                                     np.array(log_post).reshape(len(ids), options.n_alpha))
+    profiles = None
+    if keep_profiles:
+        profiles = AlphaProfiles(np.array(ids, dtype=np.int64), np.array(frames, dtype=np.int64), options.alphas(),
+                                 np.array(curves, dtype=float).reshape(len(ids), options.n_alpha))
     likelihoods = None
     if keep_likelihoods:
         alphas, D = joint.alphas(options), joint.log10_D_ref()
         likelihoods = JointLikelihoods(np.array(lik_ids, dtype=np.int64), np.array(lik_frames, dtype=np.int64),
                                        np.array(floors, dtype=float), alphas, D,
                                        np.array(cells, dtype=float).reshape(len(lik_ids), len(alphas), len(D)))
-    return FbmPosteriorAnalysis(pl.DataFrame(rows, schema=FIT_SCHEMA), acquisition, options, posteriors, likelihoods)
+    return FbmAnalysis(pl.DataFrame(rows, schema=FIT_SCHEMA), acquisition, options, profiles, likelihoods)

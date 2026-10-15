@@ -64,14 +64,17 @@ class BatchedWorkflowTests(unittest.TestCase):
     def test_fbmpost_table_matches_per_track_calls(self):
         from diffusionkit.fbmpost import FbmPostOptions, analyze_track, analyze_tracks
         tracks = pl.concat([table(n, i) for i, n in enumerate((6, 10, 6, 10))])
-        acq, options = Acquisition(.03, .01), FbmPostOptions(n_alpha=21, n_snr=81)
-        r = analyze_tracks(tracks, acq, options, keep_posteriors=True)
+        acq, options = Acquisition(.03, .01), FbmPostOptions(n_alpha=21)
+        r = analyze_tracks(tracks, acq, options, keep_profiles=True)
         for i, g in enumerate(tracks.partition_by("track_id", maintain_order=True)):
             direct = analyze_track(g, acq, options)
             row = r.fits.row(i, named=True)
-            for name, value in direct.posterior.parameters.items():
-                self.assertAlmostEqual(row[name], value, delta=1e-9 * max(abs(value), 1e-6))
-            np.testing.assert_allclose(r.posteriors.log_post_alpha[i], direct.log_post_alpha, rtol=0, atol=1e-9)
+            for name, value in direct.fit.parameters.items():
+                if value is None:
+                    self.assertIsNone(row[name], name)
+                else:
+                    self.assertAlmostEqual(row[name], value, delta=1e-9 * max(abs(value), 1e-6))
+            np.testing.assert_allclose(r.profiles.loglik[i], direct.profile, rtol=0, atol=1e-9)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,10 @@
-"""Blurred fBm + static localization noise tracks, simulated independently of the posterior's blur formula.
+"""Blurred fBm + static localization noise tracks, simulated independently of the likelihood's blur formula.
 
 The true motion is drawn by Cholesky of the fBm covariance K (t^alpha + s^alpha - |t - s|^alpha) per
 axis (MSD_1D(tau) = 2 K tau^alpha) at `n_sub` points spread over each frame's exposure, and each frame
 records their mean; with exposure 0 it is the instantaneous position. The cost is one Cholesky of a
-(n_frames n_sub) square matrix per call.
+(n_frames n_sub) square matrix per call. The mean of n_sub points approaches the exposure average slowly at
+small alpha, where the path is rough: at alpha = 0.4 n_sub = 10 reads as alpha 0.03 lower, 40 as unbiased.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from ..data import Acquisition
 
 def simulate_tracks(n_tracks: int, n_frames: int, alpha: float, D_ref_um2_s: float, sigma_um: float,
                     acquisition: Acquisition, tau_ref_s: float = .1, rng: np.random.Generator | None = None,
-                    n_sub: int = 10, first_track_id: int = 0) -> pl.DataFrame:
+                    n_sub: int = 40, first_track_id: int = 0) -> pl.DataFrame:
     """A track table (track_id, frame, x_um, y_um, sigma_x_um, sigma_y_um) of `n_tracks` 2D fBm tracks.
 
     The motion's D at `tau_ref_s` is `D_ref_um2_s` (`FbmPostOptions.tau_ref_s`), so K = D_ref
