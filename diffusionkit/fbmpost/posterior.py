@@ -9,7 +9,7 @@ true motion's MSD is 2 K tau^alpha per axis) and B the localization term of `gri
 For each alpha, with B = L L^t and L^-1 C_alpha L^-t = Q diag(lam) Q^t, the whitened data
 y = Q^t L^-1 delta are independent with variances 1 + K lam_k -- `gridpost`'s whitening, once per
 alpha -- so the amplitude axis costs O(m) per grid value and the grid costs one eigendecomposition
-per (axis, alpha), not one per cell.
+per (axis, alpha), not one per cell. `whiten_batch` does this for every track of one length at once.
 
 The amplitude axis is ln SNR, SNR = K ||lam_alpha|| with lam_alpha both axes' eigenvalues
 (`FbmPostOptions` says why); each cell's K = SNR / ||lam_alpha|| is kept, and what is reported is
@@ -21,16 +21,15 @@ from typing import NamedTuple
 
 import numpy as np
 import polars as pl
-from scipy.linalg import cholesky, solve_triangular
 from scipy.special import logsumexp
 
 from ..data import Acquisition
-from ..gridpost.likelihood import _prepared, localization_covariance
+from ..gridpost.likelihood import _prepared
 from ..gridpost.posterior import grid_edge
-from .covariance import fgn_autocovariance
+from .covariance import fgn_motion_covariance
 from .data import FbmPostOptions
 
-# Upper bound on the floats in one alpha chunk's (chunk, n_snr, m) and (chunk, m, m) arrays.
+# Upper bound on the floats in one alpha chunk's (chunk, n_snr, m) and (tracks, chunk, m, m) arrays.
 _CHUNK_FLOATS = 4_000_000
 
 
@@ -39,36 +38,61 @@ class TrackGrid(NamedTuple):
     ln_K: np.ndarray    # (n_alpha, n_snr) ln K (um^2 / s^alpha) of every cell
 
 
-def log_likelihood_grid(track: pl.DataFrame, acquisition: Acquisition, options: FbmPostOptions) -> TrackGrid:
-    """One track's log-likelihood on `options.alphas()` x `options.u_snr()`, and each cell's ln K."""
-    track = _prepared(track, acquisition)
-    delta = np.diff(track.select("x_um", "y_um").to_numpy(), axis=0).T  # (2, m)
-    sd = track.select("sigma_x_um", "sigma_y_um").to_numpy()
-    m = delta.shape[1]
-    alphas, u = options.alphas(), options.u_snr()
-    gamma = fgn_autocovariance(m, float(acquisition.dt_s), alphas, float(acquisition.exposure_s))  # per unit K
-    lag = np.abs(np.arange(m)[:, None] - np.arange(m)[None, :])
-    step = max(1, _CHUNK_FLOATS // (m * max(m, len(u))))
-    lam, y = np.zeros((len(alphas), 2 * m)), np.zeros((len(alphas), 2 * m))
-    const = 0.
-    for axis, B in enumerate(localization_covariance(sd)):
-        L = cholesky(B, lower=True)
-        Li = solve_triangular(L, np.eye(m), lower=True)
-        z = Li @ delta[axis]
-        const += -np.log(np.diag(L)).sum() - .5 * m * np.log(2 * np.pi)
+def whiten_batch(xy: np.ndarray, sd: np.ndarray, dt_s: float, exposure_s: float,
+                 alphas: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The per-alpha whitening of T tracks of one length, done together.
+
+    `xy`, `sd` are (T, n, 2) positions and per-frame localization SDs (> 0). Returns `lam` and `y`,
+    (T, n_alpha, 2m) with both axes side by side, and `const` (T,): per alpha, the whitened data
+    y = Q^t L^-1 delta are independent N(0, 1 + K lam). The blurred fGn matrices C_alpha depend only
+    on the length, so they are built once for all T tracks, and every (track, alpha) eigendecomposition
+    runs in one batched call per chunk.
+    """
+    delta = np.diff(np.ascontiguousarray(xy, float), axis=1)  # (T, m, 2)
+    var = np.ascontiguousarray(sd, float) ** 2  # one memory layout: one round-off, whatever the caller passes
+    T, m = delta.shape[:2]
+    C = fgn_motion_covariance(m, dt_s, alphas, exposure_s)  # (n_alpha, m, m) per unit K
+    lam, y = np.zeros((T, len(alphas), 2 * m)), np.zeros((T, len(alphas), 2 * m))
+    const = np.zeros(T)
+    i = np.arange(m)
+    step = max(1, _CHUNK_FLOATS // (T * m * m))
+    for axis in range(2):
+        B = np.zeros((T, m, m))  # `gridpost.likelihood.localization_covariance`, batched
+        B[:, i, i] = var[:, :-1, axis] + var[:, 1:, axis]
+        B[:, i[:-1], i[1:]] = B[:, i[1:], i[:-1]] = -var[:, 1:-1, axis]
+        L = np.linalg.cholesky(B)
+        Li = np.linalg.inv(L)
+        z = np.einsum("tij,tj->ti", Li, delta[:, :, axis])
+        const += -np.log(np.diagonal(L, axis1=1, axis2=2)).sum(axis=1) - .5 * m * np.log(2 * np.pi)
         cols = slice(axis * m, (axis + 1) * m)
         for s in range(0, len(alphas), step):
-            M = Li @ gamma[s:s + step][:, lag] @ Li.T  # (chunk, m, m)
-            values, Q = np.linalg.eigh((M + np.swapaxes(M, 1, 2)) / 2)
-            lam[s:s + step, cols] = np.clip(values, 0, None)  # C_alpha is PSD; round-off can dip below 0
-            y[s:s + step, cols] = np.einsum("aij,i->aj", Q, z)
+            M = Li[:, None] @ C[None, s:s + step] @ np.swapaxes(Li, 1, 2)[:, None]  # (T, chunk, m, m)
+            values, Q = np.linalg.eigh((M + np.swapaxes(M, -1, -2)) / 2)
+            lam[:, s:s + step, cols] = np.clip(values, 0, None)  # C_alpha is PSD; round-off can dip below 0
+            y[:, s:s + step, cols] = np.einsum("taij,ti->taj", Q, z)
+    return lam, y, const
+
+
+def grid_from_whitened(lam: np.ndarray, y: np.ndarray, const: float, options: FbmPostOptions) -> TrackGrid:
+    """One track's log-likelihood on `options.alphas()` x `options.u_snr()` from its `whiten_batch` row."""
+    u = options.u_snr()
+    m = lam.shape[1] // 2
     ln_K = u[None, :] - .5 * np.log((lam ** 2).sum(axis=1))[:, None]
-    out = np.full((len(alphas), len(u)), const)
-    for s in range(0, len(alphas), step // 2 or 1):
-        e = s + (step // 2 or 1)
+    out = np.full((len(lam), len(u)), const)
+    step = max(1, (_CHUNK_FLOATS // (m * max(m, len(u)))) // 2)
+    for s in range(0, len(lam), step):
+        e = s + step
         v = 1 + np.exp(ln_K[s:e, :, None]) * lam[s:e, None, :]  # (chunk, n_snr, 2m)
         out[s:e] -= .5 * (np.log(v).sum(-1) + (y[s:e, None, :] ** 2 / v).sum(-1))
     return TrackGrid(out, ln_K)
+
+
+def log_likelihood_grid(track: pl.DataFrame, acquisition: Acquisition, options: FbmPostOptions) -> TrackGrid:
+    """One track's log-likelihood on `options.alphas()` x `options.u_snr()`, and each cell's ln K."""
+    track = _prepared(track, acquisition)
+    xy, sd = (track.select(c).to_numpy()[None] for c in (["x_um", "y_um"], ["sigma_x_um", "sigma_y_um"]))
+    lam, y, const = whiten_batch(xy, sd, float(acquisition.dt_s), float(acquisition.exposure_s), options.alphas())
+    return grid_from_whitened(lam[0], y[0], float(const[0]), options)
 
 
 def log_posterior(ll: np.ndarray) -> np.ndarray:
@@ -97,7 +121,7 @@ def localization_floor(track: pl.DataFrame, options: FbmPostOptions) -> float:
     MSD offset, 2 <s^2> per axis: <s^2> / tau_ref, with <s^2> the mean localization variance over the
     track's frames and both axes. A reference scale to draw next to D_ref, not a threshold."""
     sd = track.select("sigma_x_um", "sigma_y_um").to_numpy()
-    return float(np.mean(sd ** 2) / options.tau_ref_s)
+    return float(np.mean(np.ascontiguousarray(sd) ** 2) / options.tau_ref_s)
 
 
 def summary(log_post: np.ndarray, ln_K: np.ndarray, options: FbmPostOptions) -> dict:

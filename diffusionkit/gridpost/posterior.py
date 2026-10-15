@@ -1,10 +1,9 @@
 """Per-track posterior P(D | displacements) for Brownian motion.
 
-Built on `likelihood.py`'s whitening: after whitening, a track's
-displacements are independent y_k ~ N(0, 1 + D lam_k). The "1 +" is
-localization noise, so no prior on D is conjugate; instead the posterior is
-evaluated exactly on a fixed grid in u = ln D, where each point costs O(m)
-per track.
+Built on `likelihood.py`'s exact displacement likelihood. Localization noise
+makes no prior on D conjugate, so the posterior is evaluated exactly on a
+fixed grid in u = ln D, where each point costs O(m) per track
+(`likelihood.brownian_loglik_batch`).
 
 The posterior lives on a fixed grid in u = ln D, so a prior that is flat in
 u is log-uniform in D (scale-invariant), and the weights are just
@@ -22,7 +21,7 @@ from scipy.special import logsumexp
 
 from ..data import Acquisition
 from .data import GridPostOptions
-from .likelihood import _loglik, _prepared, _whiten
+from .likelihood import _prepared, brownian_loglik_batch
 
 # The grid is `GridPostOptions.u_D()`: every function below takes it
 # explicitly, so no run can silently use a range other than the one its
@@ -31,8 +30,9 @@ from .likelihood import _loglik, _prepared, _whiten
 
 def track_loglik(track: pl.DataFrame, acquisition: Acquisition, u: np.ndarray) -> np.ndarray:
     """(len(u),) log-likelihood of one track's displacements at D = exp(u)."""
-    w = _whiten(_prepared(track, acquisition), acquisition)
-    return _loglik(np.exp(u), w["lam"], w["y"][None], w["const"])
+    track = _prepared(track, acquisition)
+    xy, sd = (track.select(c).to_numpy()[None] for c in (["x_um", "y_um"], ["sigma_x_um", "sigma_y_um"]))
+    return brownian_loglik_batch(xy, sd, float(acquisition.dt_s), float(acquisition.exposure_s), np.exp(u))[0]
 
 
 def localization_floor(track: pl.DataFrame, acquisition: Acquisition) -> float:
@@ -50,7 +50,7 @@ def localization_floor(track: pl.DataFrame, acquisition: Acquisition) -> float:
     track = _prepared(track, acquisition)
     sd = track.select("sigma_x_um", "sigma_y_um").to_numpy()
     tau = float(acquisition.dt_s) - float(acquisition.exposure_s) / 3
-    return float(np.mean(sd ** 2) / tau)
+    return float(np.mean(np.ascontiguousarray(sd) ** 2) / tau)
 
 
 # --------------------------------------------------------------------------

@@ -87,7 +87,9 @@ class DeconvolveTests(unittest.TestCase):
         lls = np.array([P.track_loglik(g, Acquisition(DT), U) for g in table.partition_by("track_id", maintain_order=True)])
         direct = D.deconvolve(lls, U, n_samples=100)
         np.testing.assert_allclose(result.weights, direct.weights, atol=1e-10)
-        self.assertEqual(result.lam, direct.lam)
+        # The kept rows are normalized, the direct ones are not: equal up to round-off, which the
+        # bounded search for lam may carry into its last digits.
+        self.assertAlmostEqual(result.lam / direct.lam, 1., places=5)
 
     def test_empty_after_exclusion_raises(self):
         rng = np.random.default_rng(2)

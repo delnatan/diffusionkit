@@ -7,7 +7,8 @@ from scipy.stats import multivariate_normal
 
 from diffusionkit import Acquisition
 from diffusionkit.gridpost import brownian_log_likelihood
-from diffusionkit.gridpost.likelihood import motion_covariance
+from diffusionkit.gridpost.likelihood import (brownian_loglik_batch, localization_covariance,
+                                              motion_covariance)
 
 
 DT = .033
@@ -47,6 +48,22 @@ class LikelihoodTests(unittest.TestCase):
         t = brownian()
         for D in (0., .01, .3):
             self.assertAlmostEqual(brownian_log_likelihood(t, Acquisition(DT), D), dense_brownian_ll(t, D), places=9)
+
+    def test_batch_matches_dense_density_with_blur(self):
+        """The LDLt recursion over a stack of tracks and a D grid is the dense Gaussian density."""
+        rng = np.random.default_rng(5)
+        T, n, exposure = 4, 9, .02
+        xy = np.cumsum(rng.normal(0, .05, (T, n, 2)), axis=1)
+        sd = rng.uniform(.01, .05, (T, n, 2))
+        D = np.array([0., 1e-4, .05, 2.])
+        got = brownian_loglik_batch(xy, sd, DT, exposure, D)
+        A = motion_covariance(n - 1, DT, exposure)
+        for t in range(T):
+            B = localization_covariance(sd[t])
+            for j, d in enumerate(D):
+                direct = sum(multivariate_normal(np.zeros(n - 1), d * A + B[a]).logpdf(np.diff(xy[t, :, a]))
+                             for a in range(2))
+                self.assertAlmostEqual(got[t, j], direct, places=9)
 
     def test_error_placement_matters(self):
         t = brownian()

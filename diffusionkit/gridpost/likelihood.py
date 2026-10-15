@@ -10,14 +10,13 @@ lag-1 covariance +2 dt R, zero beyond lag 1) and B comes from independent
 localization errors: B_ii = s_i^2 + s_(i+1)^2, B_(i,i+1) = -s_(i+1)^2.
 D >= 0; D = 0 means localization noise alone.
 
-With B = L Lt and L^-1 A L^-t = Q diag(lam) Qt, the whitened data
-y = Qt L^-1 delta have independent components of variance 1 + D lam_k, so
-the likelihood over any D grid costs O(m) per grid point. This is the
-whitening engine `gridpost.posterior`'s grid posterior over D is built on.
+Sigma(D) is tridiagonal, so its LDLt factorization is a two-term recursion
+along the track, run for every grid point and every track of one length at
+once (`brownian_loglik_batch`): O(m) per grid point and track, with no
+eigendecomposition.
 """
 import numpy as np
 import polars as pl
-from scipy.linalg import cholesky, eigh, solve_triangular
 
 from ..data import Acquisition
 from ..io import validated_track_frame
@@ -60,41 +59,41 @@ def _prepared(track: pl.DataFrame, acquisition: Acquisition) -> pl.DataFrame:
     return track
 
 
-def _whiten_axis(delta_axis: np.ndarray, A: np.ndarray, B: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
-    """One axis's (lam, y, logdet_B) for displacements ~ N(0, x A + B), any fixed A."""
-    L = cholesky(B, lower=True)
-    LA = solve_triangular(L, A, lower=True)
-    M = solve_triangular(L, LA.T, lower=True)  # L^-1 A L^-t
-    values, Q = eigh((M + M.T) / 2)
-    y = Q.T @ solve_triangular(L, delta_axis, lower=True)
-    logdet_B = 2 * np.sum(np.log(np.diag(L)))
-    return values, y, logdet_B
+def brownian_loglik_batch(xy: np.ndarray, sd: np.ndarray, dt_s: float, exposure_s: float,
+                          D: np.ndarray) -> np.ndarray:
+    """(T, len(D)) exact log-likelihood of T tracks of one length at each D >= 0.
 
-
-def _whiten(track: pl.DataFrame, acquisition: Acquisition) -> dict:
-    """Whitened data for one validated track."""
-    positions = track.select("x_um", "y_um").to_numpy()
-    sd = track.select("sigma_x_um", "sigma_y_um").to_numpy()
-    delta = np.diff(positions, axis=0).T  # (2, m)
-    m = delta.shape[1]
-    A = motion_covariance(m, float(acquisition.dt_s), float(acquisition.exposure_s))
-    lam, y, logdet_B = [], [], 0.
-    for axis, B in enumerate(localization_covariance(sd)):
-        values, yy, ld = _whiten_axis(delta[axis], A, B)
-        lam.append(values)
-        y.append(yy)
-        logdet_B += ld
-    const = -.5 * logdet_B - m * np.log(2 * np.pi)
-    return {"lam": np.array(lam), "y": np.array(y), "const": const}
-
-
-def _loglik(D, lam, y, const):
-    """D (r,), y (r, 2, m) -> (r,)."""
-    d = 1 + D[:, None, None] * lam
-    return const - .5 * np.sum(np.log(d) + y**2 / d, axis=(1, 2))
+    `xy` and `sd` are (T, n, 2) positions and per-frame localization SDs (> 0). Per axis,
+    Sigma(D) = D A + B is tridiagonal with diagonal D a0 + s_k^2 + s_(k+1)^2 and off-diagonal
+    D a1 - s_(k+1)^2 (`motion_covariance`, `localization_covariance`), and its LDLt factorization
+    d_k = Sigma_kk - e_k^2 / d_(k-1), with the forward-substituted data z_k, gives
+    log L = -1/2 sum_k (ln d_k + z_k^2 / d_k) - (m/2) ln 2 pi per axis.
+    """
+    delta = np.diff(np.ascontiguousarray(xy, float), axis=1)  # (T, m, 2)
+    var = np.ascontiguousarray(sd, float) ** 2  # one memory layout: one round-off, whatever the caller passes
+    T, m = delta.shape[:2]
+    R = exposure_s / (6 * dt_s)
+    a0, a1 = 2 * dt_s * (1 - 2 * R), 2 * dt_s * R
+    D = np.asarray(D, float)[None, :]
+    out = np.full((T, D.shape[1]), -m * np.log(2 * np.pi))
+    for axis in range(2):
+        diag = var[:, :-1, axis] + var[:, 1:, axis]  # (T, m)
+        off = -var[:, 1:-1, axis]  # (T, m - 1): Sigma_(k-1, k) = D a1 - s_k^2
+        d = D * a0 + diag[:, :1]
+        z = np.broadcast_to(delta[:, :1, axis], d.shape)
+        out -= .5 * (np.log(d) + z * z / d)
+        for k in range(1, m):
+            e = D * a1 + off[:, k - 1:k]
+            ell = e / d
+            d = D * a0 + diag[:, k:k + 1] - ell * e
+            z = delta[:, k:k + 1, axis] - ell * z
+            out -= .5 * (np.log(d) + z * z / d)
+    return out
 
 
 def brownian_log_likelihood(track: pl.DataFrame, acquisition: Acquisition, D_um2_s: float) -> float:
     """Exact Gaussian log-likelihood of both axes' displacements at D >= 0."""
-    w = _whiten(_prepared(track, acquisition), acquisition)
-    return float(_loglik(np.array([float(D_um2_s)]), w["lam"], w["y"][None], w["const"])[0])
+    track = _prepared(track, acquisition)
+    xy, sd = (track.select(c).to_numpy()[None] for c in (["x_um", "y_um"], ["sigma_x_um", "sigma_y_um"]))
+    return float(brownian_loglik_batch(xy, sd, float(acquisition.dt_s), float(acquisition.exposure_s),
+                                       np.array([float(D_um2_s)]))[0, 0])
