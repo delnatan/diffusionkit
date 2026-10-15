@@ -4,7 +4,7 @@ Ground truth comes from `fbmpost.simulate_tracks`: fBm drawn on a fine time grid
 exposure, so the likelihood's closed-form blur is not what generates the data. Simulation-based coverage
 under the model, not a calibration claim on experimental tracks.
 
-Cells: alpha x D_ref x track length, gelatin-like acquisition (dt 44 ms, exposure 20 ms, SD 13 nm). Per cell:
+Cells: alpha x D_ref x track length, one acquisition (dt 44 ms, exposure 20 ms, SD 13 nm). Per cell:
 coverage of the per-track likelihood-ratio intervals, the median alpha_hat, how often alpha_hat sits at a grid
 end, the Brownian test's rejection rate, and the shared alpha of the cell's tracks with its interval.
 """

@@ -32,10 +32,9 @@ constant across the lam that matter.
 On simulated populations (1000 tracks of 5-20 frames; a spike, narrow and broad
 modes, a log-normal, a mode below the localization floor) this was best or tied
 on held-out likelihood against the unregularized NPMLE and against EM with a
-fixed or cross-validated Gaussian blur per step, which it replaces: no single
+fixed or cross-validated Gaussian blur per step: no single
 blur width suited every truth, while the evidence moved lam over four decades
-to follow them. On the default grid (scripts/validate_deconvolve.py,
-audit/deconvolve_validation.json) the 68%/95% bands covered the population CDF
+to follow them. On the default grid (scripts/validate_deconvolve.py) the 68%/95% bands covered the population CDF
 in 69-73%/89-98% of datasets (89% for two modes narrower than a track can
 resolve), and the 97.5% quantile of the mass above 1 um^2/s, where no track
 was, stayed at or under 0.003. For a spike, the evidence can run to the rough

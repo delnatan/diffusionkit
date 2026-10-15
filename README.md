@@ -426,8 +426,7 @@ Tests include batch-equals-single-movie checks, ensemble-MSD recovery with
 its intervals, an independent pair-sum oracle, nonlinear objective checks,
 Brownian recovery with varying localization error, and data/status contracts.
 The recovery study uses an independent position-space simulator at 5, 10,
-and 20 frames. See [FINDINGS.md](FINDINGS.md) for the current evidence and
-limits. These checks are simulations under the model, not a calibration on
+and 20 frames. These checks are simulations under the model, not a calibration on
 experimental tracks.
 
 `diffusionkit.bayes` (NumPyro) fits the same exact displacement likelihood

@@ -77,11 +77,6 @@ not a detection threshold -- the posterior already accounts for the noise
 -- and it moves with the square of any error in the reported SDs. Calibration is a simulation check under the model (see
 `scripts/validate_posterior.py`), not a claim about experimental tracks.
 
-A previous production estimator (`fit_brownian_mle`, a
-maximum-likelihood D with a bootstrap-calibrated non-Brownian z-score
-testing deviation from alpha=1) has been retired now that the posterior
-supersedes its point-estimate role.
-
 ## Combining tracks: one shared D, or a population
 
 `analyze_tracks(..., keep_likelihoods=True)` keeps each track's log-likelihood
@@ -186,8 +181,7 @@ sigma and the mean D with equal-tailed intervals. When the truth is sigma = 0
 the posterior piles against that bound, so its equal-tailed interval never
 contains 0: read sigma's upper bound there.
 
-`scripts/validate_lognormal.py` (recorded in
-`audit/lognormal_validation.json`) uses the deconvolution study's simulator and
+`scripts/validate_lognormal.py` uses the deconvolution study's simulator and
 settings (1000 tracks of 5-20 frames, dt 35 ms, localization SD 30-45 nm, the
 default grid), 40 datasets per population. Coverage of the 68% / 95%
 intervals:
@@ -233,8 +227,7 @@ cell out, the Gaussian ignores the cliff in the posterior and puts mass in
 empty cells. `band(level, cumulative)` gives pointwise or CDF bands; any mass
 or mean has its interval in `samples @ a`.
 
-`scripts/validate_deconvolve.py` (recorded in
-`audit/deconvolve_validation.json`) simulates five populations -- a spike, two
+`scripts/validate_deconvolve.py` simulates five populations -- a spike, two
 narrow modes, a log-normal, two broad modes, and a mode below the
 localization floor -- 40 datasets of 1000 tracks each, on the default grid:
 

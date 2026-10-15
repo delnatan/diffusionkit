@@ -40,7 +40,6 @@ generative and inference models):
      run D or alpha to the edge of its support on short tracks, and does an
      informative prior fix it.
 
-See FINDINGS.md for results from running these checks.
 """
 from __future__ import annotations
 
@@ -179,8 +178,7 @@ def check_1_null_K_bias() -> None:
     r_bayes = np.corrcoef(combined["D_bayes"], combined["alpha_bayes"])[0, 1]
     print(f"\npooled pearson r(D_normal, alpha_anomalous) [classic-comparable]: "
           f"flat-prior={r_weak:.3f}, informative-prior={r_bayes:.3f}  "
-          "(compare against the classic MSD pipeline's own result on the same simulation design, "
-          "see analysis/ and FINDINGS.md)")
+          "(compare against the classic MSD pipeline's own result on the same simulation design)")
     r_weak_joint = np.corrcoef(combined["K_weak"], combined["alpha_weak"])[0, 1]
     r_bayes_joint = np.corrcoef(combined["K_bayes"], combined["alpha_bayes"])[0, 1]
     print(f"pooled pearson r(K, alpha) [same joint anomalous fit, NOT the artifact metric]: "

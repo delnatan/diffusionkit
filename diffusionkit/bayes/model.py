@@ -45,7 +45,7 @@ per track: fitting independent tracks one Python-level call at a time pays
 a fresh JAX trace per call regardless of shape reuse, which can dominate
 runtime well beyond the sub-second cost the underlying linear algebra alone
 would suggest -- one plated call per length-group amortizes that trace cost
-across every track in the group (see FINDINGS.md for a measured example).
+across every track in the group.
 
 `inference.py` runs these as full NUTS posteriors (`sample_posterior`,
 single-track models) -- the per-track diagnostic tool for when a posterior's

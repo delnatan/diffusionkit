@@ -21,8 +21,7 @@ and two per-track table builders wrapping them -- `fit_table_svi`
 Both share `_per_track_table`, which groups tracks by shared track_length
 and loops: fitting tracks one Python-level call at a time pays a fresh JAX
 trace per call regardless of shape reuse, so batching a whole length-group
-into one plated call is what makes a full dataset tractable (see model.py,
-and FINDINGS.md for measured numbers).
+into one plated call is what makes a full dataset tractable (see model.py).
 """
 from __future__ import annotations
 
@@ -230,8 +229,8 @@ def fit_table_svi(
 ) -> pl.DataFrame:
     """Batched mean-field SVI for every eligible track: `{name}`/`{name}_stderr`.
 
-    Materially worse calibrated than full NUTS (FINDINGS.md: reported
-    uncertainty 3-10x too narrow, because the mean-field guide discards real
+    Materially worse calibrated than full NUTS (reported uncertainty
+    3-10x too narrow in the recovery scripts, because the mean-field guide discards real
     posterior correlation between K, alpha and sigma). Kept as the
     validation/comparison engine the recovery scripts run against, not as a
     production path.

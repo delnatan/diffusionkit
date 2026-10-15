@@ -85,8 +85,8 @@ the correct expectation, even though its MSD points are correlated. It is
 not claimed to minimize variance. Negative estimates are possible and
 retained; they do not demonstrate negative physical diffusivity.
 
-The historical free-intercept fit is not part of this module; there is no
-implicit fallback to it when localization errors are missing.
+There is no implicit fallback to a free-intercept fit when localization
+errors are missing.
 
 ## Alpha: constrained least squares in linear MSD space
 
