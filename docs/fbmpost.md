@@ -119,13 +119,27 @@ pop.alpha_weights(), pop.alpha_band(.9)            # alpha's distribution across
 pop.p_alpha_below(1.), pop.alpha_sd(), pop.corr()  # one value per posterior draw: take quantiles
 ```
 
-`keep_likelihoods=True` keeps each "ok" track's likelihood on (alpha, log10 D_ref) cells (`JointGrid`: alpha
-cells 0.06 wide, D_ref cells 0.2 decades wide over 1e-6 to 1e2), averaged over each cell from points inside it
-(`likelihood.cells`), so a narrow likelihood is not aliased. No prior enters. `deconvolve_tracks` fits
-g(alpha, log10 D_ref) with `gridpost.deconvolve_2d`: a smooth log density, with the smoothness along each axis
-chosen by maximizing the Laplace-approximated evidence, then HMC draws at that smoothness. The penalty's null
-space includes alpha × log10 D_ref, so a correlation between them is not smoothed toward zero. Alpha's
-distribution is g's margin.
+`keep_likelihoods=True` keeps each "ok" track's likelihood on (alpha, log10 D) cells (`JointGrid`: alpha
+cells 0.06 wide, D cells 0.05 decades wide over 1e-6 to 1e2), averaged over each cell from points inside it
+(`likelihood.cells`), so a narrow likelihood is not aliased. No prior enters. D on the cells is the D at the
+frame interval, not at tau_ref (`JointGrid.tau_s`). `deconvolve_tracks` fits g(alpha, log10 D) with
+`gridpost.deconvolve_2d`: a smooth log density, with the smoothness along each axis chosen by maximizing the
+Laplace-approximated evidence, then HMC draws at that smoothness. The penalty's null space includes
+alpha × log10 D, so a correlation between them is not smoothed toward zero. Alpha's distribution is g's margin.
+The result is carried to D_ref at tau_ref, each alpha row shifted by (alpha - 1) log10(tau_ref / tau_s).
+
+Why the frame interval and fine cells: g is uniform within a cell, and a track's likelihood is a ridge along
+which the MSD at its own lags stays fixed. At tau_ref = 0.1 s with 23 ms frames the ridge is steep in
+(alpha, log10 D_ref), so a narrow population (one bead size, alpha = 1) falling between two 0.2-decade cells
+came out as two alphas, 0.82 and 1.06, with a population SD of alpha of 0.10 where the truth is 0. At the frame
+interval the ridge is nearly flat in D, and 0.05-decade cells resolve the sharpest tracks (~0.07 decades at
+fixed alpha): the same simulations give one alpha cell at 1.00 and an SD of 0.014-0.022.
+
+Coarse to fine: the range is set by the least informative tracks (a 3-frame track allows almost any D at some
+alpha) and the cell width by the most informative, so `deconvolve_tracks` first fits 0.2-decade cells, then
+the 0.05-decade cells only over the box holding all but 1e-4 of the coarse fit's mass, with a margin, widened
+while the fine fit has mass on an inner edge. About 30 s for 4000 tracks, against ~190 s for one fine fit over
+the whole range.
 
 The fit uses only the D_ref cells some track tells apart (`informative_range`). Above them every track is at
 least 5 nats below its best; below them every track is on its noise-only plateau to 1%.

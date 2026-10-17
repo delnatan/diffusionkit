@@ -374,7 +374,7 @@ def deconvolve_2d(lls: np.ndarray, u: np.ndarray, v: np.ndarray, n_samples: int 
     lam_v) maximizes the Laplace evidence: a scan of lam_u = lam_v over `lam_grid`, then
     Nelder-Mead in (ln lam_u, ln lam_v) from its best point. The draws are HMC at that lam; unlike
     `deconvolve`, lam is not integrated out. Warns when the scan's best point is an end of
-    `lam_grid`. `rng` (default: seeded) draws `samples`.
+    `lam_grid`. `rng` (default: seeded) draws `samples`; `n_samples=0` skips the draws.
     """
     lls, u, v = np.asarray(lls, float), np.asarray(u, float), np.asarray(v, float)
     if lls.ndim != 3 or lls.shape[1:] != (len(u), len(v)):
@@ -413,7 +413,7 @@ def deconvolve_2d(lls: np.ndarray, u: np.ndarray, v: np.ndarray, n_samples: int 
     if best.problem:
         warn(f"deconvolve_2d: {best.problem} at lam={best.lam}", stacklevel=2)
     rng = np.random.default_rng(0) if rng is None else rng
-    draws = model.hmc(best, N_CHAINS, -(-n_samples // N_CHAINS), rng)[:n_samples]
+    draws = model.hmc(best, N_CHAINS, -(-n_samples // N_CHAINS), rng)[:n_samples] if n_samples else np.empty((0, model.K))
     shape = (len(u), len(v))
     return Deconvolution2D(u, v, _softmax(best.x).reshape(shape), draws.reshape(-1, *shape),
                            (float(best.lam[0]), float(best.lam[1])), float(best.log_evidence))
