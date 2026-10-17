@@ -91,19 +91,23 @@ class JointLikelihoodTests(unittest.TestCase):
         """A cell is the mean likelihood over its alpha rows and its log10 D_ref span, against a dense midpoint sum.
         Cells are stored relative to the track's best cell, so two cells' difference is compared."""
         track = self.table.filter(pl.col("track_id") == 3)
-        grid = JointGrid()
-        cells = L.cells(L.whiten_track(track, ACQ, self.options.alphas()), self.options, grid, self.options.tau_ref_s)[0]
-        a, d = 5, int(np.argmax(cells[5]))
-        rows = slice(a * grid.alpha_group, (a + 1) * grid.alpha_group)
-        step = grid.d_log10_D_ref
+        w = L.whiten_track(track, ACQ, self.options.alphas())
+        for points in (8, 4):  # fewer points per cell: cheaper, still within a few hundredths of a nat here
+            grid = JointGrid(cell_points=points)
+            cells = L.cells(w, self.options, grid, self.options.tau_ref_s)[0]
+            a, d = 5, int(np.argmax(cells[5]))
+            rows = slice(a * grid.alpha_group, (a + 1) * grid.alpha_group)
+            step = grid.d_log10_D_ref
 
-        def dense_cell(k):
-            x = grid.log10_D_ref()[k] + step * ((np.arange(400) + .5) / 400 - .5)
-            ll = L.log_likelihood_surface(track, ACQ, self.options, x)[rows]
-            return np.log(np.exp(ll - 100).mean()) + 100
+            def dense_cell(k):
+                x = grid.log10_D_ref()[k] + step * ((np.arange(400) + .5) / 400 - .5)
+                ll = L.log_likelihood_surface(track, ACQ, self.options, x)[rows]
+                return np.log(np.exp(ll - 100).mean()) + 100
 
-        for k in (d - 1, d + 1):  # near the peak, where a mixture can tell cells apart
-            self.assertAlmostEqual(cells[a, d] - cells[a, k], dense_cell(d) - dense_cell(k), delta=.02)
+            for k in (d - 1, d + 1):  # near the peak, where a mixture can tell cells apart
+                self.assertAlmostEqual(cells[a, d] - cells[a, k], dense_cell(d) - dense_cell(k), delta=.02)
+        with self.assertRaises(ValueError):
+            JointGrid(cell_points=0)
 
     def test_the_range_drops_cells_no_track_reaches(self):
         keep = informative_range(self.result.likelihoods)

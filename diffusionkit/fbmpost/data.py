@@ -135,12 +135,18 @@ class JointGrid:
     The cells must also be narrower than the sharpest tracks' likelihood across D: a long track pins D at
     fixed alpha to ~0.07 decades, hence 0.05. `population.deconvolve_tracks` keeps that affordable by
     refining only where a coarse fit puts mass.
+
+    Each cell holds the likelihood averaged over `cell_points` evenly spaced log10 D points (and its
+    `alpha_group` alpha rows), so a likelihood narrower than a cell is not aliased. Evaluating the cells
+    costs in proportion to `cell_points` and to the number of cells, and dominates a run's per-track
+    time when the likelihoods are kept.
     """
     alpha_group: int = 3
     log10_D_ref_min: float = -6.
     log10_D_ref_max: float = 2.
     d_log10_D_ref: float = .05
     tau_s: float | None = None
+    cell_points: int = 8
 
     def __post_init__(self):
         if self.alpha_group < 1:
@@ -149,6 +155,8 @@ class JointGrid:
             raise ValueError("need d_log10_D_ref > 0 and at least 3 cells over [log10_D_ref_min, log10_D_ref_max]")
         if self.tau_s is not None and not self.tau_s > 0:
             raise ValueError(f"tau_s must be positive, got {self.tau_s}")
+        if self.cell_points < 1:
+            raise ValueError(f"cell_points must be at least 1, got {self.cell_points}")
 
     def lag(self, acquisition: Acquisition) -> float:
         """The lag D is set at on the cells: `tau_s`, or the frame interval."""

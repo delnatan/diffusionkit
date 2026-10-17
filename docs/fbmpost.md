@@ -120,8 +120,8 @@ pop.p_alpha_below(1.), pop.alpha_sd(), pop.corr()  # one value per posterior dra
 ```
 
 `keep_likelihoods=True` keeps each "ok" track's likelihood on (alpha, log10 D) cells (`JointGrid`: alpha
-cells 0.06 wide, D cells 0.05 decades wide over 1e-6 to 1e2), averaged over each cell from points inside it
-(`likelihood.cells`), so a narrow likelihood is not aliased. No prior enters. D on the cells is the D at the
+cells 0.06 wide, D cells 0.05 decades wide over 1e-6 to 1e2), averaged over each cell from `cell_points` points inside it (8 by default;
+`likelihood.cells`), so a narrow likelihood is not aliased. No prior enters. D on the cells is the D at the
 frame interval, not at tau_ref (`JointGrid.tau_s`). `deconvolve_tracks` fits g(alpha, log10 D) with
 `gridpost.deconvolve_2d`: a smooth log density, with the smoothness along each axis chosen by maximizing the
 Laplace-approximated evidence, then HMC draws at that smoothness. The penalty's null space includes
