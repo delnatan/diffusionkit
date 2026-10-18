@@ -5,7 +5,9 @@ import numpy as np
 import polars as pl
 
 from diffusionkit.gridpost import GridLikelihoods
-from diffusionkit.spatial import SpatialOptions, analyze_likelihoods, centroids, potts
+import json
+
+from diffusionkit.spatial import SpatialOptions, analyze_likelihoods, centroids, potts, restore
 
 U = np.linspace(np.log(1e-4), np.log(10.), 201)
 D_SLOW, D_FAST = .05, .4
@@ -75,6 +77,15 @@ class PatternedCellTests(unittest.TestCase):
         self.assertGreater(p[0, 0], .5)
         self.assertLess(p[1, 0], .5)
         self.assertTrue((dist > 0).all())
+
+    def test_record_and_probabilities_restore_the_run(self):
+        record = json.loads(json.dumps(self.s.record()))
+        back = restore(self.lik, U, record, self.s.probabilities())
+        self.assertEqual(back.n_classes, 2)
+        self.assertEqual(back.patterned, self.s.patterned)
+        self.assertTrue(back.columns().equals(self.s.columns()))
+        self.assertTrue(back.selection.equals(self.s.selection))
+        np.testing.assert_allclose(back.field(np.array([[15., 15.]]))[0], self.s.field(np.array([[15., 15.]]))[0])
 
 
 class UnpatternedCellTests(unittest.TestCase):

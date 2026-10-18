@@ -113,7 +113,7 @@ where that edge is. `status` values:
 ### report() -- one row per class
 
 `spatial_class`, `n_tracks` and `n_detections` (its `groups()` tracks), `n_assigned` (tracks whose
-`spatial_class` it is), `n_confident` (of those, `spatial_p` > 0.9), `share` (the class weight). No D or alpha:
+`spatial_class` it is), `n_confident` (of those, `spatial_p` > 0.9). No class weight, D or alpha:
 those are the group's populations.
 
 ### selection -- one row per number of classes

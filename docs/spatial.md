@@ -52,6 +52,7 @@ read high.
 ## Is there a pattern
 
 The tracks' positions are shuffled `n_shuffles` times (99) and refitted along the same path as the observed fit.
+On a few thousand tracks that is a few minutes; `map_fn` runs the shuffles on a pool.
 Shuffling keeps every track's data and destroys only the arrangement, so it is the null with no spatial pattern.
 
 The statistic is the **neighbour gain**: the fit's neighbour-predictive score minus the plain mixture's, i.e. how
@@ -82,11 +83,19 @@ Grouping by the neighbours makes a track's class independent of its own estimati
 | `D_spatial_mean_um2_s`, `D_spatial_lo_um2_s`, `D_spatial_hi_um2_s` | the track's D posterior with the class mixture as its prior; borrowed from its class, so never in place of the gridpost columns |
 
 `report()`, one row per class: `n_tracks` and `n_detections` in its group, `n_assigned` (tracks whose
-`spatial_class` it is), `n_confident` (of those, `spatial_p` > 0.9), `share`. Counts are tracks, not particles.
+`spatial_class` it is), `n_confident` (of those, `spatial_p` > 0.9). Counts are tracks, not particles. The class
+weights are left out: under the Potts prior they trade off with beta and are not shares of the tracks.
 
 `field(xy)` gives the class probabilities at any point from its k nearest tracks, and the distance to the k-th of
 them; a map should leave out points whose k-th track is far (twice `typical_spacing_um()` is a reasonable cut),
 since tracks fill only the space the particles can reach.
+
+## Saving a run
+
+`record()` is the run as plain JSON values (options, selection, the classes of the C used, the null, the
+verdict, the typical spacing, the report) and `probabilities()` one row per track (`track_id`, `x_um`, `y_um`,
+`q_1`..`q_C`). `spatial.restore(likelihoods, u_D, record, probabilities)` rebuilds the analysis from them and the
+same gridpost likelihoods, with only the fit of the C used.
 
 ## Not here
 

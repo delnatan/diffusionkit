@@ -6,7 +6,7 @@ populations (`gridpost.deconvolve_tracks`, `fbmpost.deconvolve_tracks`). Nothing
 """
 from . import potts
 from .data import ShuffleNull, SpatialAnalysis, SpatialOptions
-from .workflow import analyze, analyze_likelihoods, centroids
+from .workflow import analyze, analyze_likelihoods, centroids, restore
 
 __all__ = ["potts", "ShuffleNull", "SpatialAnalysis", "SpatialOptions", "analyze", "analyze_likelihoods",
-           "centroids"]
+           "centroids", "restore"]

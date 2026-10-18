@@ -9,7 +9,7 @@ import polars as pl
 from ..gridpost import posterior as posterior_mod
 from ..gridpost.data import GridLikelihoods, GridPosteriorAnalysis
 from .data import ShuffleNull, SpatialAnalysis, SpatialOptions
-from .potts import PottsFit, fit, knn
+from .potts import PottsFit, densities, fit, knn
 
 
 def centroids(tracks: pl.DataFrame) -> pl.DataFrame:
@@ -106,11 +106,13 @@ def analyze_likelihoods(likelihoods: GridLikelihoods, u_D: np.ndarray, positions
     elif progress is not None:
         progress(total, total)
 
-    post = fits[chosen].track_posteriors(lik, u)
-    D = np.array([[s["mean"], s["lo"], s["hi"]] for s in
-                  (posterior_mod.summary(p, u, options.level) for p in post)])
     return SpatialAnalysis(ids, np.asarray(likelihoods.n_frames)[keep], xy, nb, u, options, fits, selection,
-                           chosen, null, D)
+                           chosen, null, _spatial_D(fits[chosen], lik, u, options.level))
+
+
+def _spatial_D(f: PottsFit, lik: np.ndarray, u: np.ndarray, level: float) -> np.ndarray:
+    return np.array([[s["mean"], s["lo"], s["hi"]] for s in
+                     (posterior_mod.summary(p, u, level) for p in f.track_posteriors(lik, u))])
 
 
 def analyze(result: GridPosteriorAnalysis, positions: pl.DataFrame, options: SpatialOptions = SpatialOptions(),
@@ -119,3 +121,35 @@ def analyze(result: GridPosteriorAnalysis, positions: pl.DataFrame, options: Spa
     if result.likelihoods is None:
         raise ValueError("the gridpost run kept no likelihoods: run it with keep_likelihoods=True")
     return analyze_likelihoods(result.likelihoods, result.options.u_D(), positions, options, **kw)
+
+
+def restore(likelihoods: GridLikelihoods, u_D: np.ndarray, record: dict, probabilities: pl.DataFrame
+            ) -> SpatialAnalysis:
+    """The `SpatialAnalysis` saved as `record()` and `probabilities()`, over the same likelihoods. Only the fit of
+    the C used comes back (`fits` has that one key); the selection table and the null are as saved."""
+    opts = SpatialOptions(**record["options"])
+    probs = probabilities
+    ids = probs["track_id"].to_numpy()
+    rows = {int(t): i for i, t in enumerate(np.asarray(likelihoods.track_ids))}
+    missing = [int(t) for t in ids if int(t) not in rows]
+    if missing:
+        raise ValueError(f"{len(missing)} saved tracks have no likelihood, e.g. {missing[:3]}")
+    idx = np.array([rows[int(t)] for t in ids], int)
+    ll = np.asarray(likelihoods.loglik_D, float)[idx]
+    lik = np.exp(ll - ll.max(axis=1, keepdims=True))
+    u = np.asarray(u_D, float)
+    c, n = record["n_classes"], record["classes"]
+    centre, sd = np.asarray(n["centre_ln_D"], float), np.asarray(n["sd_ln_D"], float)
+    q = probs.select([f"q_{k}" for k in range(1, c + 1)]).to_numpy()
+    f = PottsFit(centre, sd, np.asarray(n["weight"], float), float(n["beta"]), q, lik @ densities(u, centre, sd),
+                 int(n["n_iter"]), bool(n["converged"]))
+    xy = probs.select("x_um", "y_um").to_numpy().astype(float)
+    null = record["null"]
+    if null is not None:
+        null = ShuffleNull(null["gain"], null["beta"], np.asarray(null["shuffled_gain"], float),
+                           np.asarray(null["shuffled_beta"], float), null["p"])
+    selection = pl.DataFrame(record["selection"], schema={
+        "n_classes": pl.Int64, "score": pl.Float64, "gain": pl.Float64, "gain_per_track": pl.Float64,
+        "beta": pl.Float64, "suggested": pl.Boolean})
+    return SpatialAnalysis(ids, np.asarray(likelihoods.n_frames)[idx], xy, knn(xy, opts.k), u, opts, {c: f},
+                           selection, c, null, _spatial_D(f, lik, u, opts.level))

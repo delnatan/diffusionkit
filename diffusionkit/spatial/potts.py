@@ -28,6 +28,8 @@ from scipy.spatial import cKDTree
 BETA_MAX = 30.  # beta's bound; near it beta is weakly identified, which is why the pattern test uses the gain
 MIN_SD = .1  # added in quadrature to a class's sd in ln D, so a class never collapses onto one grid cell
 SWEEPS = 5  # mean-field sweeps per E-step
+BETA_STEP = 1.  # beta moves at most this far per iteration between scans of its whole range
+SCAN_EVERY = 10  # iterations between those scans
 TINY = 1e-300
 
 
@@ -116,17 +118,27 @@ def _weights(q: np.ndarray, m_nb: np.ndarray, beta: float, w: np.ndarray) -> np.
     return w
 
 
-def _beta(ev: np.ndarray, m_nb: np.ndarray, w: np.ndarray) -> float:
+def _beta(ev: np.ndarray, m_nb: np.ndarray, w: np.ndarray, near: float | None = None) -> float:
     """beta maximizing the neighbour-predictive likelihood sum_i log sum_c P(c | neighbours of i) e_ic: how well
     a track's neighbours predict its own data. The mean-field pseudo-likelihood instead rewards neighbours for
     agreeing with q, which the mean field has already pulled toward them, so it climbs with no pattern at all."""
+    log_w = np.log(w)
+
     def negative(b):
-        return -np.log((conditional(m_nb, w, b) * ev).sum(axis=1)).sum()
+        # conditional() without its max shift: w <= 1 and the neighbour fractions are in [0, 1], so the
+        # exponent is at most BETA_MAX.
+        e = np.exp(log_w + b * m_nb)
+        return -(np.log((e * ev).sum(axis=1)) - np.log(e.sum(axis=1))).sum()
+    if near is not None:  # a step from the last beta; the scan below only if it runs to the window's edge
+        lo, hi = max(near - BETA_STEP, 0.), min(near + BETA_STEP, BETA_MAX)
+        b = float(minimize_scalar(negative, bounds=(lo, hi), method="bounded", options={"xatol": 1e-4}).x)
+        if (b - lo > 1e-3 or lo == 0.) and (hi - b > 1e-3 or hi == BETA_MAX):
+            return b
     # The objective can have two maxima (near 0 and at a large beta), so a coarse scan picks the basin first.
     grid = np.linspace(0., BETA_MAX, 61)
     i = int(np.argmin([negative(b) for b in grid]))
     lo, hi = grid[max(i - 1, 0)], grid[min(i + 1, len(grid) - 1)]
-    return float(minimize_scalar(negative, bounds=(lo, hi), method="bounded").x)
+    return float(minimize_scalar(negative, bounds=(lo, hi), method="bounded", options={"xatol": 1e-4}).x)
 
 
 def initial(lik: np.ndarray, u: np.ndarray, n_class: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -173,7 +185,7 @@ def fit(lik: np.ndarray, u: np.ndarray, neighbours: np.ndarray, n_class: int, be
         var = (u ** 2) @ mass / total - centre ** 2
         sd = np.sqrt(np.maximum(var, 0.) + MIN_SD ** 2)
         if beta is None:
-            b = _beta(ev, m_nb, w)
+            b = _beta(ev, m_nb, w, None if it <= 3 or it % SCAN_EVERY == 0 else b)
         w = _weights(q, m_nb, b, w)
         if it > 10 and np.abs(q - q_old).max() < tol and abs(b - b_old) < tol:
             converged = True

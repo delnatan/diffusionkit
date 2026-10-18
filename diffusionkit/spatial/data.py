@@ -1,7 +1,7 @@
 """Spatial-class inputs and outputs. The model is `potts`, the run `workflow`."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 import polars as pl
@@ -17,8 +17,8 @@ class SpatialOptions:
     - `max_classes`: classes are fitted for C = 1 .. max_classes.
     - `n_classes`: the C to use; None takes the suggested one, the last C whose gain over C - 1 clears
       `gain_per_track` nats per track (the elbow of the score against C).
-    - `n_shuffles`: position shuffles for beta's null. The p bound is (1 + shuffles at or above beta) /
-      (1 + n_shuffles), so 99 shuffles resolve p down to 0.01.
+    - `n_shuffles`: position shuffles for the pattern test's null. p is (1 + shuffles whose neighbour gain is
+      at least the observed) / (1 + n_shuffles), so 99 shuffles resolve p down to 0.01.
     - `p_pattern`: the p bound at or below which the classes count as spatially organized.
     - `level`: credible-interval mass of the per-track spatial D columns (gridpost's default).
     """
@@ -70,7 +70,7 @@ class SpatialAnalysis:
     - `fits[C]`: the fit with C classes (`potts.PottsFit`), classes numbered 1..C in increasing order of D.
     - `selection`: one row per C -- `n_classes`, `score` (neighbour-predictive log-likelihood), `gain` and
       `gain_per_track` over C - 1, `beta`, `suggested`.
-    - `n_classes`: the C used; `null`: beta's shuffle null for it (None for C = 1 or no shuffles).
+    - `n_classes`: the C used; `null`: the shuffle null of its neighbour gain (None for C = 1 or no shuffles).
     - `D_spatial`: (n, 3) per-track mean, low and high of D (um^2/s) with the class mixture as the prior.
     """
     track_ids: np.ndarray
@@ -91,7 +91,7 @@ class SpatialAnalysis:
 
     @property
     def patterned(self) -> bool:
-        """Whether the classes are spatially organized: C > 1 and beta above its shuffle null."""
+        """Whether the classes are spatially organized: C > 1 and the neighbour gain above its shuffle null."""
         return self.null is not None and self.null.p <= self.options.p_pattern
 
     def neighbour_q(self) -> np.ndarray:
@@ -124,8 +124,9 @@ class SpatialAnalysis:
 
     def report(self) -> pl.DataFrame:
         """One row per class, counts only: `n_tracks` and `n_detections` in its group (`groups`),
-        `n_assigned` (tracks whose `spatial_class` it is) and `n_confident` (of those, `spatial_p` > 0.9),
-        and `share`, its weight. What the class's tracks look like is their population, not a number here."""
+        `n_assigned` (tracks whose `spatial_class` it is) and `n_confident` (of those, `spatial_p` > 0.9). The
+        class weight w is not reported: under the Potts prior it trades off with beta and is not the class's
+        share of the tracks. What the class's tracks look like is their population, not a number here."""
         q = self.fit.q
         c = q.argmax(axis=1) + 1
         cn = self.neighbour_q().argmax(axis=1) + 1
@@ -137,7 +138,6 @@ class SpatialAnalysis:
             "n_detections": [int(self.n_frames[cn == k].sum()) for k in cls],
             "n_assigned": [int((c == k).sum()) for k in cls],
             "n_confident": [int(((c == k) & confident).sum()) for k in cls],
-            "share": self.fit.weight,
         })
 
     def field(self, xy_um: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -154,3 +154,29 @@ class SpatialAnalysis:
         d = np.linalg.norm(self.xy_um[self.neighbours[:, -1]] - self.xy_um, axis=1)
         return float(np.median(d))
 
+
+    def probabilities(self) -> pl.DataFrame:
+        """One row per track: `track_id`, `x_um`, `y_um` and `q_1`..`q_C`, the fit's class probabilities. With
+        `record` it is what `workflow.restore` rebuilds the analysis from."""
+        q = self.fit.q
+        return pl.DataFrame({"track_id": self.track_ids, "x_um": self.xy_um[:, 0], "y_um": self.xy_um[:, 1],
+                             **{f"q_{c + 1}": q[:, c] for c in range(q.shape[1])}})
+
+    def record(self) -> dict:
+        """The run as plain JSON values: options, the selection table, the C used and its classes (in ln D),
+        the shuffle null and the pattern verdict, the typical spacing and the report."""
+        f, null = self.fit, self.null
+        return {
+            "options": asdict(self.options),
+            "n_tracks": len(self.track_ids),
+            "n_classes": self.n_classes,
+            "selection": self.selection.to_dicts(),
+            "classes": {"centre_ln_D": f.centre.tolist(), "sd_ln_D": f.sd.tolist(), "weight": f.weight.tolist(),
+                        "beta": f.beta, "n_iter": f.n_iter, "converged": f.converged},
+            "null": None if null is None else {
+                "gain": null.gain, "beta": null.beta, "p": null.p,
+                "shuffled_gain": null.shuffled_gain.tolist(), "shuffled_beta": null.shuffled_beta.tolist()},
+            "patterned": self.patterned,
+            "typical_spacing_um": self.typical_spacing_um(),
+            "report": self.report().to_dicts(),
+        }
