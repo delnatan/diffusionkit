@@ -116,24 +116,51 @@ class SharedAlpha:
 
 @dataclass(frozen=True)
 class JointGrid:
-    """The (alpha, log10 D_ref) cells a track's likelihood is kept on for a population (`population`).
+    """The (alpha, log10 D) cells a track's likelihood is kept on for a population (`population`).
 
     Alpha cells group `alpha_group` consecutive rows of `options.alphas()` (0.06 wide on the default
-    grid, with alpha = 1 a cell centre); log10 D_ref cells are `d_log10_D_ref` wide over
+    grid, with alpha = 1 a cell centre); log10 D cells are `d_log10_D_ref` wide over
     [log10_D_ref_min, log10_D_ref_max]. A population is fitted on the part of this range some track
     tells apart from its neighbours (`population.informative_range`), so the range only has to be
     wide enough.
+
+    D on the cells is the D of the motion at the lag `tau_s` (default: the frame interval), not at the
+    reported `options.tau_ref_s`: D = K tau_s^(alpha - 1). A track's likelihood is a ridge in
+    (alpha, D) along which the MSD at the lags it measures stays fixed; at the frame interval that ridge
+    is nearly flat in D, so neighbouring D cells hold the same alphas. At tau_ref = 0.1 s, far from a
+    23 ms frame, the ridge is steep, and a narrow population (one bead size, alpha = 1) that falls
+    between two D cells is shared between them at two alphas (0.82 and 1.06 on 0.2-decade cells).
+    `population.deconvolve_tracks` reports the population at tau_ref.
+
+    The cells must also be narrower than the sharpest tracks' likelihood across D: a long track pins D at
+    fixed alpha to ~0.07 decades, hence 0.05. `population.deconvolve_tracks` keeps that affordable by
+    refining only where a coarse fit puts mass.
+
+    Each cell holds the likelihood averaged over `cell_points` evenly spaced log10 D points (and its
+    `alpha_group` alpha rows), so a likelihood narrower than a cell is not aliased. Evaluating the cells
+    costs in proportion to `cell_points` and to the number of cells, and dominates a run's per-track
+    time when the likelihoods are kept.
     """
     alpha_group: int = 3
     log10_D_ref_min: float = -6.
     log10_D_ref_max: float = 2.
-    d_log10_D_ref: float = .2
+    d_log10_D_ref: float = .05
+    tau_s: float | None = None
+    cell_points: int = 8
 
     def __post_init__(self):
         if self.alpha_group < 1:
             raise ValueError(f"alpha_group must be at least 1, got {self.alpha_group}")
         if not (self.d_log10_D_ref > 0 and self.log10_D_ref_max - self.log10_D_ref_min >= 3 * self.d_log10_D_ref):
             raise ValueError("need d_log10_D_ref > 0 and at least 3 cells over [log10_D_ref_min, log10_D_ref_max]")
+        if self.tau_s is not None and not self.tau_s > 0:
+            raise ValueError(f"tau_s must be positive, got {self.tau_s}")
+        if self.cell_points < 1:
+            raise ValueError(f"cell_points must be at least 1, got {self.cell_points}")
+
+    def lag(self, acquisition: Acquisition) -> float:
+        """The lag D is set at on the cells: `tau_s`, or the frame interval."""
+        return float(acquisition.dt_s) if self.tau_s is None else self.tau_s
 
     def alphas(self, options: FbmPostOptions) -> np.ndarray:
         """Alpha cell centres: the mean of each group of `alpha_group` grid rows (a remainder is dropped)."""
@@ -144,29 +171,32 @@ class JointGrid:
         return fine[:n * self.alpha_group].reshape(n, self.alpha_group).mean(axis=1)
 
     def log10_D_ref(self) -> np.ndarray:
-        """log10 D_ref cell centres."""
+        """log10 D cell centres (D at `lag`)."""
         n = int(round((self.log10_D_ref_max - self.log10_D_ref_min) / self.d_log10_D_ref))
         return self.log10_D_ref_min + self.d_log10_D_ref * (np.arange(n) + .5)
 
 
 @dataclass(frozen=True)
 class JointLikelihoods:
-    """Every "ok" track's likelihood over (alpha, log10 D_ref) cells, one (n_alpha, n_D) slab per track.
+    """Every "ok" track's likelihood over (alpha, log10 D) cells, one (n_alpha, n_D) slab per track.
 
     Free of priors: the likelihood is evaluated on points of each cell and averaged over it
-    (`likelihood.cells`). Each slab's maximum is 0.
+    (`likelihood.cells`). Each slab's maximum is 0. D on the cells is at the lag `tau_s` (`JointGrid`);
+    the floors and the population are at `tau_ref_s`.
     """
     track_ids: np.ndarray
     n_frames: np.ndarray
-    D_ref_floor_um2_s: np.ndarray  # (n_tracks,) `likelihood.localization_floor`
+    D_ref_floor_um2_s: np.ndarray  # (n_tracks,) `likelihood.localization_floor`, at tau_ref_s
     alphas: np.ndarray             # (n_alpha,) cell centres
-    log10_D_ref: np.ndarray        # (n_D,) cell centres, evenly spaced
+    log10_D_ref: np.ndarray        # (n_D,) cell centres of log10 D at tau_s, evenly spaced
     loglik: np.ndarray             # (n_tracks, n_alpha, n_D)
+    tau_s: float                   # the lag D is set at on the cells
+    tau_ref_s: float               # the lag the population is reported at (`FbmPostOptions.tau_ref_s`)
 
     def rows(self, index) -> "JointLikelihoods":
         """The tracks at `index` (an integer index array or a boolean mask)."""
         return JointLikelihoods(self.track_ids[index], self.n_frames[index], self.D_ref_floor_um2_s[index],
-                                self.alphas, self.log10_D_ref, self.loglik[index])
+                                self.alphas, self.log10_D_ref, self.loglik[index], self.tau_s, self.tau_ref_s)
 
 
 @dataclass(frozen=True)

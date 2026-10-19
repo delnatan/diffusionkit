@@ -82,26 +82,32 @@ class JointLikelihoodTests(unittest.TestCase):
         lik, fits = self.result.likelihoods, self.result.fits.filter(pl.col("status") == "ok")
         flat = lik.loglik.reshape(len(lik.track_ids), -1).argmax(axis=1)
         a, d = np.unravel_index(flat, lik.loglik.shape[1:])
-        self.assertLess(np.median(np.abs(lik.log10_D_ref[d] - fits["log10_D_ref_hat"].to_numpy())), .15)
+        # The cells hold D at the frame interval; D_ref at tau_ref is D (tau_ref / tau_s)^(alpha - 1).
+        D_ref = lik.log10_D_ref[d] + (lik.alphas[a] - 1) * np.log10(lik.tau_ref_s / lik.tau_s)
+        self.assertLess(np.median(np.abs(D_ref - fits["log10_D_ref_hat"].to_numpy())), .15)
         self.assertLess(np.median(np.abs(lik.alphas[a] - fits["alpha_hat"].to_numpy())), .06)
 
     def test_cells_average_the_likelihood_over_each_cell(self):
         """A cell is the mean likelihood over its alpha rows and its log10 D_ref span, against a dense midpoint sum.
         Cells are stored relative to the track's best cell, so two cells' difference is compared."""
         track = self.table.filter(pl.col("track_id") == 3)
-        grid = JointGrid()
-        cells = L.cells(L.whiten_track(track, ACQ, self.options.alphas()), self.options, grid)[0]
-        a, d = 5, int(np.argmax(cells[5]))
-        rows = slice(a * grid.alpha_group, (a + 1) * grid.alpha_group)
-        step = grid.d_log10_D_ref
+        w = L.whiten_track(track, ACQ, self.options.alphas())
+        for points in (8, 4):  # fewer points per cell: cheaper, still within a few hundredths of a nat here
+            grid = JointGrid(cell_points=points)
+            cells = L.cells(w, self.options, grid, self.options.tau_ref_s)[0]
+            a, d = 5, int(np.argmax(cells[5]))
+            rows = slice(a * grid.alpha_group, (a + 1) * grid.alpha_group)
+            step = grid.d_log10_D_ref
 
-        def dense_cell(k):
-            x = grid.log10_D_ref()[k] + step * ((np.arange(400) + .5) / 400 - .5)
-            ll = L.log_likelihood_surface(track, ACQ, self.options, x)[rows]
-            return np.log(np.exp(ll - 100).mean()) + 100
+            def dense_cell(k):
+                x = grid.log10_D_ref()[k] + step * ((np.arange(400) + .5) / 400 - .5)
+                ll = L.log_likelihood_surface(track, ACQ, self.options, x)[rows]
+                return np.log(np.exp(ll - 100).mean()) + 100
 
-        for k in (d - 1, d + 1):  # near the peak, where a mixture can tell cells apart
-            self.assertAlmostEqual(cells[a, d] - cells[a, k], dense_cell(d) - dense_cell(k), delta=.02)
+            for k in (d - 1, d + 1):  # near the peak, where a mixture can tell cells apart
+                self.assertAlmostEqual(cells[a, d] - cells[a, k], dense_cell(d) - dense_cell(k), delta=.02)
+        with self.assertRaises(ValueError):
+            JointGrid(cell_points=0)
 
     def test_the_range_drops_cells_no_track_reaches(self):
         keep = informative_range(self.result.likelihoods)
@@ -117,6 +123,32 @@ class JointLikelihoodTests(unittest.TestCase):
         self.assertGreater(np.median(pop.p_alpha_below(1.)), .9)
         self.assertAlmostEqual(pop.log10_floor, np.log10(.013 ** 2 / self.options.tau_ref_s))
         self.assertLess(np.median(pop.mass_below_floor()), .2)
+
+
+class BrownianPopulationTests(unittest.TestCase):
+    """One D and alpha = 1 at a 23 ms frame, D_ref = 0.1 um^2/s sitting on an edge between 0.2-decade cells at
+    tau_ref = 0.1 s: there the old grid split alpha into 0.82 and 1.06 with a population SD near 0.1."""
+
+    @classmethod
+    def setUpClass(cls):
+        rng = np.random.default_rng(5)
+        acq = Acquisition(.023, .01)
+        tables = [simulate_tracks(60, n, 1., .1, .005, acq, rng=rng, first_track_id=60 * k)
+                  for k, n in enumerate((4, 6, 10, 20, 40))]
+        cls.result = analyze_tracks(pl.concat(tables), acq, FbmPostOptions(), keep_likelihoods=True)
+
+    def test_cells_hold_D_at_the_frame_interval(self):
+        lik = self.result.likelihoods
+        self.assertAlmostEqual(lik.tau_s, .023)
+        self.assertAlmostEqual(lik.tau_ref_s, .1)
+
+    def test_one_alpha_cell_at_one(self):
+        pop = deconvolve_tracks(self.result.likelihoods, n_samples=200)
+        self.assertAlmostEqual(pop.alphas[np.argmax(pop.alpha_weights())], 1.)
+        self.assertGreater(pop.alpha_weights().max(), .5)  # the old grid: 0.48 at 0.88, 0.24 at 1.12
+        self.assertLess(np.median(pop.alpha_sd()), .06)  # the old grid: 0.11
+        # Reported at tau_ref: the D_ref margin peaks at 0.1.
+        self.assertLess(abs(pop.log10_D_ref[np.argmax(pop.weights.sum(axis=0))] + 1), .1)
 
 
 class AlphaDPopulationTests(unittest.TestCase):

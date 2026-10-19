@@ -30,8 +30,6 @@ from .data import FbmPostOptions, JointGrid
 _CHUNK_FLOATS = 4_000_000
 # Cells further than this below a track's maximum are stored at it (e^-200: no mixture can tell).
 _LOGLIK_FLOOR = -200.
-# Points per log10 D_ref cell over which `cells` averages the likelihood (a cell is 0.2 decades by default).
-_CELL_POINTS = 8
 
 
 class Whitened(NamedTuple):
@@ -125,20 +123,22 @@ def log_likelihood_surface(track: pl.DataFrame, acquisition: Acquisition, option
     return surface(whiten_track(track, acquisition, alphas), alphas, log10_D_ref, options.tau_ref_s)[0]
 
 
-def cells(w: Whitened, options: FbmPostOptions, joint: JointGrid) -> np.ndarray:
+def cells(w: Whitened, options: FbmPostOptions, joint: JointGrid, tau_s: float) -> np.ndarray:
     """(T, n_alpha_cells, n_D_cells) log of each track's likelihood averaged over `joint`'s cells, maximum 0.
 
-    `w` is whitened on `options.alphas()`; a cell averages `joint.alpha_group` alpha rows and `_CELL_POINTS`
-    evenly spaced log10 D_ref points, in linear scale, so a likelihood narrower than a cell is not aliased.
+    `w` is whitened on `options.alphas()`; a cell averages `joint.alpha_group` alpha rows and `joint.cell_points`
+    evenly spaced log10 D points (D at the lag `tau_s`, `JointGrid.lag`), in linear scale, so a likelihood
+    narrower than a cell is not aliased.
     """
     centres = joint.log10_D_ref()
-    offsets = joint.d_log10_D_ref * ((np.arange(_CELL_POINTS) + .5) / _CELL_POINTS - .5)
+    k = joint.cell_points
+    offsets = joint.d_log10_D_ref * ((np.arange(k) + .5) / k - .5)
     x = (centres[:, None] + offsets[None, :]).ravel()
     n_a, n_d = len(joint.alphas(options)), len(centres)
     rows = n_a * joint.alpha_group
-    ll = surface(Whitened(w.lam[:, :rows], w.y2[:, :rows], w.const), options.alphas()[:rows], x, options.tau_ref_s)
+    ll = surface(Whitened(w.lam[:, :rows], w.y2[:, :rows], w.const), options.alphas()[:rows], x, tau_s)
     T = len(ll)
-    ll = ll.reshape(T, n_a, joint.alpha_group, n_d, _CELL_POINTS)
+    ll = ll.reshape(T, n_a, joint.alpha_group, n_d, k)
     top = ll.max(axis=(1, 2, 3, 4), keepdims=True)
     with np.errstate(divide="ignore"):
         out = np.log(np.exp(ll - top).mean(axis=(2, 4)))

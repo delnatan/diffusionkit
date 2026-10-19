@@ -67,7 +67,7 @@ def _fit_batch(xy: np.ndarray, sd: np.ndarray, acquisition: Acquisition, options
     alphas, i_one = P.alphas_with_one(grid)
     w = L.whiten_batch(xy, sd, float(acquisition.dt_s), float(acquisition.exposure_s), alphas)
     s = P.summarize(w, alphas, len(grid), i_one, options.level, options.tau_ref_s)
-    return s, None if joint is None else L.cells(w, options, joint)
+    return s, None if joint is None else L.cells(w, options, joint, joint.lag(acquisition))
 
 
 def _fit_or_invalid(track: pl.DataFrame, acquisition: Acquisition, options: FbmPostOptions,
@@ -193,5 +193,6 @@ def analyze_tracks(table: pl.DataFrame, acquisition: Acquisition,
         alphas, D = joint.alphas(options), joint.log10_D_ref()
         likelihoods = JointLikelihoods(np.array(lik_ids, dtype=np.int64), np.array(lik_frames, dtype=np.int64),
                                        np.array(floors, dtype=float), alphas, D,
-                                       np.array(cells, dtype=float).reshape(len(lik_ids), len(alphas), len(D)))
+                                       np.array(cells, dtype=float).reshape(len(lik_ids), len(alphas), len(D)),
+                                       joint.lag(acquisition), options.tau_ref_s)
     return FbmAnalysis(pl.DataFrame(rows, schema=FIT_SCHEMA), acquisition, options, profiles, likelihoods)

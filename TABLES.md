@@ -97,6 +97,36 @@ where that edge is. `status` values:
 | `excluded` | Fewer frames than `GridPostOptions.min_frames` |
 | `invalid_input` | A batch track failed validation, or a localization SD is zero |
 
+## spatial: `SpatialAnalysis` -- `columns()`, `report()`, `selection`, `null`
+
+### columns() -- one row per track (gridpost "ok" tracks with a position)
+
+| Column | Meaning |
+| --- | --- |
+| `track_id` | Joins to the gridpost fits |
+| `spatial_class` | Most probable class, 1..C in increasing order of class D, from the track's own data and its neighbours |
+| `spatial_p` | That class's probability |
+| `spatial_class_neighbours` | Most probable class from the neighbours alone (own data left out): the grouping for per-class populations (`groups()`) |
+| `spatial_p_neighbours` | That class's probability |
+| `D_spatial_mean_um2_s`, `D_spatial_lo_um2_s`, `D_spatial_hi_um2_s` | The track's D posterior with the class mixture as its prior, mean and equal-tailed interval at `SpatialOptions.level`; it borrows from the class, so it never replaces `D_post_*` |
+
+### report() -- one row per class
+
+`spatial_class`, `n_tracks` and `n_detections` (its `groups()` tracks), `n_assigned` (tracks whose
+`spatial_class` it is), `n_confident` (of those, `spatial_p` > 0.9). No class weight, D or alpha:
+those are the group's populations.
+
+### selection -- one row per number of classes
+
+`n_classes`, `score` (neighbour-predictive log-likelihood), `gain` and `gain_per_track` over one class fewer,
+`beta`, `suggested` (the last C whose gain per track clears `SpatialOptions.gain_per_track`).
+
+### null -- `ShuffleNull`
+
+`gain` (nats the neighbours add over the plain mixture), `beta`, `shuffled_gain`, `shuffled_beta` (one per
+position shuffle) and `p` = (1 + shuffles with gain >= observed) / (1 + n_shuffles). `SpatialAnalysis.patterned`
+is p <= `p_pattern`.
+
 ## Batches: `GridPostBatch`, `ClassicBatch`, `EnsembleMSD`
 
 `gridpost.analyze_experiments` and `classic.analyze_experiments` return the

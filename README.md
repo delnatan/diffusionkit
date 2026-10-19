@@ -11,6 +11,7 @@ table format and one `Acquisition`; use any one without the others.
 | `gridpost` (recommended) | how fast is each track, and how is `D` distributed? | exact grid posterior over `D`, information, localization floor | shared `D`; log-normal or free-shape `D` distribution per sample or replicate, with intervals; split by track length | none |
 | `fbmpost` | what is each track's alpha? | alpha and `D_ref` (fBm) by profile likelihood, with likelihood-ratio intervals and a test of alpha = 1; `D_ref` is **not** a Brownian `D` | shared alpha (summed profiles); free-shape population of (alpha, `D_ref`) by 2D deconvolution of the tracks' joint likelihoods, with intervals | none |
 | `classic` | what do MSD fits say? | MSD curve, linear `D` and power-law `K`/alpha by MSD fit | ensemble MSD vs lag per sample, fitted, with a cluster-bootstrap interval | none |
+| `spatial` | does speed have a spatial pattern, and what do its regions look like? | class from its own `D` likelihood and its neighbours' (hidden Potts on the kNN graph), and from its neighbours alone | classes per movie, tested against shuffled positions; each class's tracks go to the population models above | none |
 | `drift` | what motion do all tracks share? | | one drift field per movie, subtracted before the above | none |
 | `bayes` | what does one weak track's full posterior look like? | NUTS via NumPyro, a diagnostic | not provided | `bayes` |
 
@@ -389,6 +390,22 @@ generalized-least-squares fit on displacements, with each track's own Brownian c
 so still spots carry the estimate without any classification. Correct before any per-track analysis when the sample
 drifts: uncorrected drift of ~17 nm/frame moves a D ~ 1e-3 um^2/s population to 0.01-0.05. Local flow of ~1 nm/frame,
 which no global field removes, biases D by only ~2e-5 um^2/s. See [docs/drift.md](docs/drift.md).
+
+## Spatial classes
+
+```python
+from diffusionkit import spatial
+
+s = spatial.analyze(result, spatial.centroids(tracks))   # result: gridpost, keep_likelihoods=True
+s.selection, s.null.p          # score against C (pick the elbow), and whether there is a pattern at all
+s.columns()                    # spatial_class, spatial_class_neighbours, ... per track
+s.groups()                     # {class: track ids}: give each to gridpost.deconvolve / fbmpost.deconvolve_tracks
+```
+
+Tracks are classed by their Brownian D likelihood and their neighbours' (a hidden Potts model on the 8-nearest-neighbour
+graph). Whether there is a pattern is tested by shuffling the positions. A class is reported only as a group of tracks
+whose populations come from the existing models, grouped by the class their neighbours give them so that a track's own
+estimation errors do not select it. See [docs/spatial.md](docs/spatial.md).
 
 ## Data and algorithms
 
