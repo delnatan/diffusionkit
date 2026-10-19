@@ -50,6 +50,25 @@ class Deconvolve2DTests(unittest.TestCase):
         self.assertEqual(fit.lam, self.fit.lam)
         np.testing.assert_allclose(fit.weights, self.fit.weights, atol=1e-6)
 
+    def test_lam_is_integrated_out(self):
+        fit = self.fit
+        self.assertEqual(fit.lams.shape, (len(fit.lam_weights), 2))
+        self.assertGreater(len(fit.lam_weights), 1)
+        self.assertAlmostEqual(fit.lam_weights.sum(), 1, places=12)
+        self.assertIn(tuple(fit.lam), [tuple(lam) for lam in fit.lams])
+
+    def test_a_start_near_the_maximum_finds_the_same_population(self):
+        fit = deconvolve_2d(self.lls, self.u, self.v, n_samples=200, lam_start=tuple(3 * np.array(self.fit.lam)))
+        np.testing.assert_allclose(fit.weights, self.fit.weights, atol=0.01)
+        band = lambda f: np.quantile(f.samples.sum(axis=2), [.05, .95], axis=0)
+        np.testing.assert_allclose(band(fit), band(self.fit), atol=0.03)
+
+    def test_a_fixed_lam_is_not_searched(self):
+        fit = deconvolve_2d(self.lls, self.u, self.v, n_samples=0, lam=self.fit.lam)
+        self.assertEqual(fit.lam, self.fit.lam)
+        self.assertEqual(len(fit.lam_weights), 1)
+        np.testing.assert_allclose(fit.weights, self.fit.weights, atol=1e-5)  # Newton from another start
+
     def test_rejects_an_uneven_grid(self):
         with self.assertRaises(ValueError):
             deconvolve_2d(self.lls, self.u ** 3, self.v)
