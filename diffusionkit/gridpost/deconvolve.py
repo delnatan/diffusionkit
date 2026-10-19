@@ -60,6 +60,7 @@ where it would pull a histogram of medians toward the prior's median.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+from typing import Callable
 from warnings import warn
 
 import numpy as np
@@ -297,7 +298,7 @@ class _LogG2(_LogG):
         return 0.5 * (float(np.sum(np.log(ev[ev > 0]))) + 3 * np.log(EPS))
 
     def hmc_mixture(self, modes: list[_Mode], counts, n_keep: int, rng: np.random.Generator,
-                    n_warm: int = 30) -> np.ndarray:
+                    n_warm: int = 30, progress: Callable[[int, int], None] | None = None) -> np.ndarray:
         """(sum(counts) * n_keep, K) draws of g with lam integrated out: `counts[j]` chains at `modes[j]`'s
         lam, each started at that lam's mode, all moved together by one Hamiltonian Monte Carlo.
 
@@ -306,6 +307,7 @@ class _LogG2(_LogG):
         over a K x K matrix per lam and leapfrog step. The posteriors at nearby lams differ little in
         shape, and any fixed preconditioner leaves each chain's target exact. Each chain's own lam enters
         through its potential, as lam_u Omega_u + lam_v Omega_v (banded) plus the tilt (rank 3).
+        `progress(done, total)` counts its iterations.
         """
         B = solve_triangular(modes[0].C, self.P.T, lower=True).T
         counts = np.asarray(counts, int)
@@ -344,6 +346,8 @@ class _LogG2(_LogG):
                 eps *= np.exp(acc.mean() - 0.75)
             else:
                 keep.append(G.copy())
+            if progress is not None:
+                progress(it + 1, n_warm + n_keep)
         return np.hstack(keep).T
 
 
@@ -432,7 +436,8 @@ def deconvolve(lls: np.ndarray, u: np.ndarray, log_prior: np.ndarray | None = No
 def deconvolve_2d(lls: np.ndarray, u: np.ndarray, v: np.ndarray, n_samples: int = 1000,
                   lam_grid: np.ndarray = LAM_GRID_2D, rng: np.random.Generator | None = None,
                   lam_start: tuple[float, float] | None = None,
-                  lam: tuple[float, float] | None = None) -> Deconvolution2D:
+                  lam: tuple[float, float] | None = None,
+                  progress: Callable[[str, int, int], None] | None = None) -> Deconvolution2D:
     """Distribution of two grid parameters across tracks from log-likelihoods on `u` x `v`.
 
     `lls` is (n_tracks, len(u), len(v)); `u` and `v` must each be evenly spaced. lam = (lam_u, lam_v) is
@@ -448,7 +453,9 @@ def deconvolve_2d(lls: np.ndarray, u: np.ndarray, v: np.ndarray, n_samples: int 
     tracks, or of the same tracks on a coarser grid: the penalty approximates the integral of the squared
     second derivative, so lam means the same at any cell width. With `lam`, there is no search: the mode at
     that lam, and draws at it. `n_samples=0` skips the draws and the fill (the mode is all it returns).
-    `rng` (default: seeded) draws `samples`.
+    `rng` (default: seeded) draws `samples`. `progress(stage, done, total)` reports each Laplace fit as
+    ("smoothness", fits so far, 0) -- their number is not known ahead -- and the draws as ("sampling",
+    iterations, of how many).
     """
     lls, u, v = np.asarray(lls, float), np.asarray(u, float), np.asarray(v, float)
     if lls.ndim != 3 or lls.shape[1:] != (len(u), len(v)):
@@ -463,6 +470,18 @@ def deconvolve_2d(lls: np.ndarray, u: np.ndarray, v: np.ndarray, n_samples: int 
         steps.append(float(d[0]))
     flat = lls.reshape(len(lls), -1)
     model = _LogG2(np.exp(flat - flat.max(axis=1, keepdims=True)), (len(u), len(v)), *steps)
+    if progress is not None:
+        n_fits = 0
+        fit = model.fit
+
+        def counted(*args, **kwargs):
+            nonlocal n_fits
+            mode = fit(*args, **kwargs)
+            n_fits += 1
+            progress("smoothness", n_fits, 0)
+            return mode
+
+        model.fit = counted
 
     if lam is not None:
         points = {(0, 0): model.fit(tuple(float(x) for x in lam), np.zeros(model.K))}
@@ -479,7 +498,9 @@ def deconvolve_2d(lls: np.ndarray, u: np.ndarray, v: np.ndarray, n_samples: int 
         n_keep = -(-n_samples // N_CHAINS)
         chains = rng.multinomial(N_CHAINS, w)  # lam integrated out: chains per lattice point by evidence
         sampled = sorted(((m, c) for m, c in zip(used, chains) if c), key=lambda mc: -mc[1])
-        draws = model.hmc_mixture([m for m, _ in sampled], [c for _, c in sampled], n_keep, rng)[:n_samples]
+        draws = model.hmc_mixture([m for m, _ in sampled], [c for _, c in sampled], n_keep, rng,
+                                  progress=None if progress is None else lambda d, t: progress("sampling", d, t))
+        draws = draws[:n_samples]
         sampled = [m for m, _ in sampled]
     else:
         draws, sampled = np.empty((0, model.K)), []

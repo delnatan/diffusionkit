@@ -14,6 +14,7 @@ continuation of alpha above it. `AlphaDPopulation`'s `above_floor` reads leave t
 from __future__ import annotations
 
 import warnings
+from typing import Callable
 
 import numpy as np
 
@@ -118,7 +119,8 @@ def _sheared(g: np.ndarray, alphas: np.ndarray, D: np.ndarray, log10_ratio: floa
 
 def deconvolve_tracks(likelihoods: JointLikelihoods, n_samples: int = 1000,
                       rng: np.random.Generator | None = None,
-                      lam_start: tuple[float, float] | None = None) -> AlphaDPopulation:
+                      lam_start: tuple[float, float] | None = None,
+                      progress: Callable[[str, int, int], None] | None = None) -> AlphaDPopulation:
     """The distribution of (alpha, log10 D_ref) across `likelihoods`' tracks (`analyze_tracks(...,
     keep_likelihoods=True).likelihoods`, or a `rows` selection of it), fitted on `informative_range`.
 
@@ -133,7 +135,8 @@ def deconvolve_tracks(likelihoods: JointLikelihoods, n_samples: int = 1000,
     Both passes integrate lam out (`deconvolve_2d`); the fine pass starts from the coarse pass's lam, with
     no scan of its own. `lam_start` -- the `lam` of a population over more of the same tracks, as the
     classes of a spatial run are subsets of the run's tracks -- also starts the coarse pass, which then
-    only fits the mode there, for its support.
+    only fits the mode there, for its support. `progress(stage, done, total)` is `deconvolve_2d`'s, with
+    the coarse pass's fits as stage "coarse".
     """
     if not len(likelihoods.track_ids):
         raise ValueError("no track to deconvolve")
@@ -152,7 +155,8 @@ def deconvolve_tracks(likelihoods: JointLikelihoods, n_samples: int = 1000,
         coarse = (top + np.log(np.exp(g - top).mean(axis=3, keepdims=True)))[..., 0]
         with warnings.catch_warnings():  # only its support is used: a rough-edge lam there says nothing
             warnings.simplefilter("ignore", UserWarning)
-            cfit = deconvolve_2d(coarse, a, D[off:].reshape(n_c, r).mean(axis=1), n_samples=0, lam=lam_start)
+            cfit = deconvolve_2d(coarse, a, D[off:].reshape(n_c, r).mean(axis=1), n_samples=0, lam=lam_start,
+                                 progress=None if progress is None else lambda _s, d, t: progress("coarse", d, t))
         lam_start = cfit.lam
         a0, a1 = _support(cfit.weights.sum(axis=1), _SUPPORT_MASS)
         c0, c1 = _support(cfit.weights.sum(axis=0), _SUPPORT_MASS)
@@ -163,7 +167,7 @@ def deconvolve_tracks(likelihoods: JointLikelihoods, n_samples: int = 1000,
         a0, a1, d0, d1 = 0, len(a), 0, len(D)
     while True:
         fit = deconvolve_2d(ll[:, a0:a1, d0:d1], a[a0:a1], D[d0:d1], n_samples=n_samples, rng=rng,
-                            lam_start=lam_start)
+                            lam_start=lam_start, progress=progress)
         lam_start = fit.lam
         w = fit.weights
         grow = [w[0].sum() > _EDGE_MASS and a0 > 0, w[-1].sum() > _EDGE_MASS and a1 < len(a),

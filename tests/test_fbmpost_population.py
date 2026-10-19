@@ -69,6 +69,16 @@ class Deconvolve2DTests(unittest.TestCase):
         self.assertEqual(len(fit.lam_weights), 1)
         np.testing.assert_allclose(fit.weights, self.fit.weights, atol=1e-5)  # Newton from another start
 
+    def test_progress_reports_the_fits_then_the_draws(self):
+        seen = []
+        deconvolve_2d(self.lls, self.u, self.v, n_samples=50, lam_start=self.fit.lam,
+                      progress=lambda stage, done, total: seen.append((stage, done, total)))
+        fits = [s for s in seen if s[0] == "smoothness"]
+        draws = [s for s in seen if s[0] == "sampling"]
+        self.assertEqual([d for _, d, _ in fits], list(range(1, len(fits) + 1)))
+        self.assertEqual(seen.index(draws[0]), len(fits))  # all the fits come first
+        self.assertEqual(draws[-1][1], draws[-1][2])
+
     def test_rejects_an_uneven_grid(self):
         with self.assertRaises(ValueError):
             deconvolve_2d(self.lls, self.u ** 3, self.v)
