@@ -49,7 +49,8 @@ remain:
 `deconvolve_2d` is the same model on a 2D grid, for a population over two parameters at once (alpha and
 D_ref in `fbmpost.population`): the penalty is a Kronecker sum of the 1D one along each axis, each axis with
 its own lam, so its null space is {1, u, v, u v} and a linear trend of log g along the diagonal (a correlation
-between the two parameters) is not smoothed away.
+between the two parameters) is not smoothed away. Its two lams are integrated out the same way, over a
+lattice in (ln lam_u, ln lam_v) around the evidence maximum.
 
 `deconvolve` itself only needs log-likelihood rows on a common 1D grid. A track
 with no information about the parameter has a flat likelihood and leaves the fit
@@ -59,11 +60,13 @@ where it would pull a histogram of medians toward the prior's median.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+from typing import Callable
 from warnings import warn
 
 import numpy as np
 from scipy.linalg import solve_triangular
-from scipy.optimize import minimize, minimize_scalar
+from scipy.sparse import csr_array
+from scipy.optimize import minimize_scalar
 
 from ..data import Acquisition
 from .data import GridDistribution, GridPosteriorAnalysis
@@ -73,6 +76,13 @@ EPS = 1e-6  # prior precision on log g's unpenalized linear tilt: there only so 
 LAM_GRID = np.geomspace(1e4, 1e-8, 37)  # scanned from smooth to rough, flat prior in log lam
 N_CHAINS = 50  # HMC chains, split across lam by evidence weight
 TINY = 1e-300
+# `deconvolve_2d`: the scan of lam_u = lam_v that finds its start; the step in (ln lam_u, ln lam_v) of the lattice
+# lam is integrated over; how far below the evidence maximum a lattice point still carries chains (exp(-6),
+# 0.25% of the best point's weight); and a cap on the points fitted.
+LAM_GRID_2D = np.geomspace(1e3, 1e-6, 10)
+LAM_STEP_2D = 0.75  # ~ `LAM_GRID`'s step, 0.77
+LAM_CUT_2D = 6.
+MAX_LAM_FITS_2D = 80
 
 
 @dataclass(frozen=True)
@@ -92,7 +102,8 @@ class Deconvolution2D:
     """Distribution of two parameters across tracks on the grid `u` x `v`.
 
     `weights` (len(u), len(v)) is the posterior mode at `lam`; `samples` (n_samples, len(u), len(v)) are
-    draws at that lam. Each sums to 1.
+    draws with lam integrated out, from the lattice points `lams` in proportion to `lam_weights`. Each sums
+    to 1.
     """
 
     u: np.ndarray
@@ -101,6 +112,8 @@ class Deconvolution2D:
     samples: np.ndarray
     lam: tuple[float, float]  # (along u, along v) at the evidence maximum
     log_evidence: float
+    lams: np.ndarray         # (n, 2): the lam points the draws come from
+    lam_weights: np.ndarray  # (n,): their evidence weights, summing to 1
 
 
 @dataclass(frozen=True)
@@ -268,12 +281,14 @@ class _LogG2(_LogG):
         nu, nv = shape
         Ou, Ov = _second_difference_penalty(nu, du), _second_difference_penalty(nv, dv)
         self.Omegas = (np.kron(Ou, np.eye(nv)) * dv, np.kron(np.eye(nu), Ov) * du)
+        self._sparse_omegas = tuple(csr_array(O) for O in self.Omegas)  # banded, for `hmc_mixture`
         eu, ev = np.linalg.eigvalsh(Ou) * dv, np.linalg.eigvalsh(Ov) * du
         eu[:2], ev[:2] = 0., 0.  # the exact null space {1, u} of each axis
         self._eig = (eu, ev)
         a, b = np.arange(nu) - (nu - 1) / 2, np.arange(nv) - (nv - 1) / 2
         null = (np.kron(a, np.ones(nv)), np.kron(np.ones(nu), b), np.kron(a, b))  # orthogonal, sum zero
         self.tilt = EPS * sum(np.outer(w, w) / (w @ w) for w in null)
+        self._null = np.column_stack([w / np.linalg.norm(w) for w in null])  # tilt = EPS null null'
 
     def Q(self, lam) -> np.ndarray:
         return lam[0] * self.Omegas[0] + lam[1] * self.Omegas[1] + self.tilt
@@ -281,6 +296,59 @@ class _LogG2(_LogG):
     def log_prior_norm(self, lam) -> float:
         ev = lam[0] * self._eig[0][:, None] + lam[1] * self._eig[1][None, :]
         return 0.5 * (float(np.sum(np.log(ev[ev > 0]))) + 3 * np.log(EPS))
+
+    def hmc_mixture(self, modes: list[_Mode], counts, n_keep: int, rng: np.random.Generator,
+                    n_warm: int = 30, progress: Callable[[int, int], None] | None = None) -> np.ndarray:
+        """(sum(counts) * n_keep, K) draws of g with lam integrated out: `counts[j]` chains at `modes[j]`'s
+        lam, each started at that lam's mode, all moved together by one Hamiltonian Monte Carlo.
+
+        As `hmc`, but every chain is preconditioned by the first mode's Laplace factor (pass the most
+        weighted first), so one matrix product moves all of them, where a factor per lam costs a full pass
+        over a K x K matrix per lam and leapfrog step. The posteriors at nearby lams differ little in
+        shape, and any fixed preconditioner leaves each chain's target exact. Each chain's own lam enters
+        through its potential, as lam_u Omega_u + lam_v Omega_v (banded) plus the tilt (rank 3).
+        `progress(done, total)` counts its iterations.
+        """
+        B = solve_triangular(modes[0].C, self.P.T, lower=True).T
+        counts = np.asarray(counts, int)
+        lam = np.repeat(np.array([m.lam for m in modes], float), counts, axis=0).T  # (2, n_chains)
+        x0 = np.repeat(np.array([m.x for m in modes]), counts, axis=0).T  # (K, n_chains)
+        Ou, Ov = self._sparse_omegas
+        null = self._null
+        n_chains = int(counts.sum())
+
+        def potential(W):
+            X = x0 + B @ W
+            G = _softmax(X)
+            m = np.maximum(self.L @ G, TINY)
+            QX = lam[0] * (Ou @ X) + lam[1] * (Ov @ X) + EPS * (null @ (null.T @ X))
+            grad = G * (self.L.T @ (1 / m)) - self.n * G - QX
+            return -np.sum(np.log(m), axis=0) + 0.5 * np.sum(X * QX, axis=0), -(B.T @ grad), G
+
+        W = np.zeros((self.K - 1, n_chains))
+        U, dU, G = potential(W)
+        eps, keep = 0.5, []
+        for it in range(n_warm + n_keep):
+            e = eps * rng.uniform(0.8, 1.2)
+            p = rng.standard_normal(W.shape)
+            H0 = U + 0.5 * np.sum(p * p, axis=0)
+            Wn, pn, dUn = W.copy(), p - 0.5 * e * dU, dU
+            n_leap = int(min(50, np.ceil(1.5 / e)))
+            for j in range(n_leap):
+                Wn += e * pn
+                Un, dUn, Gn = potential(Wn)
+                pn -= (e if j < n_leap - 1 else 0.5 * e) * dUn
+            H1 = Un + 0.5 * np.sum(pn * pn, axis=0)
+            with np.errstate(invalid="ignore", over="ignore"):
+                acc = np.isfinite(H1) & (np.log(rng.random(n_chains)) < H0 - H1)
+            W[:, acc], U[acc], dU[:, acc], G[:, acc] = Wn[:, acc], Un[acc], dUn[:, acc], Gn[:, acc]
+            if it < n_warm:
+                eps *= np.exp(acc.mean() - 0.75)
+            else:
+                keep.append(G.copy())
+            if progress is not None:
+                progress(it + 1, n_warm + n_keep)
+        return np.hstack(keep).T
 
 
 def _softmax(eta: np.ndarray, axis: int = 0) -> np.ndarray:
@@ -366,15 +434,28 @@ def deconvolve(lls: np.ndarray, u: np.ndarray, log_prior: np.ndarray | None = No
 
 
 def deconvolve_2d(lls: np.ndarray, u: np.ndarray, v: np.ndarray, n_samples: int = 1000,
-                  lam_grid: np.ndarray = np.geomspace(1e3, 1e-6, 10),
-                  rng: np.random.Generator | None = None) -> Deconvolution2D:
+                  lam_grid: np.ndarray = LAM_GRID_2D, rng: np.random.Generator | None = None,
+                  lam_start: tuple[float, float] | None = None,
+                  lam: tuple[float, float] | None = None,
+                  progress: Callable[[str, int, int], None] | None = None) -> Deconvolution2D:
     """Distribution of two grid parameters across tracks from log-likelihoods on `u` x `v`.
 
-    `lls` is (n_tracks, len(u), len(v)); `u` and `v` must each be evenly spaced. lam = (lam_u,
-    lam_v) maximizes the Laplace evidence: a scan of lam_u = lam_v over `lam_grid`, then
-    Nelder-Mead in (ln lam_u, ln lam_v) from its best point. The draws are HMC at that lam; unlike
-    `deconvolve`, lam is not integrated out. Warns when the scan's best point is an end of
-    `lam_grid`. `rng` (default: seeded) draws `samples`; `n_samples=0` skips the draws.
+    `lls` is (n_tracks, len(u), len(v)); `u` and `v` must each be evenly spaced. lam = (lam_u, lam_v) is
+    integrated out under a flat prior in (ln lam_u, ln lam_v), as `deconvolve` integrates its lam: the
+    Laplace evidence is evaluated on a lattice of step `LAM_STEP_2D` in ln lam, climbed from its start to a
+    maximum and then filled outward over every point within `LAM_CUT_2D` nats of it, and the HMC chains are
+    split across those points by evidence weight. The evidence is often nearly flat along a ridge in lam,
+    and the draws' spread across it is what the band then carries; a single lam on that ridge sets a band
+    that moves with wherever the search stopped. `weights` and `lam` are the mode at the best point.
+
+    The start is the best point of a scan of lam_u = lam_v over `lam_grid` (warning when that is an end of
+    it) or, given `lam_start`, that point without the scan -- e.g. the lam of a fit to more of the same
+    tracks, or of the same tracks on a coarser grid: the penalty approximates the integral of the squared
+    second derivative, so lam means the same at any cell width. With `lam`, there is no search: the mode at
+    that lam, and draws at it. `n_samples=0` skips the draws and the fill (the mode is all it returns).
+    `rng` (default: seeded) draws `samples`. `progress(stage, done, total)` reports each Laplace fit as
+    ("smoothness", fits so far, 0) -- their number is not known ahead -- and the draws as ("sampling",
+    iterations, of how many).
     """
     lls, u, v = np.asarray(lls, float), np.asarray(u, float), np.asarray(v, float)
     if lls.ndim != 3 or lls.shape[1:] != (len(u), len(v)):
@@ -389,34 +470,98 @@ def deconvolve_2d(lls: np.ndarray, u: np.ndarray, v: np.ndarray, n_samples: int 
         steps.append(float(d[0]))
     flat = lls.reshape(len(lls), -1)
     model = _LogG2(np.exp(flat - flat.max(axis=1, keepdims=True)), (len(u), len(v)), *steps)
-    modes: dict = {}
-    x = np.zeros(model.K)
+    if progress is not None:
+        n_fits = 0
+        fit = model.fit
 
-    def neg(loglam):
-        nonlocal x
-        key = tuple(np.round(loglam, 4))
-        if key not in modes:
-            modes[key] = model.fit(tuple(np.exp(loglam)), x)  # warm-started from the last fit
-            x = modes[key].x
-        return -modes[key].log_evidence
+        def counted(*args, **kwargs):
+            nonlocal n_fits
+            mode = fit(*args, **kwargs)
+            n_fits += 1
+            progress("smoothness", n_fits, 0)
+            return mode
 
-    lam_grid = np.sort(np.asarray(lam_grid, float))[::-1]
-    scan = [neg(np.log([lam, lam])) for lam in lam_grid]  # smooth to rough
-    i = int(np.argmin(scan))
-    if i in (0, len(lam_grid) - 1):
-        warn(f"deconvolve_2d: evidence maximum at the lam_grid edge (lam={lam_grid[i]:.3g}); widen lam_grid",
-             stacklevel=2)
-    start = np.log([lam_grid[i]] * 2)
-    minimize(neg, start, method="Nelder-Mead",
-             options={"xatol": .1, "fatol": .05, "initial_simplex": start + np.array([[0, 0], [1.5, 0], [0, 1.5]])})
-    best = max(modes.values(), key=lambda m: m.log_evidence)
-    if best.problem:
-        warn(f"deconvolve_2d: {best.problem} at lam={best.lam}", stacklevel=2)
+        model.fit = counted
+
+    if lam is not None:
+        points = {(0, 0): model.fit(tuple(float(x) for x in lam), np.zeros(model.K))}
+    else:
+        points = _lam_lattice(model, lam_grid, lam_start, fill=n_samples > 0)
+    top = max(m.log_evidence for m in points.values())
+    used = [m for m in points.values() if m.log_evidence > top - LAM_CUT_2D]
+    best = max(used, key=lambda m: m.log_evidence)
+    w = np.exp(np.array([m.log_evidence for m in used]) - top)
+    w /= w.sum()
+
     rng = np.random.default_rng(0) if rng is None else rng
-    draws = model.hmc(best, N_CHAINS, -(-n_samples // N_CHAINS), rng)[:n_samples] if n_samples else np.empty((0, model.K))
+    if n_samples:
+        n_keep = -(-n_samples // N_CHAINS)
+        chains = rng.multinomial(N_CHAINS, w)  # lam integrated out: chains per lattice point by evidence
+        sampled = sorted(((m, c) for m, c in zip(used, chains) if c), key=lambda mc: -mc[1])
+        draws = model.hmc_mixture([m for m, _ in sampled], [c for _, c in sampled], n_keep, rng,
+                                  progress=None if progress is None else lambda d, t: progress("sampling", d, t))
+        draws = draws[:n_samples]
+        sampled = [m for m, _ in sampled]
+    else:
+        draws, sampled = np.empty((0, model.K)), []
+    for m in {id(m): m for m in [best] + sampled}.values():
+        if m.problem:  # only where it matters: the reported mode or a lam the samples use
+            warn(f"deconvolve_2d: {m.problem} at lam={m.lam}", stacklevel=2)
     shape = (len(u), len(v))
     return Deconvolution2D(u, v, _softmax(best.x).reshape(shape), draws.reshape(-1, *shape),
-                           (float(best.lam[0]), float(best.lam[1])), float(best.log_evidence))
+                           (float(best.lam[0]), float(best.lam[1])), float(best.log_evidence),
+                           np.array([m.lam for m in used], float), w)
+
+
+def _lam_lattice(model: "_LogG2", lam_grid: np.ndarray, lam_start: tuple[float, float] | None,
+                 fill: bool) -> dict[tuple[int, int], _Mode]:
+    """The modes `deconvolve_2d` integrates lam over, by lattice point (i, j): (ln lam_u, ln lam_v) =
+    origin + `LAM_STEP_2D` (i, j). Each fit is warm-started from the nearest point already fitted."""
+    points: dict[tuple[int, int], _Mode] = {}
+    if lam_start is None:
+        lam_grid = np.sort(np.asarray(lam_grid, float))[::-1]
+        scan, x = [], np.zeros(model.K)
+        for value in lam_grid:  # lam_u = lam_v, smooth to rough
+            scan.append(model.fit((value, value), x))
+            x = scan[-1].x
+        i = int(np.argmax([m.log_evidence for m in scan]))
+        if i in (0, len(lam_grid) - 1):
+            warn(f"deconvolve_2d: evidence maximum at the lam_grid edge (lam={lam_grid[i]:.3g}); widen lam_grid",
+                 stacklevel=3)
+        origin = np.log([lam_grid[i]] * 2)
+        points[(0, 0)] = scan[i]
+    else:
+        origin = np.log(np.asarray(lam_start, float))
+
+    def at(ij: tuple[int, int]) -> _Mode:
+        if ij not in points:
+            near = min(points, key=lambda k: abs(k[0] - ij[0]) + abs(k[1] - ij[1]), default=None)
+            x0 = np.zeros(model.K) if near is None else points[near].x
+            points[ij] = model.fit(tuple(np.exp(origin + LAM_STEP_2D * np.array(ij))), x0)
+        return points[ij]
+
+    def neighbours(ij):
+        return [(ij[0] + 1, ij[1]), (ij[0] - 1, ij[1]), (ij[0], ij[1] + 1), (ij[0], ij[1] - 1)]
+
+    here = (0, 0)
+    at(here)
+    while len(points) < MAX_LAM_FITS_2D:  # climb: to the best neighbour while one is better
+        step = max(neighbours(here), key=lambda ij: at(ij).log_evidence)
+        if points[step].log_evidence <= points[here].log_evidence:
+            break
+        here = step
+    if fill:
+        queue = [here]
+        while queue and len(points) < MAX_LAM_FITS_2D:
+            top = max(m.log_evidence for m in points.values())
+            ij = queue.pop(0)
+            for n in neighbours(ij):
+                if n not in points and at(n).log_evidence > top - LAM_CUT_2D:
+                    queue.append(n)
+    if len(points) >= MAX_LAM_FITS_2D:
+        warn(f"deconvolve_2d: stopped at {MAX_LAM_FITS_2D} lam points; the evidence may not be bounded there",
+             stacklevel=3)
+    return points
 
 
 def deconvolve_tracks(
