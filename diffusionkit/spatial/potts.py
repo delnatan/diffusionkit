@@ -10,6 +10,10 @@ Labels z_i follow a Potts prior on the k-nearest-neighbour graph of the track ce
 - Mean-field EM: the E-step replaces the neighbours' labels by their current class probabilities q_j, and the M-step
   refits each class's normal from the tracks' grid posteriors under it. w maximizes the mean-field
   pseudo-likelihood, and beta how well each track's neighbours predict its own data (`_beta`).
+- The beta and w steps maximize different objectives, so the alternation can slide along the ridge where they trade
+  off: beta runs to `BETA_MAX` and w collapses onto one class, a fit that scores worse than one at a moderate beta.
+  When the learned fit runs to `BETA_MAX`, `fit_learned` also starts from fits at each of `BETA_STARTS` and keeps
+  the best score.
 - Whether there is a pattern at all is not read from beta: when neighbours carry nothing, beta and w trade off
   along a flat ridge. `workflow` tests the neighbour gain (`PottsFit.score` over the plain mixture's) against
   shuffled positions instead.
@@ -30,6 +34,7 @@ MIN_SD = .1  # added in quadrature to a class's sd in ln D, so a class never col
 SWEEPS = 5  # mean-field sweeps per E-step
 BETA_STEP = 1.  # beta moves at most this far per iteration between scans of its whole range
 SCAN_EVERY = 10  # iterations between those scans
+BETA_STARTS = (4., 8.)  # fixed-beta fits `fit_learned` restarts from when beta runs to BETA_MAX
 TINY = 1e-300
 
 
@@ -194,3 +199,26 @@ def fit(lik: np.ndarray, u: np.ndarray, neighbours: np.ndarray, n_class: int, be
     ev = lik @ p
     order = np.argsort(centre)
     return PottsFit(centre[order], sd[order], w[order], b, q[:, order], ev[:, order], it, converged)
+
+
+def fit_learned(lik: np.ndarray, u: np.ndarray, neighbours: np.ndarray, plain: PottsFit,
+                max_iter: int = 300, tol: float = 1e-3) -> PottsFit:
+    """`fit` with beta learned from the plain mixture `plain` (beta = 0); if that runs to `BETA_MAX`, also from
+    fits at each of `BETA_STARTS`, keeping the best neighbour-predictive score (`PottsFit.score`).
+
+    A run to `BETA_MAX` is the ridge failure: the weights collapse onto one class and the fit can score below
+    one at a moderate beta. Since C is chosen by comparing scores, such a fit would pick the wrong C. Other runs
+    are kept as they are, so the extra starts cost nothing where the first fit is sound.
+    """
+    best = fit(lik, u, neighbours, plain.n_classes, beta=None, init=plain, max_iter=max_iter, tol=tol)
+    if best.beta < BETA_MAX - BETA_STEP:
+        return best
+    zero = np.zeros(len(lik))
+    best_score = best.score(neighbours, zero)
+    for b0 in BETA_STARTS:
+        start = fit(lik, u, neighbours, plain.n_classes, beta=b0, init=plain, max_iter=max_iter, tol=tol)
+        f = fit(lik, u, neighbours, plain.n_classes, beta=None, init=start, max_iter=max_iter, tol=tol)
+        score = f.score(neighbours, zero)
+        if score > best_score:
+            best, best_score = f, score
+    return best

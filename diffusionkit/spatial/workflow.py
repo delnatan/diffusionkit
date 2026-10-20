@@ -9,7 +9,7 @@ import polars as pl
 from ..gridpost import posterior as posterior_mod
 from ..gridpost.data import GridLikelihoods, GridPosteriorAnalysis
 from .data import ShuffleNull, SpatialAnalysis, SpatialOptions
-from .potts import PottsFit, densities, fit, knn
+from .potts import PottsFit, densities, fit, fit_learned, knn
 
 
 def centroids(tracks: pl.DataFrame) -> pl.DataFrame:
@@ -77,7 +77,7 @@ def analyze_likelihoods(likelihoods: GridLikelihoods, u_D: np.ndarray, positions
     plains, fits, scores = {}, {}, {}
     for c in range(1, options.max_classes + 1):
         plains[c] = plain = fit(lik, u, nb, c, beta=0., **kw)
-        fits[c] = plain if c == 1 else fit(lik, u, nb, c, beta=None, init=plain, **kw)
+        fits[c] = plain if c == 1 else fit_learned(lik, u, nb, plain, **kw)
         scores[c] = fits[c].score(nb, offset)
         tick()
     selection, suggested = _selection(fits, scores, n, options.gain_per_track)
@@ -85,7 +85,7 @@ def analyze_likelihoods(likelihoods: GridLikelihoods, u_D: np.ndarray, positions
 
     null = None
     if chosen > 1 and options.n_shuffles:
-        # Each shuffle repeats the observed fit's own path: the plain mixture's classes, then beta from 0.
+        # Each shuffle repeats the observed fit's own path: the plain mixture's classes, then `fit_learned`.
         observed, start = fits[chosen], plains[chosen]
         seeds = np.random.SeedSequence(options.seed).spawn(options.n_shuffles)
 
@@ -93,7 +93,7 @@ def analyze_likelihoods(likelihoods: GridLikelihoods, u_D: np.ndarray, positions
 
         def shuffled(seed) -> tuple[float, float]:
             graph = knn(xy[np.random.default_rng(seed).permutation(n)], options.k)
-            f = fit(lik, u, graph, chosen, beta=None, init=start, **kw)
+            f = fit_learned(lik, u, graph, start, **kw)
             return f.score(graph, offset) - base, f.beta
 
         out = []

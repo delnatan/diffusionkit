@@ -96,6 +96,41 @@ class UnpatternedCellTests(unittest.TestCase):
         self.assertGreater(s.null.p, .05)
 
 
+class BetaRunawayTests(unittest.TestCase):
+    """A learned beta that runs to BETA_MAX with the weights collapsed scores below a fit at a moderate beta;
+    with this movie it made C = 3 beat C = 2 until `fit_learned` restarted such fits."""
+
+    @classmethod
+    def setUpClass(cls):
+        from diffusionkit import Acquisition
+        from diffusionkit.fbmpost.simulate import simulate_tracks
+        from diffusionkit.gridpost import analyze_tracks
+        acq = Acquisition(dt_s=.035, exposure_s=.02)
+        rng = np.random.default_rng(6)
+        n = 800
+        xy = rng.uniform(0, 20, (n, 2))
+        D = np.where(np.hypot(*(xy - 10).T) < 6, .05, .2)  # slow inside a 6 um disk
+        table = pl.concat([simulate_tracks(1, int(rng.integers(3, 9)), 1., D[i], .03, acq, rng=rng, n_sub=10,
+                                           first_track_id=i) for i in range(n)])
+        res = analyze_tracks(table, acq, keep_likelihoods=True)
+        cls.pos = pl.DataFrame({"track_id": np.arange(n), "x_um": xy[:, 0], "y_um": xy[:, 1]})
+        cls.lik, cls.u = res.likelihoods, res.options.u_D()
+        cls.s = analyze_likelihoods(cls.lik, cls.u, cls.pos, SpatialOptions(max_classes=3, n_shuffles=0))
+
+    def test_two_classes_suggested(self):
+        self.assertEqual(self.s.n_classes, 2)
+
+    def test_learned_beta_is_not_at_its_cap_and_beats_a_fixed_beta(self):
+        f = self.s.fits[2]
+        self.assertLess(f.beta, potts.BETA_MAX - potts.BETA_STEP)
+        ll = self.lik.loglik_D
+        lik = np.exp(ll - ll.max(axis=1, keepdims=True))
+        plain = potts.fit(lik, self.u, self.s.neighbours, 2, beta=0.)
+        fixed = potts.fit(lik, self.u, self.s.neighbours, 2, beta=4., init=plain)
+        zero = np.zeros(len(lik))
+        self.assertGreaterEqual(f.score(self.s.neighbours, zero), fixed.score(self.s.neighbours, zero) - 1e-6)
+
+
 class InputTests(unittest.TestCase):
     def test_tracks_without_a_position_are_left_out(self):
         lik, pos, _ = cell(np.random.default_rng(5), n=120)
