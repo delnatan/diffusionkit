@@ -5,15 +5,18 @@ from dataclasses import asdict, dataclass, field
 
 import numpy as np
 import polars as pl
+from scipy.sparse import csr_matrix
 
 from .potts import PottsFit, conditional
+
+MODEL = "potts-exact-beta"  # the model a record was saved by: no class weights, beta per edge by its exact M-step
 
 
 @dataclass(frozen=True)
 class SpatialOptions:
     """Everything a spatial run depends on besides the likelihoods and the positions.
 
-    - `k`: neighbours per track in the graph.
+    - `k`: neighbours per track in the graph, before it is made symmetric (i ~ j if either lists the other).
     - `max_classes`: classes are fitted for C = 1 .. max_classes.
     - `n_classes`: the C to use; None takes the suggested one, the last C whose gain over C - 1 clears
       `gain_per_track` nats per track (the elbow of the score against C).
@@ -53,8 +56,8 @@ class ShuffleNull:
     The neighbour gain is how many nats the neighbours add to predicting each track's data: the fit's
     neighbour-predictive score minus the plain mixture's (beta = 0), which no arrangement changes. Shuffling
     keeps every track's data and destroys only the arrangement, so the shuffled gains are its distribution with
-    no spatial pattern. beta itself is a poor statistic: when neighbours carry nothing, beta and the class
-    weights trade off along a flat ridge and beta wanders.
+    no spatial pattern. beta is kept with each shuffle; without class weights it is identified, and near 0 when
+    the neighbours carry nothing.
     """
     gain: float
     beta: float
@@ -71,12 +74,13 @@ class SpatialAnalysis:
     - `selection`: one row per C -- `n_classes`, `score` (neighbour-predictive log-likelihood), `gain` and
       `gain_per_track` over C - 1, `beta`, `suggested`.
     - `n_classes`: the C used; `null`: the shuffle null of its neighbour gain (None for C = 1 or no shuffles).
+    - `adjacency`: (n, n) the symmetric k-nearest-neighbour graph the fits use.
     - `D_spatial`: (n, 3) per-track mean, low and high of D (um^2/s) with the class mixture as the prior.
     """
     track_ids: np.ndarray
     n_frames: np.ndarray
     xy_um: np.ndarray
-    neighbours: np.ndarray
+    adjacency: csr_matrix
     u_D: np.ndarray
     options: SpatialOptions
     fits: dict[int, PottsFit]
@@ -96,7 +100,7 @@ class SpatialAnalysis:
 
     def neighbour_q(self) -> np.ndarray:
         """(n, C) class probabilities from each track's neighbours alone."""
-        return self.fit.neighbour_q(self.neighbours)
+        return self.fit.neighbour_q(self.adjacency)
 
     def columns(self) -> pl.DataFrame:
         """One row per track: `spatial_class` (1..C, own data and neighbours) and `spatial_p`;
@@ -124,9 +128,8 @@ class SpatialAnalysis:
 
     def report(self) -> pl.DataFrame:
         """One row per class, counts only: `n_tracks` and `n_detections` in its group (`groups`),
-        `n_assigned` (tracks whose `spatial_class` it is) and `n_confident` (of those, `spatial_p` > 0.9). The
-        class weight w is not reported: under the Potts prior it trades off with beta and is not the class's
-        share of the tracks. What the class's tracks look like is their population, not a number here."""
+        `n_assigned` (tracks whose `spatial_class` it is) and `n_confident` (of those, `spatial_p` > 0.9). What
+        the class's tracks look like is their population, not a number here."""
         q = self.fit.q
         c = q.argmax(axis=1) + 1
         cn = self.neighbour_q().argmax(axis=1) + 1
@@ -142,17 +145,19 @@ class SpatialAnalysis:
 
     def field(self, xy_um: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """At query points (m, 2) in um: (m, C) class probabilities from the k nearest tracks (the Potts
-        conditional) and (m,) the distance to the k-th of them, to blank points no track is near."""
+        conditional, with those k as the point's neighbours) and (m,) the distance to the k-th of them, to blank
+        points no track is near."""
         from scipy.spatial import cKDTree
         dist, idx = cKDTree(self.xy_um).query(np.asarray(xy_um, float), self.options.k)
         idx = idx.reshape(len(idx), -1)
         dist = dist.reshape(len(dist), -1)
-        return conditional(self.fit.q[idx].mean(axis=1), self.fit.weight, self.fit.beta), dist[:, -1]
+        return conditional(self.fit.q[idx].sum(axis=1), self.fit.beta), dist[:, -1]
 
     def typical_spacing_um(self) -> float:
         """Median distance from a track to its k-th neighbour."""
-        d = np.linalg.norm(self.xy_um[self.neighbours[:, -1]] - self.xy_um, axis=1)
-        return float(np.median(d))
+        from scipy.spatial import cKDTree
+        d, _ = cKDTree(self.xy_um).query(self.xy_um, self.options.k + 1)
+        return float(np.median(d[:, -1]))
 
 
     def probabilities(self) -> pl.DataFrame:
@@ -167,12 +172,13 @@ class SpatialAnalysis:
         the shuffle null and the pattern verdict, the typical spacing and the report."""
         f, null = self.fit, self.null
         return {
+            "model": MODEL,
             "options": asdict(self.options),
             "n_tracks": len(self.track_ids),
             "n_classes": self.n_classes,
             "selection": self.selection.to_dicts(),
-            "classes": {"centre_ln_D": f.centre.tolist(), "sd_ln_D": f.sd.tolist(), "weight": f.weight.tolist(),
-                        "beta": f.beta, "n_iter": f.n_iter, "converged": f.converged},
+            "classes": {"centre_ln_D": f.centre.tolist(), "sd_ln_D": f.sd.tolist(),
+                        "beta": f.beta, "agreement": f.agreement, "n_iter": f.n_iter, "converged": f.converged},
             "null": None if null is None else {
                 "gain": null.gain, "beta": null.beta, "p": null.p,
                 "shuffled_gain": null.shuffled_gain.tolist(), "shuffled_beta": null.shuffled_beta.tolist()},

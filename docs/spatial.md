@@ -26,13 +26,20 @@ for c, ids in s.groups().items():                     # each class's tracks, as 
 
 ## Model
 
-- **Graph.** Each track is joined to its k = 8 nearest tracks by centroid. A kNN graph adapts to uneven density.
-- **Classes.** C normal densities in ln D, each with a weight. Track i's evidence for class c is its D likelihood
-  integrated against the class density. Classes are numbered 1..C in increasing order of D and have no names.
-- **Spatial prior (hidden Potts).** P(class c | neighbours) ∝ w_c exp(beta * fraction of neighbours in c).
-  beta = 0 is the plain mixture.
-- **Fit.** Mean-field EM (`spatial.potts.fit`). beta is chosen by how well a track's neighbours predict its own
-  data; w by the mean-field pseudo-likelihood.
+- **Graph.** Each track is joined to its k = 8 nearest tracks by centroid, made symmetric (i ~ j if either lists
+  the other). A kNN graph adapts to uneven density.
+- **Classes.** C normal densities in ln D. Track i's evidence for class c is its D likelihood integrated against
+  the class density. Classes are numbered 1..C in increasing order of D and have no names.
+- **Spatial prior (hidden Potts).** P(z) ∝ exp(beta * S(z)), S the number of edges whose tracks share a class, so
+  P(class c | neighbours) ∝ exp(beta * number of neighbours in c). There are no class weights. beta = 0 is the
+  plain mixture with equal weights.
+- **Fit.** EM with a mean-field E-step (`spatial.potts.fit`). beta's M-step is exact: it is the beta at which the
+  prior expects as many agreeing edges as the fit does, E_beta[S] = E_q[S]. E_beta[S] depends only on the graph
+  and C, so it is tabulated once per movie by Swendsen-Wang (`potts.agreement_table`, a few seconds per C) and
+  each M-step is a lookup. The log partition function in the exact M-step is what holds beta back; surrogates
+  without it let beta run into the Potts model's ordered phase, where every track takes its neighbours' class.
+- **Starts.** The C-class fit starts from the plain mixture and from the (C - 1)-class fit with each class split
+  in two, and keeps the best score. Equal weights alone can split a large class and merge two small ones.
 
 The class densities only assign tracks. They are not reported, and they are not a model of what a class looks
 like: that is the class's population, deconvolved from its tracks' likelihoods with the same smoothing and bands
@@ -57,9 +64,8 @@ Shuffling keeps every track's data and destroys only the arrangement, so it is t
 
 The statistic is the **neighbour gain**: the fit's neighbour-predictive score minus the plain mixture's, i.e. how
 many nats the neighbours add. `null.p` = (1 + shuffles with a gain at least the observed) / (1 + n_shuffles);
-`patterned` is p <= `p_pattern` (0.05). beta is reported but not tested: when neighbours carry nothing, beta and
-the class weights trade off along a flat ridge and the fitted beta can be large in a shuffle, while the gain
-stays near 0.
+`patterned` is p <= `p_pattern` (0.05). beta is reported with each shuffle. A shuffle permutes the tracks over the
+same point set, so its graph is the observed one with its nodes relabelled and the agreement tables serve it too.
 
 With no pattern, the classes are a plain mixture and a class map says nothing; the caller should not draw one.
 
@@ -83,8 +89,7 @@ Grouping by the neighbours makes a track's class independent of its own estimati
 | `D_spatial_mean_um2_s`, `D_spatial_lo_um2_s`, `D_spatial_hi_um2_s` | the track's D posterior with the class mixture as its prior; borrowed from its class, so never in place of the gridpost columns |
 
 `report()`, one row per class: `n_tracks` and `n_detections` in its group, `n_assigned` (tracks whose
-`spatial_class` it is), `n_confident` (of those, `spatial_p` > 0.9). Counts are tracks, not particles. The class
-weights are left out: under the Potts prior they trade off with beta and are not shares of the tracks.
+`spatial_class` it is), `n_confident` (of those, `spatial_p` > 0.9). Counts are tracks, not particles.
 
 `field(xy)` gives the class probabilities at any point from its k nearest tracks, and the distance to the k-th of
 them; a map should leave out points whose k-th track is far (twice `typical_spacing_um()` is a reasonable cut),
@@ -95,7 +100,8 @@ since tracks fill only the space the particles can reach.
 `record()` is the run as plain JSON values (options, selection, the classes of the C used, the null, the
 verdict, the typical spacing, the report) and `probabilities()` one row per track (`track_id`, `x_um`, `y_um`,
 `q_1`..`q_C`). `spatial.restore(likelihoods, u_D, record, probabilities)` rebuilds the analysis from them and the
-same gridpost likelihoods, with only the fit of the C used.
+same gridpost likelihoods, with only the fit of the C used. A record saved by the earlier model (with class weights,
+no `model` key) is refused: run the classes again.
 
 ## Not here
 
