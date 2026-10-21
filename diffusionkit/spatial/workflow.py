@@ -1,4 +1,4 @@
-"""The spatial run: classes for C = 1..max_classes, the suggested C, beta's shuffle null, the per-track columns."""
+"""The spatial run: classes for C = 1..max_classes, the suggested C, the shuffle null, the per-track columns."""
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
@@ -8,8 +8,8 @@ import polars as pl
 
 from ..gridpost import posterior as posterior_mod
 from ..gridpost.data import GridLikelihoods, GridPosteriorAnalysis
-from .data import ShuffleNull, SpatialAnalysis, SpatialOptions
-from .potts import PottsFit, densities, fit, knn
+from .data import MODEL, ShuffleNull, SpatialAnalysis, SpatialOptions
+from .potts import PottsFit, agreement_table, densities, fit, graph, splits
 
 
 def centroids(tracks: pl.DataFrame) -> pl.DataFrame:
@@ -61,7 +61,7 @@ def analyze_likelihoods(likelihoods: GridLikelihoods, u_D: np.ndarray, positions
     offset = ll.max(axis=1)
     lik = np.exp(ll - offset[:, None])
     u = np.asarray(u_D, float)
-    nb = knn(xy, options.k)
+    adjacency = graph(xy, options.k)
     n = len(ids)
 
     total = options.max_classes + (options.n_shuffles if options.max_classes > 1 else 0)
@@ -74,27 +74,38 @@ def analyze_likelihoods(likelihoods: GridLikelihoods, u_D: np.ndarray, positions
             progress(done, total)
 
     kw = dict(max_iter=options.max_iter, tol=options.tol)
-    plains, fits, scores = {}, {}, {}
+    # beta's M-step reads E_beta[S] off a table that depends only on the graph and C. A shuffle permutes the tracks
+    # over the same point set, so its graph is this one with the nodes relabelled: the tables serve it too.
+    tables = {c: agreement_table(adjacency, c, options.seed) for c in range(2, options.max_classes + 1)}
+    plains, fits, scores, starts = {}, {}, {}, {}
     for c in range(1, options.max_classes + 1):
-        plains[c] = plain = fit(lik, u, nb, c, beta=0., **kw)
-        fits[c] = plain if c == 1 else fit(lik, u, nb, c, beta=None, init=plain, **kw)
-        scores[c] = fits[c].score(nb, offset)
+        plains[c] = plain = fit(lik, u, adjacency, c, beta=0., **kw)
+        if c == 1:
+            fits[c] = plain
+        else:
+            # From the plain mixture and from the C - 1 fit with each class split; the best score is kept.
+            for start in [(plain.centre, plain.sd), *splits(fits[c - 1])]:
+                f = fit(lik, u, adjacency, c, tables[c], init=start, **kw)
+                if c not in fits or f.score(adjacency, offset) > fits[c].score(adjacency, offset):
+                    fits[c], starts[c] = f, start
+        scores[c] = fits[c].score(adjacency, offset)
         tick()
     selection, suggested = _selection(fits, scores, n, options.gain_per_track)
     chosen = options.n_classes or suggested
 
     null = None
     if chosen > 1 and options.n_shuffles:
-        # Each shuffle repeats the observed fit's own path: the plain mixture's classes, then beta from 0.
-        observed, start = fits[chosen], plains[chosen]
+        # Each shuffle repeats the observed fit's own path, from its start with beta from 0. Shuffling the
+        # positions is permuting the tracks over the graph's nodes.
+        observed, start = fits[chosen], starts[chosen]
         seeds = np.random.SeedSequence(options.seed).spawn(options.n_shuffles)
 
-        base = start.score(nb, offset)  # beta = 0: no graph in it
+        base = plains[chosen].score(adjacency, offset)  # beta = 0: no graph in it
 
         def shuffled(seed) -> tuple[float, float]:
-            graph = knn(xy[np.random.default_rng(seed).permutation(n)], options.k)
-            f = fit(lik, u, graph, chosen, beta=None, init=start, **kw)
-            return f.score(graph, offset) - base, f.beta
+            perm = np.random.default_rng(seed).permutation(n)
+            f = fit(lik[perm], u, adjacency, chosen, tables[chosen], init=start, **kw)
+            return f.score(adjacency, offset[perm]) - base, f.beta
 
         out = []
         for r in map_fn(shuffled, seeds):
@@ -106,7 +117,7 @@ def analyze_likelihoods(likelihoods: GridLikelihoods, u_D: np.ndarray, positions
     elif progress is not None:
         progress(total, total)
 
-    return SpatialAnalysis(ids, np.asarray(likelihoods.n_frames)[keep], xy, nb, u, options, fits, selection,
+    return SpatialAnalysis(ids, np.asarray(likelihoods.n_frames)[keep], xy, adjacency, u, options, fits, selection,
                            chosen, null, _spatial_D(fits[chosen], lik, u, options.level))
 
 
@@ -127,6 +138,9 @@ def restore(likelihoods: GridLikelihoods, u_D: np.ndarray, record: dict, probabi
             ) -> SpatialAnalysis:
     """The `SpatialAnalysis` saved as `record()` and `probabilities()`, over the same likelihoods. Only the fit of
     the C used comes back (`fits` has that one key); the selection table and the null are as saved."""
+    if record.get("model") != MODEL:
+        raise ValueError("this spatial run was saved by an older model (with class weights) and cannot be rebuilt "
+                         "under the current one: run the spatial classes again")
     opts = SpatialOptions(**record["options"])
     probs = probabilities
     ids = probs["track_id"].to_numpy()
@@ -141,7 +155,7 @@ def restore(likelihoods: GridLikelihoods, u_D: np.ndarray, record: dict, probabi
     c, n = record["n_classes"], record["classes"]
     centre, sd = np.asarray(n["centre_ln_D"], float), np.asarray(n["sd_ln_D"], float)
     q = probs.select([f"q_{k}" for k in range(1, c + 1)]).to_numpy()
-    f = PottsFit(centre, sd, np.asarray(n["weight"], float), float(n["beta"]), q, lik @ densities(u, centre, sd),
+    f = PottsFit(centre, sd, float(n["beta"]), float(n["agreement"]), q, lik @ densities(u, centre, sd),
                  int(n["n_iter"]), bool(n["converged"]))
     xy = probs.select("x_um", "y_um").to_numpy().astype(float)
     null = record["null"]
@@ -151,5 +165,5 @@ def restore(likelihoods: GridLikelihoods, u_D: np.ndarray, record: dict, probabi
     selection = pl.DataFrame(record["selection"], schema={
         "n_classes": pl.Int64, "score": pl.Float64, "gain": pl.Float64, "gain_per_track": pl.Float64,
         "beta": pl.Float64, "suggested": pl.Boolean})
-    return SpatialAnalysis(ids, np.asarray(likelihoods.n_frames)[idx], xy, knn(xy, opts.k), u, opts, {c: f},
+    return SpatialAnalysis(ids, np.asarray(likelihoods.n_frames)[idx], xy, graph(xy, opts.k), u, opts, {c: f},
                            selection, c, null, _spatial_D(f, lik, u, opts.level))

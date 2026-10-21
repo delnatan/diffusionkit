@@ -1,18 +1,25 @@
-"""Classes of D on a track graph: a hidden Potts model fitted by mean-field EM.
+"""Classes of D on a track graph: a hidden Potts model fitted by EM, beta by its exact M-step.
 
 Each track i has a log-likelihood row L_i(u) on the ln D grid u (`gridpost.GridLikelihoods`). Class c is a
-normal density p_c(u) on the grid with weight w_c, so track i's evidence for it is e_ic = sum_u L_i(u) p_c(u).
-Labels z_i follow a Potts prior on the k-nearest-neighbour graph of the track centroids:
+normal density p_c(u) on the grid, so track i's evidence for it is e_ic = sum_u L_i(u) p_c(u). Labels z follow a
+Potts prior on the symmetric k-nearest-neighbour graph of the track centroids (i ~ j if either lists the other):
 
-    P(z_i = c | neighbours) ∝ w_c exp(beta * fraction of i's neighbours in c)
+    P(z | beta) = exp(beta S(z)) / Z(beta),   S(z) = number of edges whose two tracks share a class,
 
-- beta = 0 is the ordinary mixture; beta > 0 means neighbouring tracks tend to share a class.
-- Mean-field EM: the E-step replaces the neighbours' labels by their current class probabilities q_j, and the M-step
-  refits each class's normal from the tracks' grid posteriors under it. w maximizes the mean-field
-  pseudo-likelihood, and beta how well each track's neighbours predict its own data (`_beta`).
-- Whether there is a pattern at all is not read from beta: when neighbours carry nothing, beta and w trade off
-  along a flat ridge. `workflow` tests the neighbour gain (`PottsFit.score` over the plain mixture's) against
-  shuffled positions instead.
+so P(z_i = c | neighbours) ∝ exp(beta * number of i's neighbours in c). There are no class weights.
+
+- beta = 0 is the plain mixture with equal weights; beta > 0 means neighbouring tracks tend to share a class.
+- EM: the E-step is mean field (each neighbour's label replaced by its class probabilities q_j), and the M-step
+  refits each class's normal from the tracks' grid posteriors under it.
+- beta's M-step is exact: the expected complete-data log-likelihood is beta E_q[S] - log Z(beta), maximized where
+  E_beta[S] = E_q[S], the prior's expected agreement equal to the posterior's. E_beta[S] depends only on the graph
+  and C, so it is tabulated once by Swendsen-Wang (`agreement_table`) and each M-step is a lookup (`beta_for`).
+  log Z(beta) is what holds beta back: a surrogate without it (pseudo-likelihood and its kin) lets beta run past
+  the Potts phase transition, where every track takes its neighbours' class and the data are outvoted.
+- The fit with C classes starts from the plain mixture and from the C - 1 fit with each class split in two, and
+  keeps the best neighbour-predictive score (`PottsFit.score`): the plain mixture's equal weights alone can split
+  a large class and merge two small ones.
+- Whether there is a pattern is tested by `workflow` (the neighbour gain against shuffled positions).
 - The class densities only assign tracks. What a class's tracks look like is read from them as a group with the
   population models (`gridpost.deconvolve`, `fbmpost.deconvolve_tracks`), never from p_c.
 """
@@ -21,15 +28,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.optimize import minimize_scalar
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, triu
+from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 
-BETA_MAX = 30.  # beta's bound; near it beta is weakly identified, which is why the pattern test uses the gain
 MIN_SD = .1  # added in quadrature to a class's sd in ln D, so a class never collapses onto one grid cell
 SWEEPS = 5  # mean-field sweeps per E-step
-BETA_STEP = 1.  # beta moves at most this far per iteration between scans of its whole range
-SCAN_EVERY = 10  # iterations between those scans
+BETA_GRID = np.linspace(0., 1.5, 121)  # beta per edge; on kNN graphs the ordered phase starts well below 1
+TABLE_BURN, TABLE_SWEEPS = 50, 100  # Swendsen-Wang sweeps per grid point: discarded, then averaged
 TINY = 1e-300
 
 
@@ -46,10 +52,12 @@ def knn(xy: np.ndarray, k: int) -> np.ndarray:
     return out
 
 
-def averaging(neighbours: np.ndarray) -> csr_matrix:
-    """(n, n) sparse matrix whose product with q is each track's mean over its neighbours, `q[neighbours].mean(1)`."""
-    n, k = neighbours.shape
-    return csr_matrix((np.full(n * k, 1 / k), neighbours.ravel(), np.arange(0, n * k + 1, k)), shape=(n, n))
+def graph(xy: np.ndarray, k: int) -> csr_matrix:
+    """(n, n) 0/1 adjacency of the symmetric k-nearest-neighbour graph: i ~ j if either lists the other."""
+    nb = knn(xy, k)
+    n = len(nb)
+    A = csr_matrix((np.ones(n * k), (np.repeat(np.arange(n), k), nb.ravel())), shape=(n, n))
+    return csr_matrix(((A + A.T) > 0).astype(float))
 
 
 def densities(u: np.ndarray, centre: np.ndarray, sd: np.ndarray) -> np.ndarray:
@@ -64,19 +72,60 @@ def _softmax(lp: np.ndarray) -> np.ndarray:
     return p / p.sum(axis=-1, keepdims=True)
 
 
-def conditional(neighbour_q: np.ndarray, weight: np.ndarray, beta: float) -> np.ndarray:
-    """P(class | neighbours) from the neighbours' mean class probabilities (..., C): the Potts conditional."""
-    return _softmax(np.log(weight) + beta * neighbour_q)
+def conditional(neighbour_counts: np.ndarray, beta: float) -> np.ndarray:
+    """P(class | neighbours) from the (expected) number of neighbours in each class (..., C): the Potts
+    conditional."""
+    return _softmax(beta * neighbour_counts)
+
+
+def agreement_table(adjacency: csr_matrix, n_class: int, seed: int = 0) -> np.ndarray:
+    """E_beta[S] / (number of edges) on `BETA_GRID`: the Potts prior's expected fraction of agreeing edges, with no
+    data, by Swendsen-Wang (which, unlike single-site updates, keeps mixing in the ordered phase). One chain is
+    carried up the grid. Made non-decreasing, as the exact curve is."""
+    rng = np.random.default_rng(seed)
+    n = adjacency.shape[0]
+    e = triu(adjacency, 1).tocoo()
+    i, j = e.row, e.col
+    z = rng.integers(n_class, size=n)
+    out = np.empty(len(BETA_GRID))
+    for g, b in enumerate(BETA_GRID):
+        keep = 1 - np.exp(-b)
+        total = 0.
+        for s in range(TABLE_BURN + TABLE_SWEEPS):
+            same = z[i] == z[j]
+            if s >= TABLE_BURN:
+                total += same.mean()
+            bond = same & (rng.random(len(i)) < keep)
+            bonds = csr_matrix((np.ones(int(bond.sum())), (i[bond], j[bond])), shape=(n, n))
+            n_clusters, cluster = connected_components(bonds, directed=False)
+            z = rng.integers(n_class, size=n_clusters)[cluster]
+        out[g] = total / TABLE_SWEEPS
+    return np.maximum.accumulate(out)
+
+
+def beta_for(agreement: float, table: np.ndarray) -> float:
+    """beta's M-step: the beta whose prior expected agreement is `agreement`, by interpolating `table`; 0 when the
+    posterior agrees no more than unrelated labels do, the grid's top when it agrees more than the table reaches."""
+    if agreement <= table[0]:
+        return 0.
+    return float(np.interp(agreement, table, BETA_GRID))
+
+
+def edge_agreement(q: np.ndarray, adjacency: csr_matrix) -> float:
+    """E_q[S] / (number of edges) under the mean field: the mean over edges of sum_c q_ic q_jc."""
+    e = triu(adjacency, 1).tocoo()
+    return float(np.mean(np.sum(q[e.row] * q[e.col], axis=1)))
 
 
 @dataclass(frozen=True)
 class PottsFit:
     """One fit: classes in increasing order of D. `q` (n, C) are the tracks' class probabilities given their own
-    data and their neighbours; `evidence` (n, C) is e_ic relative to each track's likelihood maximum."""
+    data and their neighbours; `evidence` (n, C) is e_ic relative to each track's likelihood maximum; `agreement`
+    is the fraction of edges the fit expects to agree, which beta matches in the prior."""
     centre: np.ndarray  # (C,) class means in ln D
     sd: np.ndarray      # (C,) class sds in ln D
-    weight: np.ndarray  # (C,)
-    beta: float
+    beta: float         # per edge
+    agreement: float
     q: np.ndarray
     evidence: np.ndarray
     n_iter: int
@@ -86,14 +135,14 @@ class PottsFit:
     def n_classes(self) -> int:
         return len(self.centre)
 
-    def neighbour_q(self, neighbours: np.ndarray) -> np.ndarray:
+    def neighbour_q(self, adjacency: csr_matrix) -> np.ndarray:
         """(n, C) each track's class probabilities from its neighbours alone: its own data left out."""
-        return conditional(self.q[neighbours].mean(axis=1), self.weight, self.beta)
+        return conditional(adjacency @ self.q, self.beta)
 
-    def score(self, neighbours: np.ndarray, offset: np.ndarray) -> float:
+    def score(self, adjacency: csr_matrix, offset: np.ndarray) -> float:
         """Neighbour-predictive log-likelihood: each track's data under the classes its neighbours predict.
         `offset` is each row's log-likelihood maximum, so scores of different C compare."""
-        p = self.neighbour_q(neighbours)
+        p = self.neighbour_q(adjacency)
         return float(np.sum(np.log((p * self.evidence).sum(axis=1) + TINY) + offset))
 
     def track_posteriors(self, lik: np.ndarray, u: np.ndarray) -> np.ndarray:
@@ -103,94 +152,68 @@ class PottsFit:
         return post / post.sum(axis=1, keepdims=True)
 
 
-def _weights(q: np.ndarray, m_nb: np.ndarray, beta: float, w: np.ndarray) -> np.ndarray:
-    """Class weights maximizing the pseudo-likelihood at fixed beta (plain means at beta = 0)."""
-    if beta == 0:
-        return q.mean(axis=0)
-    target = q.sum(axis=0)
-    for _ in range(200):
-        pr = conditional(m_nb, w, beta)
-        step = target / pr.sum(axis=0)
-        w = w * step
-        w /= w.sum()
-        if np.abs(step - 1).max() < 1e-6:
-            break
-    return w
-
-
-def _beta(ev: np.ndarray, m_nb: np.ndarray, w: np.ndarray, near: float | None = None) -> float:
-    """beta maximizing the neighbour-predictive likelihood sum_i log sum_c P(c | neighbours of i) e_ic: how well
-    a track's neighbours predict its own data. The mean-field pseudo-likelihood instead rewards neighbours for
-    agreeing with q, which the mean field has already pulled toward them, so it climbs with no pattern at all."""
-    log_w = np.log(w)
-
-    def negative(b):
-        # conditional() without its max shift: w <= 1 and the neighbour fractions are in [0, 1], so the
-        # exponent is at most BETA_MAX.
-        e = np.exp(log_w + b * m_nb)
-        return -(np.log((e * ev).sum(axis=1)) - np.log(e.sum(axis=1))).sum()
-    if near is not None:  # a step from the last beta; the scan below only if it runs to the window's edge
-        lo, hi = max(near - BETA_STEP, 0.), min(near + BETA_STEP, BETA_MAX)
-        b = float(minimize_scalar(negative, bounds=(lo, hi), method="bounded", options={"xatol": 1e-4}).x)
-        if (b - lo > 1e-3 or lo == 0.) and (hi - b > 1e-3 or hi == BETA_MAX):
-            return b
-    # The objective can have two maxima (near 0 and at a large beta), so a coarse scan picks the basin first.
-    grid = np.linspace(0., BETA_MAX, 61)
-    i = int(np.argmin([negative(b) for b in grid]))
-    lo, hi = grid[max(i - 1, 0)], grid[min(i + 1, len(grid) - 1)]
-    return float(minimize_scalar(negative, bounds=(lo, hi), method="bounded", options={"xatol": 1e-4}).x)
-
-
-def initial(lik: np.ndarray, u: np.ndarray, n_class: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def initial(lik: np.ndarray, u: np.ndarray, n_class: int) -> tuple[np.ndarray, np.ndarray]:
     """Classes spread over the quantiles of the tracks' most likely ln D, each as wide as a third of that range."""
     peak = u[lik.argmax(axis=1)]
     centre = np.quantile(peak, np.linspace(.1, .9, n_class)) if n_class > 1 else np.array([np.median(peak)])
     width = max(float(np.subtract(*np.quantile(peak, [.9, .1]))) / 3, MIN_SD)
-    return centre, np.full(n_class, width), np.full(n_class, 1 / n_class)
+    return centre, np.full(n_class, width)
 
 
-def fit(lik: np.ndarray, u: np.ndarray, neighbours: np.ndarray, n_class: int, beta: float | None = None,
-        init: PottsFit | tuple | None = None, max_iter: int = 300, tol: float = 1e-3) -> PottsFit:
+def splits(f: PottsFit) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Starts for C + 1 classes from a C-class fit: each class in turn split into two half a width either side of
+    its centre (the split move of split-and-merge EM)."""
+    out = []
+    for j in range(f.n_classes):
+        centre = np.concatenate([np.delete(f.centre, j), f.centre[j] + np.array([-.5, .5]) * f.sd[j]])
+        sd = np.concatenate([np.delete(f.sd, j), np.full(2, f.sd[j] / np.sqrt(2))])
+        out.append((centre, sd))
+    return out
+
+
+def fit(lik: np.ndarray, u: np.ndarray, adjacency: csr_matrix, n_class: int, table: np.ndarray | None = None,
+        beta: float | None = None, init: PottsFit | tuple | None = None, max_iter: int = 300,
+        tol: float = 1e-3) -> PottsFit:
     """Fit `n_class` classes to `lik` (n, len(u)): each track's likelihood on the grid, maximum 1.
 
-    `beta` None learns it; a number fixes it (0: the plain mixture). `init` is an earlier fit or a
-    (centre, sd, weight) tuple; by default `initial`.
+    `beta` None learns it by the exact M-step, which needs `agreement_table(adjacency, n_class)` as `table`; a
+    number fixes it (0: the plain mixture). `init` is an earlier fit or a (centre, sd) tuple; by default
+    `initial`. A learned beta always starts from 0, so a fit and its shuffles follow the same path.
     """
     if init is None:
-        centre, sd, w = initial(lik, u, n_class)
+        centre, sd = initial(lik, u, n_class)
     elif isinstance(init, PottsFit):
-        centre, sd, w = init.centre.copy(), init.sd.copy(), init.weight.copy()
+        centre, sd = init.centre.copy(), init.sd.copy()
     else:
-        centre, sd, w = (np.asarray(a, float).copy() for a in init)
+        centre, sd = (np.asarray(a, float).copy() for a in init)
     if len(centre) != n_class:
         raise ValueError(f"init has {len(centre)} classes, asked for {n_class}")
+    learn = beta is None and n_class > 1
+    if learn and table is None:
+        raise ValueError("learning beta needs the graph's agreement table")
     b = 0. if beta is None else float(beta)
-    if beta is None and init is not None and isinstance(init, PottsFit):
-        b = init.beta
     q = np.full((len(lik), n_class), 1 / n_class)
-    avg = averaging(neighbours)
     converged = False
     for it in range(1, max_iter + 1):
         q_old, b_old = q, b
         p = densities(u, centre, sd)
         ev = lik @ p + TINY
-        log_w_ev = np.log(w) + np.log(ev)
+        log_ev = np.log(ev)
         for _ in range(SWEEPS):
-            q = _softmax(log_w_ev + b * (avg @ q))
-        m_nb = avg @ q
+            q = _softmax(log_ev + b * (adjacency @ q))
         # Each class's grid mass: sum_i q_ic L_i(u) p_c(u) / e_ic.
         mass = (lik.T @ (q / ev)) * p
-        total = mass.sum(axis=0)
+        total = mass.sum(axis=0) + TINY
         centre = u @ mass / total
         var = (u ** 2) @ mass / total - centre ** 2
         sd = np.sqrt(np.maximum(var, 0.) + MIN_SD ** 2)
-        if beta is None:
-            b = _beta(ev, m_nb, w, None if it <= 3 or it % SCAN_EVERY == 0 else b)
-        w = _weights(q, m_nb, b, w)
+        if learn:
+            b = beta_for(edge_agreement(q, adjacency), table)
         if it > 10 and np.abs(q - q_old).max() < tol and abs(b - b_old) < tol:
             converged = True
             break
     p = densities(u, centre, sd)
     ev = lik @ p
     order = np.argsort(centre)
-    return PottsFit(centre[order], sd[order], w[order], b, q[:, order], ev[:, order], it, converged)
+    q = q[:, order]
+    return PottsFit(centre[order], sd[order], b, edge_agreement(q, adjacency), q, ev[:, order], it, converged)

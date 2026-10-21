@@ -32,7 +32,7 @@ from scipy.sparse.linalg import splu
 from scipy.stats import norm
 
 from ..gridpost.data import GridLikelihoods, GridPosteriorAnalysis
-from .potts import knn
+from .potts import graph
 
 LOG_TAU = (-5., 12.)  # bounds on log tau_s and log tau_v; at the upper bound that part has effectively vanished
 GRID_S = np.linspace(-2., 8., 11)  # starting grids for log tau_s and log tau_v
@@ -43,10 +43,7 @@ CHUNK = 256  # columns per sparse solve when reading the posterior variances
 
 def laplacian(xy: np.ndarray, k: int) -> csr_matrix:
     """The graph Laplacian (degree minus adjacency) of the symmetric k-nearest-neighbour graph of `xy`."""
-    nb = knn(xy, k)
-    n = len(xy)
-    W = csr_matrix((np.ones(n * k), (np.repeat(np.arange(n), k), nb.ravel())), shape=(n, n))
-    W = ((W + W.T) > 0).astype(float)
+    W = graph(xy, k)
     return csr_matrix(diags(np.asarray(W.sum(axis=1)).ravel()) - W)
 
 
