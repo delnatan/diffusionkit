@@ -19,6 +19,9 @@ so P(z_i = c | neighbours) ∝ exp(beta * number of i's neighbours in c). There 
 - The fit with C classes starts from the plain mixture and from the C - 1 fit with each class split in two, and
   keeps the best neighbour-predictive score (`PottsFit.score`): the plain mixture's equal weights alone can split
   a large class and merge two small ones.
+- Each of those starts beta at 0 and at `ordered_beta`, inside the prior's ordered phase. When each track's data
+  are weak, EM has two stable solutions, one near beta = 0 and one ordered, and a start at 0 stays in the first
+  even when the pattern is real. The ordered start reaches the second, and the score picks between them.
 - Whether there is a pattern is tested by `workflow` (the neighbour gain against shuffled positions).
 - The class densities only assign tracks. What a class's tracks look like is read from them as a group with the
   population models (`gridpost.deconvolve`, `fbmpost.deconvolve_tracks`), never from p_c.
@@ -36,6 +39,7 @@ MIN_SD = .1  # added in quadrature to a class's sd in ln D, so a class never col
 SWEEPS = 5  # mean-field sweeps per E-step
 BETA_GRID = np.linspace(0., 1.5, 121)  # beta per edge; on kNN graphs the ordered phase starts well below 1
 TABLE_BURN, TABLE_SWEEPS = 50, 100  # Swendsen-Wang sweeps per grid point: discarded, then averaged
+ORDERED_AGREEMENT = .9  # the prior agreement at which `ordered_beta` starts beta: past the transition
 TINY = 1e-300
 
 
@@ -111,6 +115,12 @@ def beta_for(agreement: float, table: np.ndarray) -> float:
     return float(np.interp(agreement, table, BETA_GRID))
 
 
+def ordered_beta(table: np.ndarray) -> float:
+    """The beta at which the prior's expected agreement reaches `ORDERED_AGREEMENT`: a start for beta inside the
+    ordered phase, just past the graph's transition."""
+    return beta_for(ORDERED_AGREEMENT, table)
+
+
 def edge_agreement(q: np.ndarray, adjacency: csr_matrix) -> float:
     """E_q[S] / (number of edges) under the mean field: the mean over edges of sum_c q_ic q_jc."""
     e = triu(adjacency, 1).tocoo()
@@ -172,13 +182,14 @@ def splits(f: PottsFit) -> list[tuple[np.ndarray, np.ndarray]]:
 
 
 def fit(lik: np.ndarray, u: np.ndarray, adjacency: csr_matrix, n_class: int, table: np.ndarray | None = None,
-        beta: float | None = None, init: PottsFit | tuple | None = None, max_iter: int = 300,
+        beta: float | None = None, init: PottsFit | tuple | None = None, beta0: float = 0., max_iter: int = 300,
         tol: float = 1e-3) -> PottsFit:
     """Fit `n_class` classes to `lik` (n, len(u)): each track's likelihood on the grid, maximum 1.
 
     `beta` None learns it by the exact M-step, which needs `agreement_table(adjacency, n_class)` as `table`; a
     number fixes it (0: the plain mixture). `init` is an earlier fit or a (centre, sd) tuple; by default
-    `initial`. A learned beta always starts from 0, so a fit and its shuffles follow the same path.
+    `initial`. A learned beta starts from `beta0` (0, or `ordered_beta(table)` for the ordered solution), never
+    from `init`'s, so a fit and its shuffles follow the same path.
     """
     if init is None:
         centre, sd = initial(lik, u, n_class)
@@ -191,7 +202,7 @@ def fit(lik: np.ndarray, u: np.ndarray, adjacency: csr_matrix, n_class: int, tab
     learn = beta is None and n_class > 1
     if learn and table is None:
         raise ValueError("learning beta needs the graph's agreement table")
-    b = 0. if beta is None else float(beta)
+    b = (float(beta0) if learn else 0.) if beta is None else float(beta)
     q = np.full((len(lik), n_class), 1 / n_class)
     converged = False
     for it in range(1, max_iter + 1):

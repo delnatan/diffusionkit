@@ -196,6 +196,27 @@ class BetaRunawayTests(unittest.TestCase):
         self.assertGreater(np.mean((s.fit.q.argmax(axis=1) == 0) == inside), .95)
 
 
+class WeakDataTests(unittest.TestCase):
+    """Tracks that carry little each (likelihood width 1.3 in ln D): EM has a solution near beta = 0 and an ordered
+    one, and a start at beta = 0 stays in the first even though the pattern is real."""
+
+    def test_the_ordered_start_finds_the_pattern(self):
+        lik, pos, slow = cell(np.random.default_rng(3), sd=1.3)
+        s = analyze_likelihoods(lik, U, pos, SpatialOptions(max_classes=3, n_shuffles=19))
+        self.assertEqual(s.n_classes, 2)
+        self.assertTrue(s.patterned)
+        self.assertGreater(np.mean((s.fit.q.argmax(axis=1) == 0) == slow), .85)
+        # Without it, from the plain mixture, beta stays near 0.
+        L, A = np.exp(lik.loglik_D), s.adjacency
+        cold = potts.fit(L, U, A, 2, potts.agreement_table(A, 2), init=potts.fit(L, U, A, 2, beta=0.))
+        self.assertLess(cold.beta, .1)
+
+    def test_and_no_pattern_without_one(self):
+        lik, pos, _ = cell(np.random.default_rng(3), sd=1.3, patterned=False)
+        s = analyze_likelihoods(lik, U, pos, SpatialOptions(max_classes=2, n_classes=2, n_shuffles=19))
+        self.assertFalse(s.patterned)
+
+
 class UnpatternedCellTests(unittest.TestCase):
     def test_no_pattern_without_one(self):
         lik, pos, _ = cell(np.random.default_rng(4), patterned=False)

@@ -39,7 +39,11 @@ for c, ids in s.groups().items():                     # each class's tracks, as 
   each M-step is a lookup. The log partition function in the exact M-step is what holds beta back; surrogates
   without it let beta run into the Potts model's ordered phase, where every track takes its neighbours' class.
 - **Starts.** The C-class fit starts from the plain mixture and from the (C - 1)-class fit with each class split
-  in two, and keeps the best score. Equal weights alone can split a large class and merge two small ones.
+  in two, and keeps the best score. Equal weights alone can split a large class and merge two small ones. Each
+  of these starts beta both at 0 and in the prior's ordered phase (`potts.ordered_beta`, where the prior expects
+  90% of edges to agree). When each track carries little (short tracks, a likelihood a decade or more wide in
+  D), EM has a solution near beta = 0 and an ordered one, and a start at 0 stays near 0 even when the pattern is
+  real. The shuffles run both beta starts too and keep the better score, so the null has the same chance.
 
 The class densities only assign tracks. They are not reported, and they are not a model of what a class looks
 like: that is the class's population, deconvolved from its tracks' likelihoods with the same smoothing and bands
