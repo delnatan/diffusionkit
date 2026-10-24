@@ -9,7 +9,7 @@ import polars as pl
 from ..gridpost import posterior as posterior_mod
 from ..gridpost.data import GridLikelihoods, GridPosteriorAnalysis
 from .data import MODEL, ShuffleNull, SpatialAnalysis, SpatialOptions
-from .potts import PottsFit, agreement_table, densities, fit, graph, splits
+from .potts import PottsFit, agreement_table, densities, fit, graph, ordered_beta, splits
 
 
 def centroids(tracks: pl.DataFrame) -> pl.DataFrame:
@@ -83,11 +83,13 @@ def analyze_likelihoods(likelihoods: GridLikelihoods, u_D: np.ndarray, positions
         if c == 1:
             fits[c] = plain
         else:
-            # From the plain mixture and from the C - 1 fit with each class split; the best score is kept.
+            # From the plain mixture and from the C - 1 fit with each class split, each with beta from 0 and from
+            # the ordered phase; the best score is kept.
             for start in [(plain.centre, plain.sd), *splits(fits[c - 1])]:
-                f = fit(lik, u, adjacency, c, tables[c], init=start, **kw)
-                if c not in fits or f.score(adjacency, offset) > fits[c].score(adjacency, offset):
-                    fits[c], starts[c] = f, start
+                for b0 in (0., ordered_beta(tables[c])):
+                    f = fit(lik, u, adjacency, c, tables[c], init=start, beta0=b0, **kw)
+                    if c not in fits or f.score(adjacency, offset) > fits[c].score(adjacency, offset):
+                        fits[c], starts[c] = f, start
         scores[c] = fits[c].score(adjacency, offset)
         tick()
     selection, suggested = _selection(fits, scores, n, options.gain_per_track)
@@ -95,8 +97,9 @@ def analyze_likelihoods(likelihoods: GridLikelihoods, u_D: np.ndarray, positions
 
     null = None
     if chosen > 1 and options.n_shuffles:
-        # Each shuffle repeats the observed fit's own path, from its start with beta from 0. Shuffling the
-        # positions is permuting the tracks over the graph's nodes.
+        # Each shuffle repeats the observed fit's own path: its start, beta from 0 and from the ordered phase, the
+        # better score kept, so the null has the same chance to find an ordered solution. Shuffling the positions
+        # is permuting the tracks over the graph's nodes.
         observed, start = fits[chosen], starts[chosen]
         seeds = np.random.SeedSequence(options.seed).spawn(options.n_shuffles)
 
@@ -104,7 +107,8 @@ def analyze_likelihoods(likelihoods: GridLikelihoods, u_D: np.ndarray, positions
 
         def shuffled(seed) -> tuple[float, float]:
             perm = np.random.default_rng(seed).permutation(n)
-            f = fit(lik[perm], u, adjacency, chosen, tables[chosen], init=start, **kw)
+            f = max((fit(lik[perm], u, adjacency, chosen, tables[chosen], init=start, beta0=b0, **kw)
+                     for b0 in (0., ordered_beta(tables[chosen]))), key=lambda f: f.score(adjacency, offset[perm]))
             return f.score(adjacency, offset[perm]) - base, f.beta
 
         out = []
